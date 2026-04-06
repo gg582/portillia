@@ -12,8 +12,8 @@ import (
 
 	"github.com/spruceid/siwe-go"
 
-	"github.com/gosuda/portal/v2/types"
-	"github.com/gosuda/portal/v2/utils"
+	"github.com/gosuda/portal-tunnel/v2/types"
+	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
 func TestExposeNoRelayInputs(t *testing.T) {

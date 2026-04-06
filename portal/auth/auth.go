@@ -13,8 +13,8 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/spruceid/siwe-go"
 
-	"github.com/gosuda/portal/v2/types"
-	"github.com/gosuda/portal/v2/utils"
+	"github.com/gosuda/portal-tunnel/v2/types"
+	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
 const (

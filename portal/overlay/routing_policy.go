@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sort"
 
-	"github.com/gosuda/portal/v2/portal/policy"
+	"github.com/gosuda/portal-tunnel/v2/portal/policy"
 )
 
 const (

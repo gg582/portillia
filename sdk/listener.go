@@ -14,11 +14,11 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/rs/zerolog/log"
 
-	"github.com/gosuda/portal/v2/portal/discovery"
-	"github.com/gosuda/portal/v2/portal/keyless"
-	"github.com/gosuda/portal/v2/portal/transport"
-	"github.com/gosuda/portal/v2/types"
-	"github.com/gosuda/portal/v2/utils"
+	"github.com/gosuda/portal-tunnel/v2/portal/discovery"
+	"github.com/gosuda/portal-tunnel/v2/portal/keyless"
+	"github.com/gosuda/portal-tunnel/v2/portal/transport"
+	"github.com/gosuda/portal-tunnel/v2/types"
+	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
 type ListenerConfig struct {

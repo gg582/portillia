@@ -3,7 +3,7 @@ package utils
 import (
 	"fmt"
 
-	"github.com/gosuda/portal/v2/types"
+	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
 // ValidateMaxRouting ensures the configured MaxRouting is within the supported range.

@@ -3,7 +3,7 @@ package overlay
 import (
 	"testing"
 
-	"github.com/gosuda/portal/v2/portal/policy"
+	"github.com/gosuda/portal-tunnel/v2/portal/policy"
 )
 
 func TestReverseSiameseComplementMirror(t *testing.T) {

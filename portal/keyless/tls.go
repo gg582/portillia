@@ -11,7 +11,7 @@ import (
 
 	keylesstls "github.com/gosuda/keyless_tls/keyless"
 
-	"github.com/gosuda/portal/v2/utils"
+	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
 func RelayRootCAs(ctx context.Context, endpoint, serverName string, rootCAPEM []byte) (*x509.CertPool, error) {

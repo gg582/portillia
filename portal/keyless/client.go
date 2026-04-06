@@ -13,7 +13,7 @@ import (
 
 	keylesstls "github.com/gosuda/keyless_tls/keyless"
 
-	"github.com/gosuda/portal/v2/utils"
+	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
 // DialContextFunc allows callers to override how keyless materials are fetched.

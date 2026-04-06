@@ -12,8 +12,8 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/gosuda/portal/v2/sdk"
-	"github.com/gosuda/portal/v2/types"
+	"github.com/gosuda/portal-tunnel/v2/sdk"
+	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
 func proxyExposure(ctx context.Context, exposure *sdk.Exposure) error {

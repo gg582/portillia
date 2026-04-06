@@ -11,7 +11,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/gosuda/portal/v2/portal/overlay"
+	"github.com/gosuda/portal-tunnel/v2/portal/overlay"
 )
 
 type simRelay struct {

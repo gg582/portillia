@@ -22,10 +22,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gosuda/portal/v2/portal/acme"
-	"github.com/gosuda/portal/v2/portal/discovery"
-	"github.com/gosuda/portal/v2/types"
-	"github.com/gosuda/portal/v2/utils"
+	"github.com/gosuda/portal-tunnel/v2/portal/acme"
+	"github.com/gosuda/portal-tunnel/v2/portal/discovery"
+	"github.com/gosuda/portal-tunnel/v2/types"
+	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
 func mustRelayDescriptor(t *testing.T, relayURL string) types.RelayDescriptor {

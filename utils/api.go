@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/gosuda/portal/v2/types"
+	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
 type APIErrorResponse struct {
