@@ -41,13 +41,16 @@ type relayServerConfig struct {
 	LandingPageEnabled bool
 	Bootstraps         string
 	DiscoveryEnabled   bool
+	MaxRouting         int
+	OverlayEnabled     bool
+	OverlayMaxHops     int
+	OverlayCongestion  float64
 	IdentityPath       string
 	AdminSecretKey     string
 	TrustProxyHeaders  bool
 	TrustedProxyCIDRs  string
 	AdminSettingsPath  string
 	KeylessDir         string
-
 	ACMEDNSProvider    string
 	ENSGaslessEnabled  bool
 	CloudflareToken    string
@@ -75,6 +78,10 @@ func runServeCommand(args []string) error {
 	utils.BoolFlagEnv(fs, &cfg.LandingPageEnabled, "landing-page-enabled", false, "enable landing page by default when no admin setting has been saved yet", "LANDING_PAGE_ENABLED")
 	utils.StringFlagEnv(fs, &cfg.Bootstraps, "bootstraps", "", "additional bootstrap relay API URLs used for discovery expansion", "BOOTSTRAPS")
 	utils.BoolFlagEnv(fs, &cfg.DiscoveryEnabled, "discovery", false, "serve relay discovery endpoints and poll discovery peers", "DISCOVERY")
+	utils.IntFlagEnv(fs, &cfg.MaxRouting, "max-routing", 1, nil, "maximum number of discovery routing attempts per refresh", "MAX_ROUTING")
+	utils.BoolFlagEnv(fs, &cfg.OverlayEnabled, "overlay-enabled", false, "enable experimental Pepper overlay route planning", "OVERLAY_ENABLED")
+	utils.IntFlagEnv(fs, &cfg.OverlayMaxHops, "overlay-max-hops", 0, nil, "Pepper overlay max hops (0 disables overlay route planning)", "OVERLAY_MAX_HOPS")
+	utils.Float64FlagEnv(fs, &cfg.OverlayCongestion, "overlay-congestion-latency-ms", 120, nil, "latency threshold in ms to trigger reverse-Siamese overlay route selection", "OVERLAY_CONGESTION_LATENCY_MS")
 	utils.StringFlagEnv(fs, &cfg.IdentityPath, "identity-path", "identity.json", "relay identity json file path", "IDENTITY_PATH")
 	utils.StringFlagEnv(fs, &cfg.AdminSecretKey, "admin-secret-key", "", "admin auth secret", "ADMIN_SECRET_KEY")
 	utils.BoolFlagEnv(fs, &cfg.TrustProxyHeaders, "trust-proxy-headers", false, "trust X-Forwarded-* and X-Real-IP headers from trusted proxies", "TRUST_PROXY_HEADERS")
@@ -104,6 +111,9 @@ func runServeCommand(args []string) error {
 		printRootUsage(os.Stderr)
 		return err
 	}
+	if err := utils.ValidateMaxRouting(cfg.MaxRouting); err != nil {
+		return err
+	}
 
 	log.Info().
 		Str("release_version", types.ReleaseVersion).
@@ -114,6 +124,9 @@ func runServeCommand(args []string) error {
 		Int("max_port", cfg.MaxPort).
 		Bool("landing_page_enabled", cfg.LandingPageEnabled).
 		Bool("discovery_enabled", cfg.DiscoveryEnabled).
+		Int("max_routing", cfg.MaxRouting).
+		Bool("overlay_enabled", cfg.OverlayEnabled).
+		Int("overlay_max_hops", cfg.OverlayMaxHops).
 		Str("acme_dns_provider", cfg.ACMEDNSProvider).
 		Bool("ens_gasless_enabled", cfg.ENSGaslessEnabled).
 		Bool("udp_enabled", cfg.UDPEnabled).
@@ -155,6 +168,10 @@ func runServer(ctx context.Context, cfg relayServerConfig) error {
 		TrustedProxyCIDRs: cfg.TrustedProxyCIDRs,
 		TrustProxyHeaders: cfg.TrustProxyHeaders,
 		DiscoveryEnabled:  cfg.DiscoveryEnabled,
+		MaxRouting:        cfg.MaxRouting,
+		OverlayEnabled:    cfg.OverlayEnabled,
+		OverlayMaxHops:    cfg.OverlayMaxHops,
+		OverlayCongestion: cfg.OverlayCongestion,
 		MinPort:           cfg.MinPort,
 		MaxPort:           cfg.MaxPort,
 		UDPEnabled:        cfg.UDPEnabled,

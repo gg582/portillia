@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/gosuda/portal/v2/portal/acme"
 	"github.com/gosuda/portal/v2/portal/discovery"
 	"github.com/gosuda/portal/v2/portal/keyless"
+	"github.com/gosuda/portal/v2/portal/overlay"
 	"github.com/gosuda/portal/v2/portal/policy"
 	"github.com/gosuda/portal/v2/portal/transport"
 	"github.com/gosuda/portal/v2/types"
@@ -47,6 +49,10 @@ type ServerConfig struct {
 	TrustedProxyCIDRs string
 	TrustProxyHeaders bool
 	DiscoveryEnabled  bool
+	MaxRouting        int
+	OverlayEnabled    bool
+	OverlayMaxHops    int
+	OverlayCongestion float64
 	MinPort           int
 	MaxPort           int
 	UDPEnabled        bool
@@ -65,10 +71,15 @@ type Server struct {
 	registry          *leaseRegistry
 	ports             *transport.PortAllocator
 	tcpPorts          *transport.PortAllocator
+	loadMgr           *policy.LoadManager
+	weightMgr         *policy.WeightManager
 	identity          types.Identity
 	cfg               ServerConfig
 	trustedProxyCIDRs []*net.IPNet
-	relaySet          *discovery.RelaySet
+	discoveryMgr      *discovery.Manager
+	overlayPolicy     *overlay.RoutePolicy
+	overlayRoute      []uint32
+	overlayRouteMu    sync.RWMutex
 	shutdownOnce      sync.Once
 }
 
@@ -90,8 +101,35 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("normalize bootstraps: %w", err)
 	}
+	selfRelayURL := ""
+	if trimmedPortalURL := strings.TrimSpace(cfg.PortalURL); trimmedPortalURL != "" {
+		normalizedPortalURL, err := utils.NormalizeRelayURL(trimmedPortalURL)
+		if err != nil {
+			return nil, fmt.Errorf("normalize portal url: %w", err)
+		}
+		selfRelayURL = normalizedPortalURL
+	}
+	if len(bootstraps) > 0 {
+		filtered := bootstraps[:0]
+		for _, relayURL := range bootstraps {
+			if selfRelayURL != "" && relayURL == selfRelayURL {
+				continue
+			}
+			filtered = append(filtered, relayURL)
+		}
+		bootstraps = filtered
+	}
 	cfg.Bootstraps = bootstraps
-
+	if cfg.OverlayMaxHops < 0 {
+		return nil, errors.New("overlay max hops must be >= 0")
+	}
+	if cfg.OverlayMaxHops > 10 {
+		return nil, errors.New("overlay max hops must be <= 10")
+	}
+	if cfg.OverlayCongestion <= 0 {
+		cfg.OverlayCongestion = 120
+	}
+	cfg.OverlayEnabled = cfg.OverlayEnabled && cfg.OverlayMaxHops > 0
 	transportEnabled := cfg.UDPEnabled || cfg.TCPEnabled
 	hasPortRange := cfg.MinPort > 0 && cfg.MaxPort > 0
 	if transportEnabled {
@@ -114,21 +152,14 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		portMax = cfg.MaxPort
 	}
 
-	identity, generatedIdentity, err := utils.LoadOrCreateIdentity(cfg.IdentityPath, types.Identity{Name: rootHost})
+	identity, err := utils.LoadOrCreateIdentity(cfg.IdentityPath, types.Identity{Name: rootHost})
 	if err != nil {
 		return nil, fmt.Errorf("load relay identity: %w", err)
 	}
-	if generatedIdentity {
-		log.Warn().
-			Str("identity_path", cfg.IdentityPath).
-			Str("address", identity.Address).
-			Msg("generated relay identity and saved it to disk")
-	}
-	selfRelayURL, err := utils.NormalizeRelayURL(cfg.PortalURL)
-	if err != nil {
-		return nil, fmt.Errorf("normalize portal url: %w", err)
-	}
-	cfg.Bootstraps = utils.RemoveRelayURL(cfg.Bootstraps, selfRelayURL)
+	log.Warn().
+		Str("identity_path", cfg.IdentityPath).
+		Str("address", identity.Address).
+		Msg("generated relay identity and saved it to disk")
 
 	tcpPortMin, tcpPortMax := 0, 0
 	if cfg.TCPEnabled {
@@ -136,10 +167,10 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		tcpPortMax = cfg.MaxPort
 	}
 
-	policy := policy.NewRuntime()
-	policy.SetUDPPolicy(cfg.UDPEnabled, 0)
-	policy.SetTCPPortPolicy(cfg.TCPEnabled, 0)
-	registry := newLeaseRegistry(policy)
+	runtimePolicy := policy.NewRuntime()
+	runtimePolicy.SetUDPPolicy(cfg.UDPEnabled, 0)
+	runtimePolicy.SetTCPPortPolicy(cfg.TCPEnabled, 0)
+	registry := newLeaseRegistry(runtimePolicy)
 	ports := transport.NewPortAllocator(portMin, portMax, 5*time.Minute)
 	tcpPorts := transport.NewPortAllocator(tcpPortMin, tcpPortMax, 5*time.Minute)
 
@@ -148,16 +179,25 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		registry:          registry,
 		ports:             ports,
 		tcpPorts:          tcpPorts,
+		loadMgr:           policy.NewLoadManager(),
+		weightMgr:         policy.NewWeightManager(),
 		identity:          identity,
 		trustedProxyCIDRs: trustedProxyCIDRs,
 	}
-
+	if cfg.OverlayEnabled {
+		s.overlayPolicy = overlay.NewRoutePolicy()
+	}
 	if cfg.DiscoveryEnabled {
-		s.relaySet = discovery.NewRelaySet()
-		if err := s.relaySet.SetSelfRelay(identity, selfRelayURL); err != nil {
-			return nil, fmt.Errorf("set self relay: %w", err)
+		manager, err := discovery.NewManager(discovery.ManagerConfig{
+			Identity:   identity,
+			PortalURL:  cfg.PortalURL,
+			Bootstraps: cfg.Bootstraps,
+			MaxRouting: cfg.MaxRouting,
+		})
+		if err != nil {
+			return nil, err
 		}
-		s.relaySet.SetBootstrapRelayURLs(cfg.Bootstraps)
+		s.discoveryMgr = manager
 	}
 
 	return s, nil
@@ -171,35 +211,30 @@ func (s *Server) Start(ctx context.Context, apiMux *http.ServeMux) error {
 		return err
 	}
 
-	var cleanups []func()
-	defer func() {
-		for i := len(cleanups) - 1; i >= 0; i-- {
-			cleanups[i]()
-		}
-	}()
-
-	cleanups = append(cleanups, acmeManager.Stop)
-
 	serverCtx, cancel := context.WithCancel(ctx)
-	cleanups = append(cleanups, cancel)
-
 	var listenConfig net.ListenConfig
 
 	apiListener, err := listenConfig.Listen(serverCtx, "tcp", s.cfg.APIListenAddr)
 	if err != nil {
+		acmeManager.Stop()
+		cancel()
 		return fmt.Errorf("listen api: %w", err)
 	}
-	cleanups = append(cleanups, func() { _ = apiListener.Close() })
-
 	sniListener, err := listenConfig.Listen(serverCtx, "tcp", s.cfg.SNIListenAddr)
 	if err != nil {
+		acmeManager.Stop()
+		_ = apiListener.Close()
+		cancel()
 		return fmt.Errorf("listen sni: %w", err)
 	}
-	cleanups = append(cleanups, func() { _ = sniListener.Close() })
 
 	group, groupCtx := errgroup.WithContext(serverCtx)
 	wrappedAPIListener, apiServer, apiCloser, err := s.newAPIServer(apiListener, apiMux, apiTLS)
 	if err != nil {
+		acmeManager.Stop()
+		_ = apiListener.Close()
+		_ = sniListener.Close()
+		cancel()
 		return err
 	}
 
@@ -210,13 +245,12 @@ func (s *Server) Start(ctx context.Context, apiMux *http.ServeMux) error {
 	s.acmeManager = acmeManager
 	s.cancel = cancel
 	s.group = group
-	cleanups = nil
 
 	group.Go(s.runAPIServer)
 	group.Go(func() error { return s.runSNIListener(groupCtx) })
 	group.Go(func() error { return s.runLeaseJanitor(groupCtx, 5*time.Second) })
 	if s.cfg.DiscoveryEnabled {
-		group.Go(func() error { return s.relaySet.RunLoop(groupCtx, nil, nil) })
+		group.Go(func() error { return s.runRelayDiscoveryLoop(groupCtx) })
 	}
 	s.acmeManager.Start(serverCtx)
 
@@ -240,6 +274,8 @@ func (s *Server) Start(ctx context.Context, apiMux *http.ServeMux) error {
 		Int("min_port", s.cfg.MinPort).
 		Int("max_port", s.cfg.MaxPort).
 		Bool("discovery_enabled", s.cfg.DiscoveryEnabled).
+		Bool("overlay_enabled", s.cfg.OverlayEnabled).
+		Int("overlay_max_hops", s.cfg.OverlayMaxHops).
 		Bool("udp_enabled", s.cfg.UDPEnabled).
 		Bool("tcp_enabled", s.cfg.TCPEnabled)
 	if s.quicTunnel != nil {
@@ -254,7 +290,18 @@ func (s *Server) Wait() error {
 	if s.group == nil {
 		return nil
 	}
-	return s.group.Wait()
+	err := s.group.Wait()
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
+}
+
+func (s *Server) Identity() types.Identity {
+	if s == nil {
+		return types.Identity{}
+	}
+	return s.identity.Copy()
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
@@ -305,38 +352,73 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) PolicyRuntime() *policy.Runtime {
+	if s == nil || s.registry == nil {
+		return nil
+	}
 	return s.registry.policy
 }
 
 func (s *Server) PortalURL() string {
+	if s == nil {
+		return ""
+	}
 	return s.cfg.PortalURL
 }
 
 func (s *Server) LeaseSnapshots() []types.Lease {
+	s.registry.mu.RLock()
+	defer s.registry.mu.RUnlock()
+
 	now := time.Now()
-	all := s.registry.activeAdminSnapshots()
-	out := make([]types.Lease, 0, len(all))
-	for _, snap := range all {
-		since := time.Duration(0)
-		if !snap.LastSeenAt.IsZero() {
-			since = max(now.Sub(snap.LastSeenAt), 0)
-		}
-		if snap.IsBanned || snap.IsDenied || !snap.IsApproved || snap.Metadata.Hide {
-			continue
-		}
-		if snap.Ready == 0 && since >= 3*time.Minute {
-			continue
-		}
-		out = append(out, snap.Lease)
+	records := make([]*leaseRecord, 0, len(s.registry.leasesByKey))
+	for _, record := range s.registry.leasesByKey {
+		records = append(records, record)
 	}
-	return out
+	snapshots := make([]types.Lease, 0, len(records))
+	for _, record := range records {
+		if now.After(record.ExpiresAt) {
+			continue
+		}
+		adminSnapshot := s.registry.AdminSnapshot(record)
+		since := time.Duration(0)
+		if !adminSnapshot.LastSeenAt.IsZero() {
+			since = max(now.Sub(adminSnapshot.LastSeenAt), 0)
+		}
+		if adminSnapshot.IsBanned || adminSnapshot.IsDenied || !adminSnapshot.IsApproved || adminSnapshot.Metadata.Hide {
+			continue
+		}
+		if adminSnapshot.Ready == 0 && since >= 3*time.Minute {
+			continue
+		}
+		snapshots = append(snapshots, adminSnapshot.Lease)
+	}
+	return snapshots
 }
 
 func (s *Server) AdminLeaseSnapshots() []types.AdminLease {
-	return s.registry.activeAdminSnapshots()
+	s.registry.mu.RLock()
+	defer s.registry.mu.RUnlock()
+
+	now := time.Now()
+	records := make([]*leaseRecord, 0, len(s.registry.leasesByKey))
+	for _, record := range s.registry.leasesByKey {
+		records = append(records, record)
+	}
+	snapshots := make([]types.AdminLease, 0, len(records))
+	for _, record := range records {
+		if now.After(record.ExpiresAt) {
+			continue
+		}
+		snapshots = append(snapshots, s.registry.AdminSnapshot(record))
+	}
+	return snapshots
 }
 
 func (s *Server) LeaseSnapshotByHostname(hostname string) (types.Lease, bool) {
+	if s == nil || s.registry == nil {
+		return types.Lease{}, false
+	}
+
 	record, ok := s.registry.Lookup(hostname)
 	if !ok || record == nil || time.Now().After(record.ExpiresAt) {
 		return types.Lease{}, false
@@ -414,7 +496,7 @@ func (s *Server) runSNIListener(ctx context.Context) error {
 						_ = wrappedConn.Close()
 						return
 					}
-					BridgeConns(wrappedConn, upstream)
+					s.BridgeConns(wrappedConn, upstream)
 					return
 				}
 
@@ -433,12 +515,15 @@ func (s *Server) runSNIListener(ctx context.Context) error {
 					return
 				}
 
-				BridgeConns(wrappedConn, session)
+				s.BridgeConns(wrappedConn, session)
 			}(conn)
 		case errors.Is(err, net.ErrClosed):
 			return nil
 		default:
-			return err
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			return fmt.Errorf("accept sni connection: %w", err)
 		}
 	}
 }
@@ -521,27 +606,88 @@ func (s *Server) runQUICTunnelListener(listener *quic.Listener) error {
 	}
 }
 
-func BridgeConns(left, right net.Conn) {
+func (s *Server) runRelayDiscoveryLoop(ctx context.Context) error {
+	if s.discoveryMgr == nil {
+		<-ctx.Done()
+		return nil
+	}
+	return s.discoveryMgr.Run(ctx, s.handleDiscoverySnapshot)
+}
+
+func (s *Server) handleDiscoverySnapshot(_ map[string]types.RelayState) {
+	if s.discoveryMgr == nil || s.overlayPolicy == nil || !s.cfg.OverlayEnabled {
+		return
+	}
+	descs := s.discoveryMgr.ActiveRelayDescriptors()
+	if len(descs) == 0 {
+		s.overlayRouteMu.Lock()
+		s.overlayRoute = nil
+		s.overlayRouteMu.Unlock()
+		return
+	}
+
+	candidates := make([]uint32, 0, len(descs))
+	for _, d := range descs {
+		if d.Key() == "" {
+			continue
+		}
+		candidates = append(candidates, crc32.ChecksumIEEE([]byte(d.Key())))
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	selfID := crc32.ChecksumIEEE([]byte(s.identity.Key()))
+	route, err := s.overlayPolicy.BuildRouteWithLoad(selfID, candidates, s.cfg.OverlayMaxHops, s.weightMgr.Collect(), s.cfg.OverlayCongestion)
+	if err != nil {
+		return
+	}
+	s.overlayRouteMu.Lock()
+	s.overlayRoute = route
+	s.overlayRouteMu.Unlock()
+}
+
+func (s *Server) OverlayRoute() []uint32 {
+	if s == nil {
+		return nil
+	}
+	s.overlayRouteMu.RLock()
+	defer s.overlayRouteMu.RUnlock()
+	if len(s.overlayRoute) == 0 {
+		return nil
+	}
+	out := make([]uint32, len(s.overlayRoute))
+	copy(out, s.overlayRoute)
+	return out
+}
+
+func (s *Server) BridgeConns(left, right net.Conn) {
+	s.loadMgr.RecordConnStart()
+	defer s.loadMgr.RecordConnEnd()
+
 	defer left.Close()
 	defer right.Close()
 
-	type closeWriter interface {
-		CloseWrite() error
-	}
 	var group errgroup.Group
 	group.Go(func() error {
-		_, err := io.Copy(right, left)
-		if cw, ok := right.(closeWriter); ok {
-			_ = cw.CloseWrite()
-		}
+		n, err := io.Copy(right, left)
+		s.loadMgr.RecordBytesIn(n)
+		closeWrite(right)
 		return err
 	})
 	group.Go(func() error {
-		_, err := io.Copy(left, right)
-		if cw, ok := left.(closeWriter); ok {
-			_ = cw.CloseWrite()
-		}
+		n, err := io.Copy(left, right)
+		s.loadMgr.RecordBytesOut(n)
+		closeWrite(left)
 		return err
 	})
 	_ = group.Wait()
+}
+
+func closeWrite(conn net.Conn) {
+	type closeWriter interface {
+		CloseWrite() error
+	}
+	if cw, ok := conn.(closeWriter); ok {
+		_ = cw.CloseWrite()
+	}
 }
