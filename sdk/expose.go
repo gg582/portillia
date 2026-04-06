@@ -25,7 +25,6 @@ type Exposure struct {
 	done   <-chan struct{}
 
 	identity   types.Identity
-	proxyURL   string
 	TargetAddr string
 	UDPAddr    string
 	udpEnabled bool
@@ -47,60 +46,38 @@ type Exposure struct {
 }
 
 type ExposeConfig struct {
-	RelayURLs              []string
-	IdentityPath           string
-	IdentityJSON           string
-	Name                   string
-	TargetAddr             string
-	UDPAddr                string
-	UDPEnabled             bool
-	TCPEnabled             bool
-	BanMITM                bool
-	Discovery              bool
-	Metadata               types.LeaseMetadata
-	RootCAPEM              []byte
-	OnionProxyURL          string
-	DiscoveryHops          int
-	DiscoveryAllowFallback *bool
+	RelayURLs     []string
+	IdentityPath  string
+	IdentityJSON  string
+	Name          string
+	TargetAddr    string
+	UDPAddr       string
+	UDPEnabled    bool
+	TCPEnabled    bool
+	BanMITM       bool
+	Discovery     bool
+	Metadata      types.LeaseMetadata
+	RootCAPEM     []byte
+	DiscoveryHops int
 }
 
 // Expose creates relay listeners for each normalized relay URL and exposes a
 // dynamic listener hub for accepting traffic from all of them.
 func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
-	onionProxyURL := strings.TrimSpace(cfg.OnionProxyURL)
-	hopLimit := cfg.DiscoveryHops
-	if hopLimit < 0 {
-		hopLimit = 0
-	}
-	useOnionProxy := hopLimit > 0 && onionProxyURL != ""
-	includeDefaults := cfg.Discovery && !useOnionProxy
-	proxyURL := ""
-	if useOnionProxy {
-		proxyURL = onionProxyURL
-	}
+	hopLimit := utils.Clamp(cfg.DiscoveryHops, 0, 10)
+	includeDefaults := cfg.Discovery
 	relayURLs, err := utils.ResolvePortalRelayURLs(ctx, cfg.RelayURLs, includeDefaults)
 	if err != nil {
 		return nil, err
 	}
-	if cfg.UDPEnabled && useOnionProxy {
-		return nil, errors.New("--udp cannot be combined with onion proxy routing")
-	}
-	useManager := cfg.Discovery || hopLimit > 0 || useOnionProxy
+	useManager := cfg.Discovery || hopLimit > 0
 	var discoveryMgr *discovery.Manager
 	if useManager {
-		allowFallback := !useOnionProxy
-		if cfg.DiscoveryAllowFallback != nil {
-			allowFallback = *cfg.DiscoveryAllowFallback
-		}
 		managerCfg := discovery.ManagerConfig{
-			Bootstraps:          relayURLs,
-			OnionProxyURL:       proxyURL,
-			OnionProxyOnly:      useOnionProxy,
-			RootCAPEM:           append([]byte(nil), cfg.RootCAPEM...),
-			RequestTimeout:      15 * time.Second,
-			MultiHop:            hopLimit > 0,
-			HopLimit:            hopLimit,
-			AllowDirectFallback: allowFallback,
+			Bootstraps: relayURLs,
+			RootCAPEM:  append([]byte(nil), cfg.RootCAPEM...),
+			MultiHop:   hopLimit > 0,
+			HopLimit:   hopLimit,
 		}
 		discoveryMgr, err = discovery.NewManager(managerCfg)
 		if err != nil {
@@ -140,7 +117,6 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 		cancel:         cancel,
 		done:           exposureCtx.Done(),
 		identity:       identity,
-		proxyURL:       proxyURL,
 		TargetAddr:     targetAddr,
 		UDPAddr:        udpAddr,
 		udpEnabled:     cfg.UDPEnabled,
@@ -339,7 +315,6 @@ func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
 			UDPEnabled: e.udpEnabled,
 			TCPEnabled: e.tcpEnabled,
 			BanMITM:    e.banMITM,
-			ProxyURL:   e.proxyURL,
 			Metadata:   e.metadata.Copy(),
 			RootCAPEM:  append([]byte(nil), e.rootCAPEM...),
 			relaySet:   e.relaySet,
