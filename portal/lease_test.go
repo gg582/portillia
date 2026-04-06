@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gosuda/portal/v2/portal/policy"
-	"github.com/gosuda/portal/v2/portal/transport"
-	"github.com/gosuda/portal/v2/types"
+	"github.com/gosuda/portal-tunnel/v2/portal/policy"
+	"github.com/gosuda/portal-tunnel/v2/portal/transport"
+	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
 func TestLeaseRegistryLifecycle(t *testing.T) {

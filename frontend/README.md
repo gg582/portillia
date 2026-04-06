@@ -190,4 +190,4 @@ Radix Select values cannot be empty strings. Use stable values such as `"all"` a
 
 ## License
 
-Part of `gosuda/portal`.
+Part of `gosuda/portal-tunnel`.

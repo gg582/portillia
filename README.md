@@ -36,13 +36,13 @@
 ### Expose your local app:
 
 ```bash
-curl -fsSL https://github.com/gosuda/portal/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/gosuda/portal-tunnel/releases/latest/download/install.sh | bash
 portal expose 3000
 ```
 
 ```powershell
 $ProgressPreference = 'SilentlyContinue'
-irm https://github.com/gosuda/portal/releases/latest/download/install.ps1 | iex
+irm https://github.com/gosuda/portal-tunnel/releases/latest/download/install.ps1 | iex
 portal expose 3000
 ```
 
@@ -52,8 +52,8 @@ For install details, see [cmd/portal-tunnel/README.md](cmd/portal-tunnel/README.
 ### Run your own relay
 
 ```bash
-git clone https://github.com/gosuda/portal
-cd portal && cp .env.example .env
+git clone https://github.com/gosuda/portal-tunnel
+cd portal-tunnel && cp .env.example .env
 docker compose up
 ```
 
@@ -79,7 +79,7 @@ For architecture decisions, see [docs/adr/README.md](docs/adr/README.md).
 
 Portal's official public relay registry is:
 
-`https://raw.githubusercontent.com/gosuda/portal/main/registry.json`
+`https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json`
 
 Portal tunnel clients can include this registry by default, and the relay UI also reads from the same path to show the official relay list.
 

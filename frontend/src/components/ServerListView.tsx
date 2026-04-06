@@ -40,8 +40,8 @@ interface OfficialRegistryDocument {
 }
 
 const OFFICIAL_REGISTRY_SOURCE_URL =
-  "https://raw.githubusercontent.com/gosuda/portal/main/registry.json";
-const REPOSITORY_URL = "https://github.com/gosuda/portal";
+  "https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json";
+const REPOSITORY_URL = "https://github.com/gosuda/portal-tunnel";
 
 async function loadOfficialRegistryRelay(
   relayURL: string,

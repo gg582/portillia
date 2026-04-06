@@ -2,8 +2,8 @@ import * as os from "os";
 
 export type ShellTarget = "unix" | "windows";
 
-export const defaultRelayRegistryURL = "https://raw.githubusercontent.com/gosuda/portal/main/registry.json";
-export const defaultTunnelDownloadBaseURL = "https://github.com/gosuda/portal/releases/latest/download";
+export const defaultRelayRegistryURL = "https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json";
+export const defaultTunnelDownloadBaseURL = "https://github.com/gosuda/portal-tunnel/releases/latest/download";
 
 export interface TunnelCommandOptions {
   host: string;

@@ -8,7 +8,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 
-	"github.com/gosuda/portal/v2/types"
+	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
 var errNoConnection = errors.New("no quic connection registered")

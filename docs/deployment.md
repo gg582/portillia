@@ -405,7 +405,7 @@ To persist this across reboots, add the values to `/etc/sysctl.conf` or a file i
 
 ## 6. Auto-Update
 
-Automatically redeploy when a new `ghcr.io/gosuda/portal:latest` image is pushed.
+Automatically redeploy when a new `ghcr.io/gosuda/portal-tunnel:latest` image is pushed.
 
 ### 6.1 Deploy script
 

@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/gosuda/portal/v2/utils"
+	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
 const localDevelopmentCertificateTTL = 3650 * 24 * time.Hour

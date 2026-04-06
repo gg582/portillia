@@ -17,8 +17,8 @@ import (
 	"google.golang.org/api/dns/v1"
 	"google.golang.org/api/option"
 
-	"github.com/gosuda/portal/v2/types"
-	"github.com/gosuda/portal/v2/utils"
+	"github.com/gosuda/portal-tunnel/v2/types"
+	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
 const (

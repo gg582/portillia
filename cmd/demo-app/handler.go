@@ -9,7 +9,7 @@ import (
 
 	"golang.org/x/net/websocket"
 
-	"github.com/gosuda/portal/v2/sdk"
+	"github.com/gosuda/portal-tunnel/v2/sdk"
 )
 
 //go:embed static

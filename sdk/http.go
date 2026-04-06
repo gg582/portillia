@@ -126,48 +126,46 @@ func serveCompressedHTTP(handler http.Handler, w http.ResponseWriter, r *http.Re
 	}
 
 	format := ""
-	if r != nil {
-		parseQuality := func(params string) float64 {
-			for param := range strings.SplitSeq(params, ";") {
-				key, value, ok := strings.Cut(strings.TrimSpace(param), "=")
-				if !ok || !strings.EqualFold(strings.TrimSpace(key), "q") {
-					continue
-				}
-
-				q, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
-				if err != nil || q < 0 {
-					return 0
-				}
-				if q > 1 {
-					return 1
-				}
-				return q
+	parseQuality := func(params string) float64 {
+		for param := range strings.SplitSeq(params, ";") {
+			key, value, ok := strings.Cut(strings.TrimSpace(param), "=")
+			if !ok || !strings.EqualFold(strings.TrimSpace(key), "q") {
+				continue
 			}
-			return 1
+
+			q, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if err != nil || q < 0 {
+				return 0
+			}
+			if q > 1 {
+				return 1
+			}
+			return q
+		}
+		return 1
+	}
+
+	bestQ := 0.0
+	for rawPart := range strings.SplitSeq(r.Header.Get("Accept-Encoding"), ",") {
+		part := strings.TrimSpace(strings.ToLower(rawPart))
+		if part == "" {
+			continue
 		}
 
-		bestQ := 0.0
-		for rawPart := range strings.SplitSeq(r.Header.Get("Accept-Encoding"), ",") {
-			part := strings.TrimSpace(strings.ToLower(rawPart))
-			if part == "" {
-				continue
-			}
+		name, params, _ := strings.Cut(part, ";")
+		candidate := strings.TrimSpace(name)
+		if candidate != "br" && candidate != "gzip" {
+			continue
+		}
 
-			name, params, _ := strings.Cut(part, ";")
-			candidate := strings.TrimSpace(name)
-			if candidate != "br" && candidate != "gzip" {
-				continue
-			}
+		q := parseQuality(params)
+		if q <= 0 {
+			continue
+		}
 
-			q := parseQuality(params)
-			if q <= 0 {
-				continue
-			}
-
-			if q > bestQ || (q == bestQ && candidate == "br") {
-				format = candidate
-				bestQ = q
-			}
+		if q > bestQ || (q == bestQ && candidate == "br") {
+			format = candidate
+			bestQ = q
 		}
 	}
 	if format == "" || strings.TrimSpace(r.Header.Get("Range")) != "" {
