@@ -64,11 +64,33 @@ type ExposeConfig struct {
 // Expose creates relay listeners for each normalized relay URL and exposes a
 // dynamic listener hub for accepting traffic from all of them.
 func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
-	relayURLs, discoveryMgr, err := resolveExposeRelays(ctx, cfg)
+	hopLimit := utils.Clamp(cfg.DiscoveryHops, 0, 10)
+	includeDefaults := cfg.Discovery
+	relayURLs, err := utils.ResolvePortalRelayURLs(ctx, cfg.RelayURLs, includeDefaults)
 	if err != nil {
 		return nil, err
 	}
-	identity, err := resolveExposeIdentity(cfg)
+	useManager := cfg.Discovery || hopLimit > 0
+	var discoveryMgr *discovery.Manager
+	if useManager {
+		managerCfg := discovery.ManagerConfig{
+			Bootstraps: relayURLs,
+			RootCAPEM:  append([]byte(nil), cfg.RootCAPEM...),
+			MultiHop:   hopLimit > 0,
+			HopLimit:   hopLimit,
+		}
+		discoveryMgr, err = discovery.NewManager(managerCfg)
+		if err != nil {
+			return nil, fmt.Errorf("discovery manager: %w", err)
+		}
+	}
+
+	identity, createdIdentity, err := utils.ResolveListenerIdentity(
+		types.Identity{Name: cfg.Name},
+		cfg.TargetAddr,
+		cfg.IdentityPath,
+		cfg.IdentityJSON,
+	)
 	if err != nil {
 		return nil, err
 	}
