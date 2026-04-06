@@ -164,12 +164,12 @@ func TestServerStartInitializesLocalACMEAndSigner(t *testing.T) {
 		t.Fatalf("GET /healthz status = %d, want %d", healthResp.StatusCode, http.StatusOK)
 	}
 
-	var healthEnvelope types.APIEnvelope[map[string]string]
-	if err := json.NewDecoder(healthResp.Body).Decode(&healthEnvelope); err != nil {
+	var healthPayload map[string]string
+	if err := json.NewDecoder(healthResp.Body).Decode(&healthPayload); err != nil {
 		t.Fatalf("decode /healthz response: %v", err)
 	}
-	if !healthEnvelope.OK || healthEnvelope.Data["status"] != "ok" {
-		t.Fatalf("GET /healthz response = %+v, want ok status", healthEnvelope)
+	if healthPayload["status"] != "ok" {
+		t.Fatalf("GET /healthz response = %+v, want status=ok", healthPayload)
 	}
 
 	signResp, err := client.Get("https://" + utils.HostPortOrLoopback(server.apiListener.Addr().String()) + types.PathV1Sign)
@@ -222,18 +222,15 @@ func TestServerStartDomainReportsCompatibilityInfo(t *testing.T) {
 		t.Fatalf("read /sdk/domain response: %v", err)
 	}
 
-	var envelope types.APIEnvelope[types.DomainResponse]
-	if err := json.Unmarshal(body, &envelope); err != nil {
+	var domainResp types.DomainResponse
+	if err := json.Unmarshal(body, &domainResp); err != nil {
 		t.Fatalf("decode /sdk/domain response: %v", err)
 	}
-	if !envelope.OK {
-		t.Fatalf("GET /sdk/domain response = %+v, want ok=true", envelope)
+	if domainResp.ProtocolVersion != types.ProtocolVersion {
+		t.Fatalf("DomainResponse.ProtocolVersion = %q, want %q", domainResp.ProtocolVersion, types.ProtocolVersion)
 	}
-	if envelope.Data.ProtocolVersion != types.ProtocolVersion {
-		t.Fatalf("DomainResponse.ProtocolVersion = %q, want %q", envelope.Data.ProtocolVersion, types.ProtocolVersion)
-	}
-	if envelope.Data.ReleaseVersion != types.ReleaseVersion {
-		t.Fatalf("DomainResponse.ReleaseVersion = %q, want %q", envelope.Data.ReleaseVersion, types.ReleaseVersion)
+	if domainResp.ReleaseVersion != types.ReleaseVersion {
+		t.Fatalf("DomainResponse.ReleaseVersion = %q, want %q", domainResp.ReleaseVersion, types.ReleaseVersion)
 	}
 }
 

@@ -125,14 +125,14 @@ That distinction matters because `/sdk/connect` stops being ordinary HTTP once h
 - `keyless`: admin/API TLS attach helpers and tenant-side signer integration
 - `auth`: SIWE register challenge creation/verification plus lease access token issue/verify
 - `discovery`: relay descriptor publication over relay HTTPS plus relay-set synchronization. The manager owns its OLS-style bootstrap ordering logic (inverse-load pre-distortion plus affine permutation) instead of delegating to a separate struct.
-- `discovery.Manager`: single owner that wraps `RelaySet`, supports multi-hop discovery with hop limits, and routes discovery traffic through the optional onion proxy (with configurable fallback)
+- `discovery.Manager`: single owner that wraps `RelaySet`, keeps OLS ordering, and limits bootstrap routing attempts with `MaxRouting`
 - `wireguard`: optional relay overlay network used to reach peer relay APIs over internal overlay IPs and keep relay peer state synchronized
 - `Server` additionally owns `quicTunnel` (QUIC listener, ALPN `portal-tunnel`) when UDP transport is enabled
 
 ### SDK (`sdk/`)
 
 - `ExposeConfig.Discovery`: when true, `Expose` fetches the default Portal relay registry, merges it with explicit relay inputs, normalizes the result, and runs the relay discovery loop
-- `ExposeConfig.DiscoveryHops`: optional onion-style hop count (`0` = disabled) that lets callers request multi-hop relay circuits on demand
+- `ExposeConfig.MaxRouting`: maximum number of bootstrap routing attempts per discovery refresh
 - Entry points can opt out of registry defaults and call `utils.NormalizeRelayURLs` directly when they need explicit relay inputs only
 - `Listener`: validates one relay URL locally, then starts relay compatibility checks, SIWE-based lease registration, reverse session maintenance, and lease renewal in the background until ready
 - `Listener` owns a `transport.ClientStream` and, when UDP is enabled, a `transport.ClientDatagram`
@@ -177,7 +177,7 @@ That distinction matters because `/sdk/connect` stops being ordinary HTTP once h
 - Relay runtime lives in `portal/` (server, routing, transports, ACME, keyless, auth, discovery, policy).
 - SDK client library lives in `sdk/` (listener, exposure, relay API client, MITM self-probe, transport clients).
 - CLI entry points live in `cmd/relay-server` and `cmd/portal-tunnel`; they import `portal/` and `sdk/` respectively but never each other.
-- Shared wire types, API envelopes, error codes, path constants, and transport frame codecs live in `types/`.
+- Shared wire types, API errors, path constants, and transport frame codecs live in `types/`.
 
 ## Transport Model
 
@@ -247,9 +247,7 @@ Result: raw public UDP exposure with an internal QUIC datagram backhaul. UDP and
 
 ## Inter-Relay Discovery
 
-- Discovery starts from bootstrap relay URLs over normal public HTTPS.
-- Optional onion control plane: when enabled (`ONION_DISCOVERY_ONLY=true` with `ONION_PROXY_URL`), relay discovery HTTP requests are sent through the configured onion HTTP proxy.
-- tunnels: when `portal expose --hops N --onion-proxy-url ...` sets `N>0`, every SDK control-plane request (discovery, lease registration, reverse session TLS) rides that proxy, default registry downloads and UDP/QUIC transports are disabled, and direct dialing is never attempted so entry/exit correlation stays hidden.
+- Discovery starts from bootstrap relay URLs over public HTTPS and each refresh is capped by `MaxRouting`.
 - Discovery descriptors are currently transport-authenticated by the queried relay endpoint, not by embedded descriptor signatures.
 - Current discovery validation covers protocol version, descriptor normalization, required fields, expiry, target URL/identity matching, and overlay field sanity only.
 - Descriptor `identity.address` is a relay claim inside discovery. Independent `domain -> address` verification comes from optional ENS/DNSSEC evidence, not from the discovery payload itself.
@@ -259,10 +257,6 @@ Result: raw public UDP exposure with an internal QUIC datagram backhaul. UDP and
   - apply inverse pre-distortion `f^{-1}(y)=sqrt(y+1)` for compensation
   - sort by compensated load and apply OLS-style affine permutation `slot=(a*i+b) mod n` with `gcd(a,n)=1`
   - this replaces simple rotation so heavily loaded relays are naturally delayed while keeping one-pass fairness
-- Onion hop headers intentionally leak the bare minimum:
-  - `ForwardingMeta` serializes only a TTL countdown plus flags and nonce, so compromised hops never learn the total circuit length or their ordinal position.
-  - `NextHopHint` uses `sha256(nonce || relay_id)` per hop so an observer must brute-force every candidate relay with the hop-specific nonce; deterministic dictionaries no longer reveal the next hop.
-  - Together these constraints ensure onion routing over OLS-chosen relays only exposes the state needed to forward the packet, making path inference significantly harder for attackers.
 - The WireGuard overlay previously replicated discovery responses over an encrypted mesh. That code path has been removed; all snapshots remain in-memory and are exchanged over HTTPS only. Future transports must remain optional and not block tenant routing.
 
 ## Control Plane Flow
