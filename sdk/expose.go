@@ -92,24 +92,11 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 		cfg.IdentityJSON,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("resolve identity: %w", err)
+		return nil, err
 	}
-	if createdIdentity {
-		log.Info().
-			Str("identity_path", strings.TrimSpace(cfg.IdentityPath)).
-			Str("address", identity.Address).
-			Msg("generated tunnel identity and saved it to disk")
-	}
-	targetAddr, err := utils.NormalizeLoopbackTarget(cfg.TargetAddr)
+	targetAddr, udpAddr, err := resolveExposeTargets(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("invalid target value %q: %w", cfg.TargetAddr, err)
-	}
-	udpAddr := cfg.UDPAddr
-	if cfg.UDPEnabled {
-		udpAddr, err = utils.NormalizeLoopbackTarget(utils.StringOrDefault(udpAddr, targetAddr))
-		if err != nil {
-			return nil, fmt.Errorf("invalid --udp-addr value %q: %w", cfg.UDPAddr, err)
-		}
+		return nil, err
 	}
 
 	exposureCtx, cancel := context.WithCancel(ctx)
@@ -135,41 +122,108 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 		exposure.relaySet = discovery.NewRelaySet()
 	}
 
-	if len(relayURLs) > 0 {
-		if exposure.discoveryMgr != nil {
-			exposure.discoveryMgr.SetBootstrapRelayURLs(relayURLs)
-		} else {
-			exposure.relaySet.SetBootstrapRelayURLs(relayURLs)
-		}
-		if err := exposure.reconcileRelayListeners(true); err != nil {
-			_ = exposure.Close()
-			return nil, err
-		}
+	if err := exposure.bootstrapRelayListeners(relayURLs); err != nil {
+		_ = exposure.Close()
+		return nil, err
 	}
 
-	if cfg.Discovery {
-		if exposure.discoveryMgr != nil {
-			go func() {
-				_ = exposure.discoveryMgr.Run(exposureCtx, func(map[string]types.RelayState) {
-					if err := exposure.reconcileRelayListeners(false); err != nil {
-						log.Warn().Err(err).Msg("exposure: reconcile after discovery update failed")
-					}
-				})
-			}()
-		} else {
-			go func() {
-				_ = exposure.relaySet.RunLoop(exposureCtx, exposure.rootCAPEM, func() error {
-					return exposure.reconcileRelayListeners(false)
-				})
-			}()
-		}
-	}
+	exposure.startDiscoveryLoop(cfg.Discovery, exposureCtx)
 	go func() {
 		<-exposure.done
 		_ = exposure.Close()
 	}()
 
 	return exposure, nil
+}
+
+func resolveExposeRelays(ctx context.Context, cfg ExposeConfig) ([]string, *discovery.Manager, error) {
+	hopLimit := utils.Clamp(cfg.DiscoveryHops, 0, 10)
+	relayURLs, err := utils.ResolvePortalRelayURLs(ctx, cfg.RelayURLs, cfg.Discovery)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !cfg.Discovery && hopLimit == 0 {
+		return relayURLs, nil, nil
+	}
+
+	manager, err := discovery.NewManager(discovery.ManagerConfig{
+		Bootstraps: relayURLs,
+		RootCAPEM:  append([]byte(nil), cfg.RootCAPEM...),
+		MultiHop:   hopLimit > 0,
+		HopLimit:   hopLimit,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("discovery manager: %w", err)
+	}
+	return relayURLs, manager, nil
+}
+
+func resolveExposeIdentity(cfg ExposeConfig) (types.Identity, error) {
+	identity, createdIdentity, err := utils.ResolveListenerIdentity(
+		types.Identity{Name: cfg.Name},
+		cfg.TargetAddr,
+		cfg.IdentityPath,
+		cfg.IdentityJSON,
+	)
+	if err != nil {
+		return types.Identity{}, fmt.Errorf("resolve identity: %w", err)
+	}
+	if createdIdentity {
+		log.Info().
+			Str("identity_path", strings.TrimSpace(cfg.IdentityPath)).
+			Str("address", identity.Address).
+			Msg("generated tunnel identity and saved it to disk")
+	}
+	return identity, nil
+}
+
+func resolveExposeTargets(cfg ExposeConfig) (string, string, error) {
+	targetAddr, err := utils.NormalizeLoopbackTarget(cfg.TargetAddr)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid target value %q: %w", cfg.TargetAddr, err)
+	}
+	udpAddr := cfg.UDPAddr
+	if !cfg.UDPEnabled {
+		return targetAddr, udpAddr, nil
+	}
+	udpAddr, err = utils.NormalizeLoopbackTarget(utils.StringOrDefault(udpAddr, targetAddr))
+	if err != nil {
+		return "", "", fmt.Errorf("invalid --udp-addr value %q: %w", cfg.UDPAddr, err)
+	}
+	return targetAddr, udpAddr, nil
+}
+
+func (e *Exposure) bootstrapRelayListeners(relayURLs []string) error {
+	if len(relayURLs) == 0 {
+		return nil
+	}
+	if e.discoveryMgr != nil {
+		e.discoveryMgr.SetBootstrapRelayURLs(relayURLs)
+	} else {
+		e.relaySet.SetBootstrapRelayURLs(relayURLs)
+	}
+	return e.reconcileRelayListeners(true)
+}
+
+func (e *Exposure) startDiscoveryLoop(enabled bool, exposureCtx context.Context) {
+	if !enabled {
+		return
+	}
+	if e.discoveryMgr != nil {
+		go func() {
+			_ = e.discoveryMgr.Run(exposureCtx, func(map[string]types.RelayState) {
+				if err := e.reconcileRelayListeners(false); err != nil {
+					log.Warn().Err(err).Msg("exposure: reconcile after discovery update failed")
+				}
+			})
+		}()
+		return
+	}
+	go func() {
+		_ = e.relaySet.RunLoop(exposureCtx, e.rootCAPEM, func() error {
+			return e.reconcileRelayListeners(false)
+		})
+	}()
 }
 func (e *Exposure) ActiveRelayURLs() []string {
 	return e.relaySet.ActiveRelayURLs()
