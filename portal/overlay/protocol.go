@@ -283,7 +283,12 @@ func (r *Relay) retryIngress(routeID uint32, st *ingressRetry) {
 	}
 	st.routeIndex = next
 	st.attempts++
-	go r.sendIngressAttempt(routeID, st)
+	go func() {
+        err := r.sendIngressAttempt(routeID, st)
+        if err != nil {
+            return
+        }
+    }()
 }
 
 func (r *Relay) sendIngressAttempt(routeID uint32, st *ingressRetry) error {
