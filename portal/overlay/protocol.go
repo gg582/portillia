@@ -256,7 +256,10 @@ func (r *Relay) handleError(h Header, body []byte) {
 		return
 	}
 	if hasPrev {
-		r.sendTo(prev, h, body)
+		err := r.sendTo(prev, h, body)
+		if err != nil {
+			return
+		}
 	}
 }
 
@@ -284,11 +287,11 @@ func (r *Relay) retryIngress(routeID uint32, st *ingressRetry) {
 	st.routeIndex = next
 	st.attempts++
 	go func() {
-        err := r.sendIngressAttempt(routeID, st)
-        if err != nil {
-            return
-        }
-    }()
+		err := r.sendIngressAttempt(routeID, st)
+		if err != nil {
+			return
+		}
+	}()
 }
 
 func (r *Relay) sendIngressAttempt(routeID uint32, st *ingressRetry) error {
