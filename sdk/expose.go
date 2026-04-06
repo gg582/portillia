@@ -136,45 +136,6 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 	return exposure, nil
 }
 
-func resolveExposeRelays(ctx context.Context, cfg ExposeConfig) ([]string, *discovery.Manager, error) {
-	hopLimit := utils.Clamp(cfg.DiscoveryHops, 0, 10)
-	relayURLs, err := utils.ResolvePortalRelayURLs(ctx, cfg.RelayURLs, cfg.Discovery)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !cfg.Discovery && hopLimit == 0 {
-		return relayURLs, nil, nil
-	}
-
-	manager, err := discovery.NewManager(discovery.ManagerConfig{
-		Bootstraps: relayURLs,
-		RootCAPEM:  append([]byte(nil), cfg.RootCAPEM...),
-		MultiHop:   hopLimit > 0,
-		HopLimit:   hopLimit,
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("discovery manager: %w", err)
-	}
-	return relayURLs, manager, nil
-}
-
-func resolveExposeIdentity(cfg ExposeConfig) (types.Identity, error) {
-	identity, err := utils.ResolveListenerIdentity(
-		types.Identity{Name: cfg.Name},
-		cfg.TargetAddr,
-		cfg.IdentityPath,
-		cfg.IdentityJSON,
-	)
-	if err != nil {
-		return types.Identity{}, fmt.Errorf("resolve identity: %w", err)
-	}
-	log.Info().
-		Str("identity_path", strings.TrimSpace(cfg.IdentityPath)).
-		Str("address", identity.Address).
-		Msg("generated tunnel identity and saved it to disk")
-	return identity, nil
-}
-
 func resolveExposeTargets(cfg ExposeConfig) (string, string, error) {
 	targetAddr, err := utils.NormalizeLoopbackTarget(cfg.TargetAddr)
 	if err != nil {
