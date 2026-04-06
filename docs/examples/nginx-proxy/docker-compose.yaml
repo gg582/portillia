@@ -50,7 +50,7 @@ services:
   # If you enable UDP, expose SNI_PORT/udp and MIN_PORT-MAX_PORT/udp as well.
   # If you enable raw TCP transport, expose MIN_PORT-MAX_PORT/tcp as well.
   portal:
-    image: ghcr.io/gosuda/portal-tunnel:latest
+    image: ghcr.io/gosuda/portal:latest
     container_name: portal
     ports:
       - "${API_PORT:-4017}:${API_PORT:-4017}/tcp"

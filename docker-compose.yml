@@ -1,6 +1,6 @@
 services:
   portal:
-    image: ghcr.io/gosuda/portal-tunnel:latest
+    image: ghcr.io/gosuda/portal:latest
     build:
       context: .
       dockerfile: Dockerfile

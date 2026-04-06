@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMAGE="ghcr.io/gosuda/portal-tunnel:latest"
+IMAGE="ghcr.io/gosuda/portal:latest"
 DIGEST_FILE="${DIGEST_FILE:-.portal_image_digest}"
 INTERVAL="${INTERVAL:-60}"
 DEPLOY_SCRIPT="${DEPLOY_SCRIPT:-deploy_portal.sh}"
