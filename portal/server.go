@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/gosuda/portal/v2/portal/acme"
 	"github.com/gosuda/portal/v2/portal/discovery"
 	"github.com/gosuda/portal/v2/portal/keyless"
+	"github.com/gosuda/portal/v2/portal/overlay"
 	"github.com/gosuda/portal/v2/portal/policy"
 	"github.com/gosuda/portal/v2/portal/transport"
 	"github.com/gosuda/portal/v2/types"
@@ -48,6 +50,9 @@ type ServerConfig struct {
 	TrustProxyHeaders bool
 	DiscoveryEnabled  bool
 	MaxRouting        int
+	OverlayEnabled    bool
+	OverlayMaxHops    int
+	OverlayCongestion float64
 	MinPort           int
 	MaxPort           int
 	UDPEnabled        bool
@@ -72,6 +77,9 @@ type Server struct {
 	cfg               ServerConfig
 	trustedProxyCIDRs []*net.IPNet
 	discoveryMgr      *discovery.Manager
+	overlayPolicy     *overlay.RoutePolicy
+	overlayRoute      []uint32
+	overlayRouteMu    sync.RWMutex
 	shutdownOnce      sync.Once
 }
 
@@ -112,6 +120,16 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		bootstraps = filtered
 	}
 	cfg.Bootstraps = bootstraps
+	if cfg.OverlayMaxHops < 0 {
+		return nil, errors.New("overlay max hops must be >= 0")
+	}
+	if cfg.OverlayMaxHops > 10 {
+		return nil, errors.New("overlay max hops must be <= 10")
+	}
+	if cfg.OverlayCongestion <= 0 {
+		cfg.OverlayCongestion = 120
+	}
+	cfg.OverlayEnabled = cfg.OverlayEnabled && cfg.OverlayMaxHops > 0
 	transportEnabled := cfg.UDPEnabled || cfg.TCPEnabled
 	hasPortRange := cfg.MinPort > 0 && cfg.MaxPort > 0
 	if transportEnabled {
@@ -165,6 +183,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		weightMgr:         policy.NewWeightManager(),
 		identity:          identity,
 		trustedProxyCIDRs: trustedProxyCIDRs,
+	}
+	if cfg.OverlayEnabled {
+		s.overlayPolicy = overlay.NewRoutePolicy()
 	}
 	if cfg.DiscoveryEnabled {
 		manager, err := discovery.NewManager(discovery.ManagerConfig{
@@ -253,6 +274,8 @@ func (s *Server) Start(ctx context.Context, apiMux *http.ServeMux) error {
 		Int("min_port", s.cfg.MinPort).
 		Int("max_port", s.cfg.MaxPort).
 		Bool("discovery_enabled", s.cfg.DiscoveryEnabled).
+		Bool("overlay_enabled", s.cfg.OverlayEnabled).
+		Int("overlay_max_hops", s.cfg.OverlayMaxHops).
 		Bool("udp_enabled", s.cfg.UDPEnabled).
 		Bool("tcp_enabled", s.cfg.TCPEnabled)
 	if s.quicTunnel != nil {
@@ -588,7 +611,53 @@ func (s *Server) runRelayDiscoveryLoop(ctx context.Context) error {
 		<-ctx.Done()
 		return nil
 	}
-	return s.discoveryMgr.Run(ctx, nil)
+	return s.discoveryMgr.Run(ctx, s.handleDiscoverySnapshot)
+}
+
+func (s *Server) handleDiscoverySnapshot(_ map[string]types.RelayState) {
+	if s.discoveryMgr == nil || s.overlayPolicy == nil || !s.cfg.OverlayEnabled {
+		return
+	}
+	descs := s.discoveryMgr.ActiveRelayDescriptors()
+	if len(descs) == 0 {
+		s.overlayRouteMu.Lock()
+		s.overlayRoute = nil
+		s.overlayRouteMu.Unlock()
+		return
+	}
+
+	candidates := make([]uint32, 0, len(descs))
+	for _, d := range descs {
+		if d.Identity.Key() == "" {
+			continue
+		}
+		candidates = append(candidates, crc32.ChecksumIEEE([]byte(d.Identity.Key())))
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	selfID := crc32.ChecksumIEEE([]byte(s.identity.Key()))
+	route, err := s.overlayPolicy.BuildRouteWithLoad(selfID, candidates, s.cfg.OverlayMaxHops, s.weightMgr.Collect(), s.cfg.OverlayCongestion)
+	if err != nil {
+		return
+	}
+	s.overlayRouteMu.Lock()
+	s.overlayRoute = route
+	s.overlayRouteMu.Unlock()
+}
+
+func (s *Server) OverlayRoute() []uint32 {
+	if s == nil {
+		return nil
+	}
+	s.overlayRouteMu.RLock()
+	defer s.overlayRouteMu.RUnlock()
+	if len(s.overlayRoute) == 0 {
+		return nil
+	}
+	out := make([]uint32, len(s.overlayRoute))
+	copy(out, s.overlayRoute)
+	return out
 }
 
 func (s *Server) BridgeConns(left, right net.Conn) {

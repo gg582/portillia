@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gosuda/portal/v2/portal/policy"
 	"github.com/quic-go/quic-go"
 )
 
@@ -144,6 +145,15 @@ func (r *Relay) OpenFlowIngress(routeID, flowID uint32, routeOptions [][]uint32,
 	r.ingressFlow[routeID] = st
 	r.mu.Unlock()
 	return r.sendIngressAttempt(routeID, st)
+}
+
+func (r *Relay) OpenFlowIngressWithPolicy(routeID, flowID uint32, candidates []uint32, maxHops int, payload []byte, load policy.NodeLoad, congestionLatencyMs float64) error {
+	planner := NewRoutePolicy()
+	route, err := planner.BuildRouteWithLoad(r.NodeID, candidates, maxHops, load, congestionLatencyMs)
+	if err != nil {
+		return err
+	}
+	return r.OpenFlowIngress(routeID, flowID, [][]uint32{route}, payload)
 }
 
 func (r *Relay) HandlePacket(from uint32, packet []byte) {

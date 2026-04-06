@@ -173,7 +173,7 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 		IngressTLSAddr:      ingressAddr,
 		SupportsUDP:         s.cfg.UDPEnabled && s.quicTunnel != nil,
 		SupportsTCP:         s.cfg.TCPEnabled,
-		SupportsOverlayPeer: false,
+		SupportsOverlayPeer: s.cfg.OverlayEnabled,
 		Load:                float64(s.loadMgr.ActiveConns()),
 	})
 	if err != nil {

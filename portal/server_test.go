@@ -128,6 +128,62 @@ func TestNewServerInitializesRelaySetWhenDiscoveryEnabled(t *testing.T) {
 	}
 }
 
+func TestNewServerRejectsOverlayMaxHopsOutOfRange(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewServer(ServerConfig{
+		PortalURL:      "https://portal.example.com",
+		IdentityPath:   tempIdentityPath(t),
+		OverlayEnabled: true,
+		OverlayMaxHops: 11,
+	})
+	if err == nil || !strings.Contains(err.Error(), "overlay max hops") {
+		t.Fatalf("NewServer() error = %v, want overlay max hops range error", err)
+	}
+}
+
+func TestRelayDiscoveryReportsOverlaySupportWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewServer(ServerConfig{
+		PortalURL:        "https://localhost:4017",
+		IdentityPath:     tempIdentityPath(t),
+		ACME:             acme.Config{KeyDir: t.TempDir()},
+		APIListenAddr:    "127.0.0.1:0",
+		SNIListenAddr:    "127.0.0.1:0",
+		DiscoveryEnabled: true,
+		OverlayEnabled:   true,
+		OverlayMaxHops:   3,
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := server.Start(ctx, nil); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	client := newTestClient(t, cancel, server)
+	resp, err := client.Get("https://" + utils.HostPortOrLoopback(server.apiListener.Addr().String()) + types.PathDiscovery)
+	if err != nil {
+		t.Fatalf("GET /discovery error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /discovery status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var discoveryResp types.DiscoveryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&discoveryResp); err != nil {
+		t.Fatalf("decode /discovery response: %v", err)
+	}
+	if !discoveryResp.Self.SupportsOverlayPeer {
+		t.Fatalf("SupportsOverlayPeer = false, want true")
+	}
+}
+
 func TestServerStartInitializesLocalACMEAndSigner(t *testing.T) {
 	t.Parallel()
 
