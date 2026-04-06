@@ -41,6 +41,7 @@ type relayServerConfig struct {
 	LandingPageEnabled bool
 	Bootstraps         string
 	DiscoveryEnabled   bool
+	MaxRouting         int
 	IdentityPath       string
 	AdminSecretKey     string
 	TrustProxyHeaders  bool
@@ -74,6 +75,7 @@ func runServeCommand(args []string) error {
 	utils.BoolFlagEnv(fs, &cfg.LandingPageEnabled, "landing-page-enabled", false, "enable landing page by default when no admin setting has been saved yet", "LANDING_PAGE_ENABLED")
 	utils.StringFlagEnv(fs, &cfg.Bootstraps, "bootstraps", "", "additional bootstrap relay API URLs used for discovery expansion", "BOOTSTRAPS")
 	utils.BoolFlagEnv(fs, &cfg.DiscoveryEnabled, "discovery", false, "serve relay discovery endpoints and poll discovery peers", "DISCOVERY")
+	utils.IntFlagEnv(fs, &cfg.MaxRouting, "max-routing", 1, nil, "maximum number of discovery routing attempts per refresh", "MAX_ROUTING")
 	utils.StringFlagEnv(fs, &cfg.IdentityPath, "identity-path", "identity.json", "relay identity json file path", "IDENTITY_PATH")
 	utils.StringFlagEnv(fs, &cfg.AdminSecretKey, "admin-secret-key", "", "admin auth secret", "ADMIN_SECRET_KEY")
 	utils.BoolFlagEnv(fs, &cfg.TrustProxyHeaders, "trust-proxy-headers", false, "trust X-Forwarded-* and X-Real-IP headers from trusted proxies", "TRUST_PROXY_HEADERS")
@@ -113,6 +115,7 @@ func runServeCommand(args []string) error {
 		Int("max_port", cfg.MaxPort).
 		Bool("landing_page_enabled", cfg.LandingPageEnabled).
 		Bool("discovery_enabled", cfg.DiscoveryEnabled).
+		Int("max_routing", cfg.MaxRouting).
 		Str("acme_dns_provider", cfg.ACMEDNSProvider).
 		Bool("ens_gasless_enabled", cfg.ENSGaslessEnabled).
 		Bool("udp_enabled", cfg.UDPEnabled).
@@ -154,6 +157,7 @@ func runServer(ctx context.Context, cfg relayServerConfig) error {
 		TrustedProxyCIDRs: cfg.TrustedProxyCIDRs,
 		TrustProxyHeaders: cfg.TrustProxyHeaders,
 		DiscoveryEnabled:  cfg.DiscoveryEnabled,
+		MaxRouting:        max(1, min(cfg.MaxRouting, 32)),
 		MinPort:           cfg.MinPort,
 		MaxPort:           cfg.MaxPort,
 		UDPEnabled:        cfg.UDPEnabled,

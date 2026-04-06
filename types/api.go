@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// APIEnvelope remains for backward compatibility with older clients/tests.
 type APIEnvelope[T any] struct {
 	Data  T         `json:"data,omitempty"`
 	Error *APIError `json:"error,omitempty"`

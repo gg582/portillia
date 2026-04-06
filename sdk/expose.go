@@ -46,42 +46,36 @@ type Exposure struct {
 }
 
 type ExposeConfig struct {
-	RelayURLs     []string
-	IdentityPath  string
-	IdentityJSON  string
-	Name          string
-	TargetAddr    string
-	UDPAddr       string
-	UDPEnabled    bool
-	TCPEnabled    bool
-	BanMITM       bool
-	Discovery     bool
-	Metadata      types.LeaseMetadata
-	RootCAPEM     []byte
-	DiscoveryHops int
+	RelayURLs    []string
+	IdentityPath string
+	IdentityJSON string
+	Name         string
+	TargetAddr   string
+	UDPAddr      string
+	UDPEnabled   bool
+	TCPEnabled   bool
+	BanMITM      bool
+	Discovery    bool
+	Metadata     types.LeaseMetadata
+	RootCAPEM    []byte
+	MaxRouting   int
 }
 
 // Expose creates relay listeners for each normalized relay URL and exposes a
 // dynamic listener hub for accepting traffic from all of them.
 func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
-    if cfg.DiscoveryHops > 10 {
-        return nil, errors.New("HopLimit Exceeded (hop > 10)")
-    }
-
-	hopLimit := cfg.DiscoveryHops
 	includeDefaults := cfg.Discovery
 	relayURLs, err := utils.ResolvePortalRelayURLs(ctx, cfg.RelayURLs, includeDefaults)
 	if err != nil {
 		return nil, err
 	}
-	useManager := cfg.Discovery || hopLimit > 0
+	useManager := cfg.Discovery
 	var discoveryMgr *discovery.Manager
 	if useManager {
 		managerCfg := discovery.ManagerConfig{
 			Bootstraps: relayURLs,
 			RootCAPEM:  append([]byte(nil), cfg.RootCAPEM...),
-			MultiHop:   hopLimit > 0,
-			HopLimit:   hopLimit,
+			MaxRouting: cfg.MaxRouting,
 		}
 		discoveryMgr, err = discovery.NewManager(managerCfg)
 		if err != nil {

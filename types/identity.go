@@ -85,8 +85,6 @@ type RelayDescriptor struct {
 	ExpiresAt           time.Time `json:"expires_at"`
 	APIHTTPSAddr        string    `json:"api_https_addr"`
 	IngressTLSAddr      string    `json:"ingress_tls_addr,omitempty"`
-	WireGuardPublicKey  string    `json:"wireguard_public_key,omitempty"`
-	WireGuardEndpoint   string    `json:"wireguard_endpoint,omitempty"`
 	OverlayIPv4         string    `json:"overlay_ipv4,omitempty"`
 	OverlayCIDRs        []string  `json:"overlay_cidrs,omitempty"`
 	SupportsUDP         bool      `json:"supports_udp,omitempty"`
