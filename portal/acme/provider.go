@@ -7,10 +7,10 @@ import (
 
 	"github.com/go-acme/lego/v4/challenge"
 
-	"github.com/gosuda/portal/v2/portal/acme/cloudflare"
-	"github.com/gosuda/portal/v2/portal/acme/gcloud"
-	"github.com/gosuda/portal/v2/portal/acme/route53"
-	"github.com/gosuda/portal/v2/types"
+	"github.com/gosuda/portal-tunnel/v2/portal/acme/cloudflare"
+	"github.com/gosuda/portal-tunnel/v2/portal/acme/gcloud"
+	"github.com/gosuda/portal-tunnel/v2/portal/acme/route53"
+	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
 const (

@@ -16,7 +16,7 @@ interface HeaderProps {
   showQuickStartLink?: boolean;
 }
 
-const repoURL = "https://github.com/gosuda/portal";
+const repoURL = "https://github.com/gosuda/portal-tunnel";
 
 export function Header({
   title = "PORTAL",

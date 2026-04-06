@@ -18,9 +18,9 @@ import (
 
 	"github.com/quic-go/quic-go"
 
-	"github.com/gosuda/portal/v2/portal/keyless"
-	"github.com/gosuda/portal/v2/types"
-	"github.com/gosuda/portal/v2/utils"
+	"github.com/gosuda/portal-tunnel/v2/portal/keyless"
+	"github.com/gosuda/portal-tunnel/v2/types"
+	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
 const (

@@ -1,9 +1,9 @@
 package types
 
 const (
-	ReleaseVersion         = "v2.1.2"
+	ReleaseVersion         = "v2.1.3"
 	ProtocolVersion        = "5"
-	PortalRelayRegistryURL = "https://raw.githubusercontent.com/gosuda/portal/main/registry.json"
+	PortalRelayRegistryURL = "https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json"
 
 	HeaderAccessToken = "X-Portal-Access-Token"
 	MarkerKeepalive   = byte(0x00)

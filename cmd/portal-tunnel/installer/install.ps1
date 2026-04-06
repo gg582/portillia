@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-$BaseUrl = if ($env:BASE_URL) { $env:BASE_URL } else { "https://github.com/gosuda/portal/releases/latest/download" }
+$BaseUrl = if ($env:BASE_URL) { $env:BASE_URL } else { "https://github.com/gosuda/portal-tunnel/releases/latest/download" }
 $RelayUrl = if ($env:RELAY_URL) { $env:RELAY_URL } else { "https://your-relay.example.com" }
 $OriginalSecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12

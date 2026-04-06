@@ -1,9 +1,10 @@
-module github.com/gosuda/portal/v2
+module github.com/gosuda/portal-tunnel/v2
 
 go 1.26.1
 
 require (
 	cloud.google.com/go/compute/metadata v0.9.0
+	github.com/andybalholm/brotli v1.2.1
 	github.com/aws/aws-sdk-go-v2 v1.41.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.8
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.8

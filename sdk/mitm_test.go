@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gosuda/portal/v2/portal/discovery"
-	"github.com/gosuda/portal/v2/types"
+	"github.com/gosuda/portal-tunnel/v2/portal/discovery"
+	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
 func TestMITMProbeConnMatchesExporter(t *testing.T) {
