@@ -49,7 +49,7 @@ type exposeFlags struct {
 	udp          bool
 	udpAddr      string
 	tcp          bool
-	hops         int
+	maxRouting   int
 }
 
 func runExposeCommand(args []string) error {
@@ -71,7 +71,7 @@ func runExposeCommand(args []string) error {
 	utils.BoolFlagEnv(fs, &flags.udp, "udp", false, "Enable public UDP relay in addition to the default TCP relay", "UDP_ENABLED")
 	utils.StringFlagEnv(fs, &flags.udpAddr, "udp-addr", "", "Local UDP target address for relayed datagrams (host:port or port only); defaults to the target when --udp is enabled", "UDP_ADDR")
 	utils.BoolFlagEnv(fs, &flags.tcp, "tcp", false, "Request a dedicated TCP port on the relay for raw TCP services (no TLS; e.g., Minecraft, game servers)", "TCP_ENABLED")
-	utils.IntFlagEnv(fs, &flags.hops, "hops", 0, nil, "Number of relay hops for onion-style multi-hop routing (0 = disabled, max = 10)", "PORTAL_HOPS")
+	utils.IntFlagEnv(fs, &flags.maxRouting, "max-routing", 1, nil, "Maximum number of discovery routing attempts per refresh", "PORTAL_MAX_ROUTING")
 
 	if err := utils.ParseFlagSet(fs, args, printExposeUsage); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -99,8 +99,6 @@ func runExposeCommand(args []string) error {
 	}
 	ctx, stop := utils.SignalContext()
 	defer stop()
-	discoveryHops := utils.Clamp(flags.hops, 0, 10)
-
 	exposure, err := sdk.Expose(ctx, sdk.ExposeConfig{
 		RelayURLs:    utils.SplitCSV(flags.relayCSV),
 		IdentityPath: flags.identityPath,
@@ -112,6 +110,7 @@ func runExposeCommand(args []string) error {
 		TCPEnabled:   flags.tcp,
 		BanMITM:      flags.banMITM,
 		Discovery:    flags.discovery,
+		MaxRouting:   max(1, min(flags.maxRouting, 32)),
 		Metadata: types.LeaseMetadata{
 			Description: flags.desc,
 			Tags:        utils.SplitCSV(flags.tags),
@@ -119,7 +118,6 @@ func runExposeCommand(args []string) error {
 			Thumbnail:   flags.thumbnail,
 			Hide:        flags.hide,
 		},
-		DiscoveryHops: discoveryHops,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start relays: %w", err)

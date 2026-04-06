@@ -18,19 +18,17 @@ type ManagerConfig struct {
 	PortalURL  string
 	Bootstraps []string
 	RootCAPEM  []byte
-	MultiHop   bool
-	HopLimit   int
+	MaxRouting int
 }
 
-// Manager centralizes bootstrap relay discovery, direct confirmation polling,
-// and optional onion-aware HTTP routing. It owns the RelaySet and keeps the
+// Manager centralizes bootstrap relay discovery and direct confirmation polling.
+// It owns the RelaySet and keeps the
 // ordering logic (OLS-based permutation) out of server.go to preserve
 // separation of concerns.
 type Manager struct {
-	relaySet  *RelaySet
-	rootCAPEM []byte
-	multiHop  bool
-	hopLimit  int
+	relaySet   *RelaySet
+	rootCAPEM  []byte
+	maxRouting int
 }
 
 // NewManager constructs a discovery manager that owns its RelaySet.
@@ -46,13 +44,12 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	set.SetBootstrapRelayURLs(cfg.Bootstraps)
 
 	mgr := &Manager{
-		relaySet:  set,
-		rootCAPEM: cfg.RootCAPEM,
-		multiHop:  cfg.MultiHop,
-		hopLimit:  cfg.HopLimit,
+		relaySet:   set,
+		rootCAPEM:  cfg.RootCAPEM,
+		maxRouting: cfg.MaxRouting,
 	}
-	if mgr.hopLimit <= 0 {
-		mgr.hopLimit = 1
+	if mgr.maxRouting <= 0 {
+		mgr.maxRouting = 1
 	}
 	return mgr, nil
 }
@@ -124,18 +121,12 @@ func (m *Manager) runBootstrapPass(ctx context.Context, round uint64) {
 		bootstraps = orderDescriptors(bootstraps, nil, round)
 	}
 
-	queue := append([]types.RelayDescriptor(nil), bootstraps...)
-	visited := make(map[string]struct{}, len(queue))
-	hopBudget := 1
-	if m.multiHop {
-		hopBudget = m.hopLimit
-	}
-	hops := 0
-
-	for len(queue) > 0 && hops < hopBudget {
-		desc := queue[0]
-		queue = queue[1:]
-
+	visited := make(map[string]struct{}, len(bootstraps))
+	processed := 0
+	for _, desc := range bootstraps {
+		if processed >= m.maxRouting {
+			break
+		}
 		relayURL := strings.TrimSpace(desc.APIHTTPSAddr)
 		if relayURL == "" {
 			continue
@@ -144,6 +135,7 @@ func (m *Manager) runBootstrapPass(ctx context.Context, round uint64) {
 			continue
 		}
 		visited[relayURL] = struct{}{}
+		processed++
 
 		resp, err := DiscoverRelayDiscovery(ctx, relayURL, m.rootCAPEM, nil)
 		if err != nil {
@@ -158,27 +150,6 @@ func (m *Manager) runBootstrapPass(ctx context.Context, round uint64) {
 				Err(err).
 				Str("relay", relayURL).
 				Msg("bootstrap relay discovery failed")
-			continue
-		}
-
-		hops++
-		if !m.multiHop || hops >= hopBudget {
-			continue
-		}
-
-		next := resp.Relays
-		if len(next) > 1 {
-			next = orderDescriptors(next, nil, round+uint64(hops))
-		}
-		for _, hint := range next {
-			hintURL := strings.TrimSpace(hint.APIHTTPSAddr)
-			if hintURL == "" {
-				continue
-			}
-			if _, seen := visited[hintURL]; seen {
-				continue
-			}
-			queue = append(queue, hint)
 		}
 	}
 }
