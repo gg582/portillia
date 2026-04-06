@@ -142,10 +142,10 @@ func ParseIdentityJSON(raw string) (types.Identity, error) {
 	})
 }
 
-func LoadOrCreateIdentity(path string, identity types.Identity) (types.Identity, bool, error) {
+func LoadOrCreateIdentity(path string, identity types.Identity) (types.Identity, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return types.Identity{}, false, errors.New("identity path is required")
+		return types.Identity{}, errors.New("identity path is required")
 	}
 
 	stored, err := LoadIdentity(path)
@@ -164,24 +164,24 @@ func LoadOrCreateIdentity(path string, identity types.Identity) (types.Identity,
 			stored.PrivateKey = privateKey
 		}
 		if strings.TrimSpace(stored.PrivateKey) == "" {
-			return types.Identity{}, false, errors.New("stored identity private key is required")
+			return types.Identity{}, errors.New("stored identity private key is required")
 		}
 		if err := SaveIdentity(path, stored); err != nil {
-			return types.Identity{}, false, fmt.Errorf("persist identity: %w", err)
+			return types.Identity{}, fmt.Errorf("persist identity: %w", err)
 		}
 		loaded, err := LoadIdentity(path)
 		if err != nil {
-			return types.Identity{}, false, fmt.Errorf("load identity: %w", err)
+			return types.Identity{}, fmt.Errorf("load identity: %w", err)
 		}
-		return loaded, false, nil
+		return loaded, nil
 	case !errors.Is(err, os.ErrNotExist):
-		return types.Identity{}, false, fmt.Errorf("load identity: %w", err)
+		return types.Identity{}, fmt.Errorf("load identity: %w", err)
 	}
 
 	created := identity.Copy()
 	generated, err := ResolveSecp256k1Identity(created.PrivateKey)
 	if err != nil {
-		return types.Identity{}, false, fmt.Errorf("generate identity: %w", err)
+		return types.Identity{}, fmt.Errorf("generate identity: %w", err)
 	}
 	if strings.TrimSpace(created.Address) == "" {
 		created.Address = generated.Address
@@ -191,55 +191,55 @@ func LoadOrCreateIdentity(path string, identity types.Identity) (types.Identity,
 	}
 	created.PrivateKey = generated.PrivateKey
 	if err := SaveIdentity(path, created); err != nil {
-		return types.Identity{}, false, fmt.Errorf("persist identity: %w", err)
+		return types.Identity{}, fmt.Errorf("persist identity: %w", err)
 	}
 	loaded, err := LoadIdentity(path)
 	if err != nil {
-		return types.Identity{}, false, fmt.Errorf("load identity: %w", err)
+		return types.Identity{}, fmt.Errorf("load identity: %w", err)
 	}
-	return loaded, true, nil
+	return loaded, nil
 }
 
-func ResolveListenerIdentity(identity types.Identity, target, identityPath, identityJSON string) (types.Identity, bool, error) {
+func ResolveListenerIdentity(identity types.Identity, target, identityPath, identityJSON string) (types.Identity, error) {
 	identityPath = strings.TrimSpace(identityPath)
 	identityJSON = strings.TrimSpace(identityJSON)
 	resolvedName, err := resolveExposeName(identity.Name, target, identityPath, identityJSON)
 	if err != nil {
-		return types.Identity{}, false, err
+		return types.Identity{}, err
 	}
 	identity.Name = resolvedName
 	if identityJSON != "" {
 		provided, err := ParseIdentityJSON(identityJSON)
 		if err != nil {
-			return types.Identity{}, false, err
+			return types.Identity{}, err
 		}
 		provided.Name = identity.Name
 		if identityPath != "" {
 			if err := SaveIdentity(identityPath, provided); err != nil {
-				return types.Identity{}, false, fmt.Errorf("persist identity: %w", err)
+				return types.Identity{}, fmt.Errorf("persist identity: %w", err)
 			}
 			provided, err = LoadIdentity(identityPath)
 			if err != nil {
-				return types.Identity{}, false, fmt.Errorf("load identity: %w", err)
+				return types.Identity{}, fmt.Errorf("load identity: %w", err)
 			}
 		}
 		resolved, err := ResolveLeaseIdentity(provided)
-		return resolved, false, err
+		return resolved, err
 	}
 	if identityPath == "" {
 		resolved, err := ResolveLeaseIdentity(identity)
-		return resolved, false, err
+		return resolved, err
 	}
 
-	loaded, created, err := LoadOrCreateIdentity(identityPath, identity)
+	loaded, err := LoadOrCreateIdentity(identityPath, identity)
 	if err != nil {
-		return types.Identity{}, false, err
+		return types.Identity{}, err
 	}
 	resolved, err := ResolveLeaseIdentity(loaded)
 	if err != nil {
-		return types.Identity{}, false, err
+		return types.Identity{}, err
 	}
-	return resolved, created, nil
+	return resolved, nil
 }
 
 func NormalizeIdentityKey(raw string) string {

@@ -85,7 +85,7 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 		}
 	}
 
-	identity, createdIdentity, err := utils.ResolveListenerIdentity(
+	identity, err := utils.ResolveListenerIdentity(
 		types.Identity{Name: cfg.Name},
 		cfg.TargetAddr,
 		cfg.IdentityPath,
@@ -159,7 +159,7 @@ func resolveExposeRelays(ctx context.Context, cfg ExposeConfig) ([]string, *disc
 }
 
 func resolveExposeIdentity(cfg ExposeConfig) (types.Identity, error) {
-	identity, createdIdentity, err := utils.ResolveListenerIdentity(
+	identity, err := utils.ResolveListenerIdentity(
 		types.Identity{Name: cfg.Name},
 		cfg.TargetAddr,
 		cfg.IdentityPath,
@@ -168,12 +168,10 @@ func resolveExposeIdentity(cfg ExposeConfig) (types.Identity, error) {
 	if err != nil {
 		return types.Identity{}, fmt.Errorf("resolve identity: %w", err)
 	}
-	if createdIdentity {
-		log.Info().
-			Str("identity_path", strings.TrimSpace(cfg.IdentityPath)).
-			Str("address", identity.Address).
-			Msg("generated tunnel identity and saved it to disk")
-	}
+	log.Info().
+		Str("identity_path", strings.TrimSpace(cfg.IdentityPath)).
+		Str("address", identity.Address).
+		Msg("generated tunnel identity and saved it to disk")
 	return identity, nil
 }
 
