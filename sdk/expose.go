@@ -64,7 +64,11 @@ type ExposeConfig struct {
 // Expose creates relay listeners for each normalized relay URL and exposes a
 // dynamic listener hub for accepting traffic from all of them.
 func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
-	hopLimit := utils.Clamp(cfg.DiscoveryHops, 0, 10)
+    if cfg.DiscoveryHops > 10 {
+        return nil, errors.New("HopLimit Exceeded (hop > 10)")
+    }
+
+	hopLimit := cfg.DiscoveryHops
 	includeDefaults := cfg.Discovery
 	relayURLs, err := utils.ResolvePortalRelayURLs(ctx, cfg.RelayURLs, includeDefaults)
 	if err != nil {
