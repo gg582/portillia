@@ -113,7 +113,11 @@ func LoadIdentity(path string) (types.Identity, error) {
 		return types.Identity{}, errors.New("identity path is required")
 	}
 	var payload storedIdentity
-	if err := ReadJSONFile(path, &payload); err != nil {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return types.Identity{}, fmt.Errorf("read identity file: %w", err)
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
 		return types.Identity{}, fmt.Errorf("read identity file: %w", err)
 	}
 	return NormalizeStoredIdentity(types.Identity{

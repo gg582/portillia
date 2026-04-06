@@ -47,6 +47,7 @@ type ServerConfig struct {
 	TrustedProxyCIDRs string
 	TrustProxyHeaders bool
 	DiscoveryEnabled  bool
+	MaxRouting        int
 	MinPort           int
 	MaxPort           int
 	UDPEnabled        bool
@@ -170,7 +171,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 			Identity:   identity,
 			PortalURL:  cfg.PortalURL,
 			Bootstraps: cfg.Bootstraps,
-			HopLimit:   1,
+			MaxRouting: cfg.MaxRouting,
 		})
 		if err != nil {
 			return nil, err
