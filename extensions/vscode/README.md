@@ -1,6 +1,6 @@
 # Portal VSCode Extension
 
-Expose your local service to the internet via a [Portal](https://github.com/gosuda/portal) relay tunnel, directly from VSCode.
+Expose your local service to the internet via a [Portal](https://github.com/gosuda/portal-tunnel) relay tunnel, directly from VSCode.
 
 ## Features
 
@@ -9,19 +9,19 @@ Expose your local service to the internet via a [Portal](https://github.com/gosu
 - `Portal: Stop Tunnel` stops the active tunnel terminal
 - Persisted settings for relay URLs, default local host, and default service name
 - Runs the latest Portal release installer script before starting the tunnel
-- When no relay URL is configured, the extension can use the public registry at `https://raw.githubusercontent.com/gosuda/portal/main/registry.json`
+- When no relay URL is configured, the extension can use the public registry at `https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json`
 
 ## Requirements
 
-- A running [Portal relay server](https://github.com/gosuda/portal) with an `https://` URL
+- A running [Portal relay server](https://github.com/gosuda/portal-tunnel) with an `https://` URL
 - `curl` on macOS/Linux, PowerShell on Windows
-- GitHub release asset access for `https://github.com/gosuda/portal/releases/latest/download/install.sh` or `install.ps1`
+- GitHub release asset access for `https://github.com/gosuda/portal-tunnel/releases/latest/download/install.sh` or `install.ps1`
 
 ## Settings
 
 | Setting | Default | Description |
 |---|---|---|
-| `portal.relayUrls` | `[]` | Relay server URLs (`https://` only). If empty, the extension uses `https://raw.githubusercontent.com/gosuda/portal/main/registry.json`. |
+| `portal.relayUrls` | `[]` | Relay server URLs (`https://` only). If empty, the extension uses `https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json`. |
 | `portal.defaultHost` | `"localhost:3000"` | Default local host:port shown by `Portal: Start Tunnel`. |
 | `portal.defaultName` | `""` | Default tunnel service name suggestion. If empty, the extension omits `--name`. |
 
@@ -51,8 +51,8 @@ To stop, run `Portal: Stop Tunnel` or close the `Portal Tunnel` terminal.
 ## Development
 
 ```bash
-git clone https://github.com/gosuda/portal
-cd portal/extensions/vscode
+git clone https://github.com/gosuda/portal-tunnel
+cd portal-tunnel/extensions/vscode
 corepack pnpm install --frozen-lockfile
 ```
 

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const officialReleaseBaseURL = "https://github.com/gosuda/portal/releases/latest/download"
+const officialReleaseBaseURL = "https://github.com/gosuda/portal-tunnel/releases/latest/download"
 
 //go:embed install.sh
 var installShellScript string

@@ -39,13 +39,13 @@
 ### 公开你的本地应用：
 
 ```bash
-curl -fsSL https://github.com/gosuda/portal/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/gosuda/portal-tunnel/releases/latest/download/install.sh | bash
 portal expose 3000
 ```
 
 ```powershell
 $ProgressPreference = 'SilentlyContinue'
-irm https://github.com/gosuda/portal/releases/latest/download/install.ps1 | iex
+irm https://github.com/gosuda/portal-tunnel/releases/latest/download/install.ps1 | iex
 portal expose 3000
 ```
 
@@ -55,8 +55,8 @@ portal expose 3000
 ### 运行你自己的中继
 
 ```bash
-git clone https://github.com/gosuda/portal
-cd portal && cp .env.example .env
+git clone https://github.com/gosuda/portal-tunnel
+cd portal-tunnel && cp .env.example .env
 docker compose up
 ```
 
@@ -82,7 +82,7 @@ docker compose up
 
 Portal 官方公共中继注册表为：
 
-`https://raw.githubusercontent.com/gosuda/portal/main/registry.json`
+`https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json`
 
 Portal 隧道客户端可以默认包含这个注册表，Relay UI 也会从同一路径读取官方中继列表。
 

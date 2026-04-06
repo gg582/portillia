@@ -21,7 +21,7 @@ case "$ARCH" in
     ;;
 esac
 
-BASE_URL="${BASE_URL:-https://github.com/gosuda/portal/releases/latest/download}"
+BASE_URL="${BASE_URL:-https://github.com/gosuda/portal-tunnel/releases/latest/download}"
 BIN_PATH_PREFIX="${BIN_PATH_PREFIX:-}"
 BIN_SUFFIX="portal-$PORTAL_OS-$PORTAL_ARCH"
 if [ -n "$BIN_PATH_PREFIX" ]; then

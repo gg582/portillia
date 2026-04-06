@@ -16,11 +16,11 @@ suite("Extension Test Suite", () => {
   test("resolveTunnelInstallerURL maps supported platforms to release installers", () => {
     assert.strictEqual(
       resolveTunnelInstallerURL("darwin", "x64"),
-      "https://github.com/gosuda/portal/releases/latest/download/install.sh"
+      "https://github.com/gosuda/portal-tunnel/releases/latest/download/install.sh"
     );
     assert.strictEqual(
       resolveTunnelInstallerURL("win32", "arm64"),
-      "https://github.com/gosuda/portal/releases/latest/download/install.ps1"
+      "https://github.com/gosuda/portal-tunnel/releases/latest/download/install.ps1"
     );
     assert.strictEqual(resolveTunnelInstallerURL("linux", "ia32"), undefined);
     assert.strictEqual(resolveTunnelInstallerURL("freebsd", "x64"), undefined);
@@ -32,7 +32,7 @@ suite("Extension Test Suite", () => {
       name: "",
       relayList: "https://relay.example.com",
       thumbnail: "",
-      tunnelInstallerURL: "https://github.com/gosuda/portal/releases/latest/download/install.sh",
+      tunnelInstallerURL: "https://github.com/gosuda/portal-tunnel/releases/latest/download/install.sh",
     }, {
       shellTarget: "unix",
       platform: "linux",
@@ -52,7 +52,7 @@ suite("Extension Test Suite", () => {
       name: "",
       relayList: "",
       thumbnail: "",
-      tunnelInstallerURL: "https://github.com/gosuda/portal/releases/latest/download/install.sh",
+      tunnelInstallerURL: "https://github.com/gosuda/portal-tunnel/releases/latest/download/install.sh",
     }, {
       shellTarget: "unix",
       platform: "linux",
@@ -71,7 +71,7 @@ suite("Extension Test Suite", () => {
       name: "my-app",
       relayList: "https://relay.example.com",
       thumbnail: "https://example.com/thumb.png",
-      tunnelInstallerURL: "https://github.com/gosuda/portal/releases/latest/download/install.ps1",
+      tunnelInstallerURL: "https://github.com/gosuda/portal-tunnel/releases/latest/download/install.ps1",
     }, {
       shellTarget: "windows",
       platform: "win32",
