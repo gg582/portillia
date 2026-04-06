@@ -36,23 +36,21 @@ const (
 )
 
 type ServerConfig struct {
-	PortalURL          string
-	IdentityPath       string
-	Bootstraps         []string
-	ACME               acme.Config
-	APIPort            int
-	SNIPort            int
-	APIListenAddr      string
-	SNIListenAddr      string
-	TrustedProxyCIDRs  string
-	TrustProxyHeaders  bool
-	DiscoveryEnabled   bool
-	MinPort            int
-	MaxPort            int
-	UDPEnabled         bool
-	TCPEnabled         bool
-	OnionDiscoveryOnly bool
-	OnionProxyURL      string
+	PortalURL         string
+	IdentityPath      string
+	Bootstraps        []string
+	ACME              acme.Config
+	APIPort           int
+	SNIPort           int
+	APIListenAddr     string
+	SNIListenAddr     string
+	TrustedProxyCIDRs string
+	TrustProxyHeaders bool
+	DiscoveryEnabled  bool
+	MinPort           int
+	MaxPort           int
+	UDPEnabled        bool
+	TCPEnabled        bool
 }
 
 type Server struct {
@@ -171,14 +169,10 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 	if cfg.DiscoveryEnabled {
 		manager, err := discovery.NewManager(discovery.ManagerConfig{
-			Identity:            identity,
-			PortalURL:           cfg.PortalURL,
-			Bootstraps:          cfg.Bootstraps,
-			OnionProxyURL:       cfg.OnionProxyURL,
-			OnionProxyOnly:      cfg.OnionDiscoveryOnly,
-			RequestTimeout:      15 * time.Second,
-			HopLimit:            1,
-			AllowDirectFallback: !cfg.OnionDiscoveryOnly,
+			Identity:   identity,
+			PortalURL:  cfg.PortalURL,
+			Bootstraps: cfg.Bootstraps,
+			HopLimit:   1,
 		})
 		if err != nil {
 			return nil, err

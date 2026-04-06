@@ -33,24 +33,23 @@ func main() {
 }
 
 type exposeFlags struct {
-	relayCSV      string
-	discovery     bool
-	banMITM       bool
-	identityPath  string
-	identityJSON  string
-	name          string
-	desc          string
-	tags          string
-	owner         string
-	thumbnail     string
-	hide          bool
-	targetAddr    string
-	httpRoutes    []string
-	udp           bool
-	udpAddr       string
-	tcp           bool
-	onionProxyURL string
-	hops          int
+	relayCSV     string
+	discovery    bool
+	banMITM      bool
+	identityPath string
+	identityJSON string
+	name         string
+	desc         string
+	tags         string
+	owner        string
+	thumbnail    string
+	hide         bool
+	targetAddr   string
+	httpRoutes   []string
+	udp          bool
+	udpAddr      string
+	tcp          bool
+	hops         int
 }
 
 func runExposeCommand(args []string) error {
@@ -72,8 +71,7 @@ func runExposeCommand(args []string) error {
 	utils.BoolFlagEnv(fs, &flags.udp, "udp", false, "Enable public UDP relay in addition to the default TCP relay", "UDP_ENABLED")
 	utils.StringFlagEnv(fs, &flags.udpAddr, "udp-addr", "", "Local UDP target address for relayed datagrams (host:port or port only); defaults to the target when --udp is enabled", "UDP_ADDR")
 	utils.BoolFlagEnv(fs, &flags.tcp, "tcp", false, "Request a dedicated TCP port on the relay for raw TCP services (no TLS; e.g., Minecraft, game servers)", "TCP_ENABLED")
-	utils.StringFlagEnv(fs, &flags.onionProxyURL, "onion-proxy-url", "", "Onion HTTP proxy URL for control-plane traffic when --hops > 0 (disables UDP transport while active)", "ONION_PROXY_URL")
-	utils.IntFlagEnv(fs, &flags.hops, "hops", 0, nil, "Number of relay hops for onion-style multi-hop routing (0 = disabled)", "PORTAL_HOPS")
+	utils.IntFlagEnv(fs, &flags.hops, "hops", 0, nil, "Number of relay hops for onion-style multi-hop routing (0 = disabled, max = 10)", "PORTAL_HOPS")
 
 	if err := utils.ParseFlagSet(fs, args, printExposeUsage); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -101,6 +99,7 @@ func runExposeCommand(args []string) error {
 	}
 	ctx, stop := utils.SignalContext()
 	defer stop()
+	discoveryHops := utils.Clamp(flags.hops, 0, 10)
 
 	exposure, err := sdk.Expose(ctx, sdk.ExposeConfig{
 		RelayURLs:    utils.SplitCSV(flags.relayCSV),
@@ -120,13 +119,7 @@ func runExposeCommand(args []string) error {
 			Thumbnail:   flags.thumbnail,
 			Hide:        flags.hide,
 		},
-		OnionProxyURL: flags.onionProxyURL,
-		DiscoveryHops: func() int {
-			if flags.hops < 0 {
-				return 0
-			}
-			return flags.hops
-		}(),
+		DiscoveryHops: discoveryHops,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start relays: %w", err)

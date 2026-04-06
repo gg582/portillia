@@ -3,8 +3,6 @@ package discovery
 import (
 	"context"
 	"math"
-	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -16,16 +14,12 @@ import (
 
 // ManagerConfig controls discovery manager behavior.
 type ManagerConfig struct {
-	Identity            types.Identity
-	PortalURL           string
-	Bootstraps          []string
-	OnionProxyURL       string
-	OnionProxyOnly      bool
-	RootCAPEM           []byte
-	RequestTimeout      time.Duration
-	MultiHop            bool
-	HopLimit            int
-	AllowDirectFallback bool
+	Identity   types.Identity
+	PortalURL  string
+	Bootstraps []string
+	RootCAPEM  []byte
+	MultiHop   bool
+	HopLimit   int
 }
 
 // Manager centralizes bootstrap relay discovery, direct confirmation polling,
@@ -33,13 +27,10 @@ type ManagerConfig struct {
 // ordering logic (OLS-based permutation) out of server.go to preserve
 // separation of concerns.
 type Manager struct {
-	relaySet      *RelaySet
-	httpClient    *http.Client
-	rootCAPEM     []byte
-	timeout       time.Duration
-	multiHop      bool
-	hopLimit      int
-	allowFallback bool
+	relaySet  *RelaySet
+	rootCAPEM []byte
+	multiHop  bool
+	hopLimit  int
 }
 
 // NewManager constructs a discovery manager that owns its RelaySet.
@@ -55,45 +46,15 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	set.SetBootstrapRelayURLs(cfg.Bootstraps)
 
 	mgr := &Manager{
-		relaySet:      set,
-		rootCAPEM:     cfg.RootCAPEM,
-		timeout:       cfg.RequestTimeout,
-		multiHop:      cfg.MultiHop,
-		hopLimit:      cfg.HopLimit,
-		allowFallback: cfg.AllowDirectFallback,
-	}
-	if mgr.timeout == 0 {
-		mgr.timeout = defaultRequestTimeout
+		relaySet:  set,
+		rootCAPEM: cfg.RootCAPEM,
+		multiHop:  cfg.MultiHop,
+		hopLimit:  cfg.HopLimit,
 	}
 	if mgr.hopLimit <= 0 {
 		mgr.hopLimit = 1
 	}
-	client, err := mgr.buildHTTPClient(cfg)
-	if err != nil {
-		return nil, err
-	}
-	mgr.httpClient = client
 	return mgr, nil
-}
-
-func (m *Manager) buildHTTPClient(cfg ManagerConfig) (*http.Client, error) {
-	if cfg.OnionProxyOnly {
-		proxyURL := strings.TrimSpace(cfg.OnionProxyURL)
-		if proxyURL == "" {
-			return nil, nil
-		}
-		parsed, err := url.Parse(proxyURL)
-		if err != nil {
-			return nil, err
-		}
-		return &http.Client{
-			Transport: &http.Transport{
-				Proxy: http.ProxyURL(parsed),
-			},
-			Timeout: m.timeout,
-		}, nil
-	}
-	return nil, nil
 }
 
 // Run starts the discovery poll loop until ctx is canceled. onSnapshot receives
@@ -138,7 +99,7 @@ func (m *Manager) refresh(ctx context.Context, round uint64) {
 	}
 
 	for _, relay := range m.relaySet.confirmableDescriptors() {
-		resp, err := m.discover(ctx, relay.APIHTTPSAddr)
+		resp, err := DiscoverRelayDiscovery(ctx, relay.APIHTTPSAddr, m.rootCAPEM, nil)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -184,7 +145,7 @@ func (m *Manager) runBootstrapPass(ctx context.Context, round uint64) {
 		}
 		visited[relayURL] = struct{}{}
 
-		resp, err := m.discover(ctx, relayURL)
+		resp, err := DiscoverRelayDiscovery(ctx, relayURL, m.rootCAPEM, nil)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -220,14 +181,6 @@ func (m *Manager) runBootstrapPass(ctx context.Context, round uint64) {
 			queue = append(queue, hint)
 		}
 	}
-}
-
-func (m *Manager) discover(ctx context.Context, relayURL string) (types.DiscoveryResponse, error) {
-	resp, err := DiscoverRelayDiscovery(ctx, relayURL, m.rootCAPEM, m.httpClient)
-	if err != nil && m.allowFallback && m.httpClient != nil {
-		return DiscoverRelayDiscovery(ctx, relayURL, m.rootCAPEM, nil)
-	}
-	return resp, err
 }
 
 // ActiveRelayDescriptors returns currently advertised relay descriptors.
