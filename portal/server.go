@@ -22,9 +22,9 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/portal/keyless"
 	"github.com/gosuda/portal-tunnel/v2/portal/policy"
 	"github.com/gosuda/portal-tunnel/v2/portal/transport"
-	"github.com/gosuda/portal-tunnel/v2/portal/utils/thumbnail"
 	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/gosuda/portal-tunnel/v2/utils"
+	"github.com/gosuda/portal-tunnel/v2/utils/thumbnail"
 )
 
 const (
