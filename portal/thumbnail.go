@@ -1,6 +1,7 @@
 package portal
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -143,7 +144,7 @@ func (ts *thumbnailService) resolveCDPWebSocketURL() (string, error) {
 		return "", fmt.Errorf("parse headless shell URL: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/json/version", parsed.Host), nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("http://%s/json/version", parsed.Host), nil)
 	if err != nil {
 		return "", fmt.Errorf("build /json/version request: %w", err)
 	}

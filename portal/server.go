@@ -334,7 +334,7 @@ func (s *Server) LeaseSnapshots() []types.Lease {
 			continue
 		}
 		if snap.Metadata.Thumbnail == "" && s.thumbnails != nil && s.thumbnails.Has(snap.Hostname) {
-			snap.Lease.Metadata.Thumbnail = types.PathThumbnailPrefix + snap.Hostname
+			snap.Metadata.Thumbnail = types.PathThumbnailPrefix + snap.Hostname
 		}
 		out = append(out, snap.Lease)
 	}
