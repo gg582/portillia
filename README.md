@@ -15,6 +15,7 @@
 - **Relay discovery and pools**: Use discovered relays as a pool, with multi-relay access and failover
 - **No login, no API keys**: Authenticate ownership using SIWE, with ENS-based identity support
 - **Raw TCP/UDP + TCP port routing**: Native TCP reverse sessions, optional UDP, and dedicated TCP ports for non-TLS services
+- **Auto-generated thumbnails**: Optional headless screenshot sidecar generates dashboard card previews for tunnel apps
 
 ## Comparison
 
