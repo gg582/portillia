@@ -546,7 +546,7 @@ func (l *Listener) closed() bool {
 
 func (l *Listener) ban() {
 	if l.relaySet != nil && l.api != nil && l.api.baseURL != nil {
-		l.relaySet.BanRelayURL(l.api.baseURL.String())
+		l.relaySet.BanRelayURL(l.api.baseURL.String(), "manual")
 	}
 	_ = l.Close()
 }

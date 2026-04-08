@@ -201,13 +201,13 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:           now.Add(2 * types.DiscoveryPollInterval),
 		APIHTTPSAddr:        s.cfg.PortalURL,
 		IngressTLSAddr:      ingressAddr,
-		WireGuardPublicKey:  wireGuardField(s.wireGuardPeerPlaneEnabled(), s.cfg.WireGuardPublicKey),
-		WireGuardEndpoint:   wireGuardField(s.wireGuardPeerPlaneEnabled(), s.cfg.WireGuardEndpoint),
-		OverlayIPv4:         wireGuardField(s.wireGuardPeerPlaneEnabled(), s.cfg.OverlayIPv4),
-		OverlayCIDRs:        overlayCIDRsField(s.wireGuardPeerPlaneEnabled(), s.cfg.OverlayCIDRs),
+		WireGuardPublicKey:  wireGuardField(s.wireGuardOverlayEnabled(), s.cfg.WireGuardPublicKey),
+		WireGuardEndpoint:   wireGuardField(s.wireGuardOverlayEnabled(), s.cfg.WireGuardEndpoint),
+		OverlayIPv4:         wireGuardField(s.wireGuardOverlayEnabled(), s.cfg.OverlayIPv4),
+		OverlayCIDRs:        overlayCIDRsField(s.wireGuardOverlayEnabled(), s.cfg.OverlayCIDRs),
 		SupportsUDP:         s.cfg.UDPEnabled && s.quicTunnel != nil,
 		SupportsTCP:         s.cfg.TCPEnabled,
-		SupportsOverlayPeer: s.cfg.OverlayEnabled,
+		SupportsOverlayPeer: s.wireGuardOverlayEnabled(),
 		Load:                float64(s.loadMgr.ActiveConns()),
 	})
 	if err != nil {
@@ -221,8 +221,8 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 		Self:            self,
 		Relays:          nil,
 	}
-	if s.discoveryMgr != nil {
-		resp.Relays = s.discoveryMgr.ActiveRelayDescriptors()
+	if s.relaySet != nil {
+		resp.Relays = s.relaySet.AdvertisedDescriptors()
 	}
 	utils.WriteAPIData(w, http.StatusOK, resp)
 }

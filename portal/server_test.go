@@ -49,6 +49,11 @@ func mustRelayDescriptor(t *testing.T, relayURL string) types.RelayDescriptor {
 	return desc
 }
 
+func applyRelay(t *testing.T, set *discovery.RelaySet, identity types.Identity, targetURL string, resp types.DiscoveryResponse, now time.Time) error {
+	t.Helper()
+	return set.ApplyRelayDiscoveryResponseSimple(identity, targetURL, resp, now)
+}
+
 func tempIdentityPath(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(t.TempDir(), "relay_identity.json")
@@ -542,7 +547,9 @@ func TestServerDiscoverySkipsSelfRelayHint(t *testing.T) {
 		t.Fatalf("NormalizeDescriptor() self hint error = %v", err)
 	}
 
-	if err := server.relaySet.ApplyRelayDiscoveryResponse(
+	if err := applyRelay(
+		t,
+		server.relaySet,
 		bootstrapDesc.Identity,
 		bootstrapDesc.APIHTTPSAddr,
 		types.DiscoveryResponse{ProtocolVersion: types.ProtocolVersion, Self: bootstrapDesc, Relays: []types.RelayDescriptor{selfHint}},
@@ -576,7 +583,7 @@ func TestServerRecordVerifiedDiscoveryPeerRequiresDirectConfirmation(t *testing.
 
 	applyDiscovery := func(targetIdentity types.Identity, targetURL string, resp types.DiscoveryResponse) error {
 		now := time.Now().UTC()
-		return server.relaySet.ApplyRelayDiscoveryResponse(targetIdentity, targetURL, resp, now)
+		return applyRelay(t, server.relaySet, targetIdentity, targetURL, resp, now)
 	}
 
 	err = applyDiscovery(
@@ -653,7 +660,7 @@ func TestServerRecordVerifiedDiscoveryPeerExpiresAfterRepeatedDirectFailures(t *
 	relayADesc := mustRelayDescriptor(t, "https://relay-a.example.com")
 	now := time.Now().UTC()
 
-	if err := server.relaySet.ApplyRelayDiscoveryResponse(
+	if err := server.relaySet.ApplyRelayDiscoveryResponseSimple(
 		bootstrapDesc.Identity,
 		bootstrapDesc.APIHTTPSAddr,
 		types.DiscoveryResponse{ProtocolVersion: types.ProtocolVersion, Self: bootstrapDesc, Relays: []types.RelayDescriptor{relayADesc}},
@@ -661,7 +668,7 @@ func TestServerRecordVerifiedDiscoveryPeerExpiresAfterRepeatedDirectFailures(t *
 	); err != nil {
 		t.Fatalf("ApplyRelayDiscoveryResponse() bootstrap error = %v", err)
 	}
-	if err := server.relaySet.ApplyRelayDiscoveryResponse(
+	if err := server.relaySet.ApplyRelayDiscoveryResponseSimple(
 		relayADesc.Identity,
 		relayADesc.APIHTTPSAddr,
 		types.DiscoveryResponse{ProtocolVersion: types.ProtocolVersion, Self: relayADesc},
@@ -718,7 +725,7 @@ func TestServerBootstrapHintDoesNotResetDirectFailureBudget(t *testing.T) {
 	relayADesc := mustRelayDescriptor(t, "https://relay-a.example.com")
 	now := time.Now().UTC()
 
-	if err := server.relaySet.ApplyRelayDiscoveryResponse(
+	if err := server.relaySet.ApplyRelayDiscoveryResponseSimple(
 		bootstrapDesc.Identity,
 		bootstrapDesc.APIHTTPSAddr,
 		types.DiscoveryResponse{ProtocolVersion: types.ProtocolVersion, Self: bootstrapDesc, Relays: []types.RelayDescriptor{relayADesc}},
@@ -726,7 +733,7 @@ func TestServerBootstrapHintDoesNotResetDirectFailureBudget(t *testing.T) {
 	); err != nil {
 		t.Fatalf("ApplyRelayDiscoveryResponse() bootstrap error = %v", err)
 	}
-	if err := server.relaySet.ApplyRelayDiscoveryResponse(
+	if err := server.relaySet.ApplyRelayDiscoveryResponseSimple(
 		relayADesc.Identity,
 		relayADesc.APIHTTPSAddr,
 		types.DiscoveryResponse{ProtocolVersion: types.ProtocolVersion, Self: relayADesc},
@@ -748,7 +755,7 @@ func TestServerBootstrapHintDoesNotResetDirectFailureBudget(t *testing.T) {
 			t.Fatalf("RecordDiscoveryFailure() consecutive = %d, want %d", consecutiveFailures, attempt)
 		}
 
-		if err := server.relaySet.ApplyRelayDiscoveryResponse(
+		if err := server.relaySet.ApplyRelayDiscoveryResponseSimple(
 			bootstrapDesc.Identity,
 			bootstrapDesc.APIHTTPSAddr,
 			types.DiscoveryResponse{ProtocolVersion: types.ProtocolVersion, Self: bootstrapDesc, Relays: []types.RelayDescriptor{relayADesc}},
@@ -801,7 +808,7 @@ func TestServerExpiredDiscoveryPeerNeedsFreshDirectConfirmation(t *testing.T) {
 	relayADesc := mustRelayDescriptor(t, "https://relay-a.example.com")
 	now := time.Now().UTC()
 
-	if err := server.relaySet.ApplyRelayDiscoveryResponse(
+	if err := server.relaySet.ApplyRelayDiscoveryResponseSimple(
 		bootstrapDesc.Identity,
 		bootstrapDesc.APIHTTPSAddr,
 		types.DiscoveryResponse{ProtocolVersion: types.ProtocolVersion, Self: bootstrapDesc, Relays: []types.RelayDescriptor{relayADesc}},
@@ -809,7 +816,7 @@ func TestServerExpiredDiscoveryPeerNeedsFreshDirectConfirmation(t *testing.T) {
 	); err != nil {
 		t.Fatalf("ApplyRelayDiscoveryResponse() bootstrap error = %v", err)
 	}
-	if err := server.relaySet.ApplyRelayDiscoveryResponse(
+	if err := server.relaySet.ApplyRelayDiscoveryResponseSimple(
 		relayADesc.Identity,
 		relayADesc.APIHTTPSAddr,
 		types.DiscoveryResponse{ProtocolVersion: types.ProtocolVersion, Self: relayADesc},
@@ -826,7 +833,7 @@ func TestServerExpiredDiscoveryPeerNeedsFreshDirectConfirmation(t *testing.T) {
 		)
 	}
 
-	if err := server.relaySet.ApplyRelayDiscoveryResponse(
+	if err := server.relaySet.ApplyRelayDiscoveryResponseSimple(
 		bootstrapDesc.Identity,
 		bootstrapDesc.APIHTTPSAddr,
 		types.DiscoveryResponse{ProtocolVersion: types.ProtocolVersion, Self: bootstrapDesc, Relays: []types.RelayDescriptor{relayADesc}},
@@ -848,7 +855,7 @@ func TestServerExpiredDiscoveryPeerNeedsFreshDirectConfirmation(t *testing.T) {
 		t.Fatalf("ActiveRelayDescriptors() = %v, want relay to stay hidden until reconfirmed", advertisedURLs)
 	}
 
-	if err := server.relaySet.ApplyRelayDiscoveryResponse(
+	if err := server.relaySet.ApplyRelayDiscoveryResponseSimple(
 		relayADesc.Identity,
 		relayADesc.APIHTTPSAddr,
 		types.DiscoveryResponse{ProtocolVersion: types.ProtocolVersion, Self: relayADesc},

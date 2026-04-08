@@ -34,6 +34,7 @@ type relayServerConfig struct {
 	PortalURL           string
 	APIPort             int
 	SNIPort             int
+	DiscoveryPort       int
 	MinPort             int
 	MaxPort             int
 	UDPEnabled          bool
@@ -42,9 +43,6 @@ type relayServerConfig struct {
 	Bootstraps          string
 	DiscoveryEnabled    bool
 	MaxRouting          int
-	OverlayEnabled      bool
-	OverlayMaxHops      int
-	OverlayCongestion   float64
 	WireGuardPrivateKey string
 	WireGuardEndpoint   string
 	OverlayIPv4         string
@@ -76,6 +74,7 @@ func runServeCommand(args []string) error {
 	utils.StringFlagEnv(fs, &cfg.PortalURL, "portal-url", "https://localhost:4017", "portal base URL", "PORTAL_URL")
 	utils.IntFlagEnv(fs, &cfg.APIPort, "api-port", 4017, utils.ParsePortNumber, "Admin/API server port", "API_PORT")
 	utils.IntFlagEnv(fs, &cfg.SNIPort, "sni-port", 443, utils.ParsePortNumber, "TCP SNI router port number", "SNI_PORT")
+	utils.IntFlagEnv(fs, &cfg.DiscoveryPort, "discovery-port", 0, utils.ParseOptionalPortNumber, "wireguard overlay listen port (0 uses default)", "DISCOVERY_PORT")
 	utils.IntFlagEnv(fs, &cfg.MinPort, "min-port", 0, utils.ParseOptionalPortNumber, "inclusive minimum lease port shared by UDP and raw TCP transports (0=disabled)", "MIN_PORT")
 	utils.IntFlagEnv(fs, &cfg.MaxPort, "max-port", 0, utils.ParseOptionalPortNumber, "inclusive maximum lease port shared by UDP and raw TCP transports (0=disabled)", "MAX_PORT")
 	utils.BoolFlagEnv(fs, &cfg.UDPEnabled, "udp-enabled", false, "enable UDP relay transport; requires a valid --min-port/--max-port range", "UDP_ENABLED")
@@ -84,9 +83,6 @@ func runServeCommand(args []string) error {
 	utils.StringFlagEnv(fs, &cfg.Bootstraps, "bootstraps", "", "additional bootstrap relay API URLs used for discovery expansion", "BOOTSTRAPS")
 	utils.BoolFlagEnv(fs, &cfg.DiscoveryEnabled, "discovery", false, "serve relay discovery endpoints and poll discovery peers", "DISCOVERY")
 	utils.IntFlagEnv(fs, &cfg.MaxRouting, "max-routing", 1, nil, "maximum number of discovery routing attempts per refresh", "MAX_ROUTING")
-	utils.BoolFlagEnv(fs, &cfg.OverlayEnabled, "overlay-enabled", false, "enable experimental Pepper overlay route planning", "OVERLAY_ENABLED")
-	utils.IntFlagEnv(fs, &cfg.OverlayMaxHops, "overlay-max-hops", 0, nil, "Pepper overlay max hops (0 disables overlay route planning)", "OVERLAY_MAX_HOPS")
-	utils.Float64FlagEnv(fs, &cfg.OverlayCongestion, "overlay-congestion-latency-ms", 120, nil, "latency threshold in ms to trigger reverse-Siamese overlay route selection", "OVERLAY_CONGESTION_LATENCY_MS")
 	utils.StringFlagEnv(fs, &cfg.WireGuardPrivateKey, "wireguard-private-key", "", "wireguard private key for relay overlay", "WIREGUARD_PRIVATE_KEY")
 	utils.StringFlagEnv(fs, &cfg.WireGuardEndpoint, "wireguard-endpoint", "", "wireguard endpoint (host:port) for relay overlay", "WIREGUARD_ENDPOINT")
 	utils.StringFlagEnv(fs, &cfg.OverlayIPv4, "overlay-ipv4", "", "explicit overlay IPv4 override (auto-derived from public key when unset)", "OVERLAY_IPV4")
@@ -131,13 +127,12 @@ func runServeCommand(args []string) error {
 		Str("portal_url", cfg.PortalURL).
 		Str("identity_path", cfg.IdentityPath).
 		Str("admin_settings_path", cfg.AdminSettingsPath).
+		Int("discovery_port", cfg.DiscoveryPort).
 		Int("min_port", cfg.MinPort).
 		Int("max_port", cfg.MaxPort).
 		Bool("landing_page_enabled", cfg.LandingPageEnabled).
 		Bool("discovery_enabled", cfg.DiscoveryEnabled).
 		Int("max_routing", cfg.MaxRouting).
-		Bool("overlay_enabled", cfg.OverlayEnabled).
-		Int("overlay_max_hops", cfg.OverlayMaxHops).
 		Str("acme_dns_provider", cfg.ACMEDNSProvider).
 		Bool("ens_gasless_enabled", cfg.ENSGaslessEnabled).
 		Bool("udp_enabled", cfg.UDPEnabled).
@@ -162,6 +157,7 @@ func runServer(ctx context.Context, cfg relayServerConfig) error {
 		IdentityPath:        cfg.IdentityPath,
 		Bootstraps:          bootstraps,
 		WireGuardPrivateKey: cfg.WireGuardPrivateKey,
+		DiscoveryPort:       cfg.DiscoveryPort,
 		WireGuardEndpoint:   cfg.WireGuardEndpoint,
 		OverlayIPv4:         cfg.OverlayIPv4,
 		OverlayCIDRs:        overlayCIDRs,
@@ -185,9 +181,6 @@ func runServer(ctx context.Context, cfg relayServerConfig) error {
 		TrustProxyHeaders: cfg.TrustProxyHeaders,
 		DiscoveryEnabled:  cfg.DiscoveryEnabled,
 		MaxRouting:        cfg.MaxRouting,
-		OverlayEnabled:    cfg.OverlayEnabled,
-		OverlayMaxHops:    cfg.OverlayMaxHops,
-		OverlayCongestion: cfg.OverlayCongestion,
 		MinPort:           cfg.MinPort,
 		MaxPort:           cfg.MaxPort,
 		UDPEnabled:        cfg.UDPEnabled,

@@ -5,6 +5,9 @@ const (
 	ProtocolVersion        = "5"
 	PortalRelayRegistryURL = "https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json"
 
+	MinDiscoveryRoutingAttempts = 1
+	MaxDiscoveryRoutingAttempts = 32
+
 	HeaderAccessToken = "X-Portal-Access-Token"
 	MarkerKeepalive   = byte(0x00)
 	MarkerRawStart    = byte(0x01)

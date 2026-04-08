@@ -223,3 +223,19 @@ func DiscoveryUnavailableStatus(err error) (statusCode int, code string, unavail
 	}
 	return 0, "", false
 }
+
+func RequireOverlayRelayDescriptor(desc types.RelayDescriptor) error {
+	if !desc.SupportsOverlayPeer {
+		return errors.New("descriptor does not support overlay peer")
+	}
+	if desc.WireGuardPublicKey == "" {
+		return errors.New("descriptor wireguard public key is required")
+	}
+	if desc.WireGuardEndpoint == "" {
+		return errors.New("descriptor wireguard endpoint is required")
+	}
+	if desc.OverlayIPv4 == "" {
+		return errors.New("descriptor overlay ipv4 is required")
+	}
+	return nil
+}
