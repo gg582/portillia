@@ -36,6 +36,7 @@ func mustRelayDescriptor(t *testing.T, relayURL string) types.RelayDescriptor {
 		Identity: types.Identity{
 			Name: utils.PortalRootHost(relayURL),
 		},
+		RelayID:      relayURL,
 		Sequence:     uint64(now.UnixMilli()),
 		Version:      1,
 		IssuedAt:     now,
@@ -348,16 +349,14 @@ func TestServerStartDiscoveryIncludesIdentityAndOmitsSignerFields(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read /discovery response: %v", err)
 	}
-	for _, key := range []string{"\"address\"", "\"name\"", "signer_public_key", "descriptor_signature"} {
-		if key == "\"address\"" || key == "\"name\"" {
-			if !strings.Contains(string(body), key) {
-				t.Fatalf("/discovery body = %q, want %q present", string(body), key)
-			}
-			continue
+	bodyText := string(body)
+	for _, key := range []string{"\"address\"", "\"name\"", "\"relay_id\"", "\"owner_address\"", "\"signer_public_key\""} {
+		if !strings.Contains(bodyText, key) {
+			t.Fatalf("/discovery body = %q, want %q present", bodyText, key)
 		}
-		if strings.Contains(string(body), key) {
-			t.Fatalf("/discovery body = %q, want %q omitted", string(body), key)
-		}
+	}
+	if strings.Contains(bodyText, "descriptor_signature") {
+		t.Fatalf("/discovery body = %q, want descriptor_signature omitted", bodyText)
 	}
 }
 
@@ -532,6 +531,7 @@ func TestServerDiscoverySkipsSelfRelayHint(t *testing.T) {
 	bootstrapDesc := mustRelayDescriptor(t, "https://bootstrap.example.com")
 	selfHint, err := discovery.NormalizeDescriptor(types.RelayDescriptor{
 		Identity:     server.identity.Copy(),
+		RelayID:      "https://self-mirror.example.com",
 		Sequence:     uint64(now.UnixMilli()),
 		Version:      1,
 		IssuedAt:     now,

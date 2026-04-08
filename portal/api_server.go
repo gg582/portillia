@@ -191,15 +191,24 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	self, err := discovery.NormalizeDescriptor(types.RelayDescriptor{
-		Identity:       s.identity.Copy(),
-		Sequence:       uint64(now.UnixMilli()),
-		Version:        1,
-		IssuedAt:       now,
-		ExpiresAt:      now.Add(2 * types.DiscoveryPollInterval),
-		APIHTTPSAddr:   s.cfg.PortalURL,
-		IngressTLSAddr: ingressAddr,
-		SupportsUDP:    s.cfg.UDPEnabled && s.quicTunnel != nil,
-		SupportsTCP:    s.cfg.TCPEnabled,
+		Identity:            s.identity.Copy(),
+		RelayID:             s.cfg.PortalURL,
+		OwnerAddress:        s.identity.Address,
+		SignerPublicKey:     s.identity.PublicKey,
+		Sequence:            uint64(now.UnixMilli()),
+		Version:             1,
+		IssuedAt:            now,
+		ExpiresAt:           now.Add(2 * types.DiscoveryPollInterval),
+		APIHTTPSAddr:        s.cfg.PortalURL,
+		IngressTLSAddr:      ingressAddr,
+		WireGuardPublicKey:  wireGuardField(s.wireGuardPeerPlaneEnabled(), s.cfg.WireGuardPublicKey),
+		WireGuardEndpoint:   wireGuardField(s.wireGuardPeerPlaneEnabled(), s.cfg.WireGuardEndpoint),
+		OverlayIPv4:         wireGuardField(s.wireGuardPeerPlaneEnabled(), s.cfg.OverlayIPv4),
+		OverlayCIDRs:        overlayCIDRsField(s.wireGuardPeerPlaneEnabled(), s.cfg.OverlayCIDRs),
+		SupportsUDP:         s.cfg.UDPEnabled && s.quicTunnel != nil,
+		SupportsTCP:         s.cfg.TCPEnabled,
+		SupportsOverlayPeer: s.cfg.OverlayEnabled,
+		Load:                float64(s.loadMgr.ActiveConns()),
 	})
 	if err != nil {
 		utils.WriteAPIError(w, http.StatusInternalServerError, types.APIErrorCodeInternal, err.Error())
@@ -212,8 +221,8 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 		Self:            self,
 		Relays:          nil,
 	}
-	if s.relaySet != nil {
-		resp.Relays = s.relaySet.ActiveRelayDescriptors()
+	if s.discoveryMgr != nil {
+		resp.Relays = s.discoveryMgr.ActiveRelayDescriptors()
 	}
 	utils.WriteAPIData(w, http.StatusOK, resp)
 }
@@ -392,6 +401,22 @@ func (s *Server) handleUnregister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.WriteAPIData(w, http.StatusOK, map[string]any{})
+}
+
+func wireGuardField(enabled bool, value string) string {
+	if !enabled {
+		return ""
+	}
+	return value
+}
+
+func overlayCIDRsField(enabled bool, cidrs []string) []string {
+	if !enabled || len(cidrs) == 0 {
+		return nil
+	}
+	out := make([]string, len(cidrs))
+	copy(out, cidrs)
+	return out
 }
 
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
