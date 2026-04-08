@@ -139,12 +139,12 @@ interface ServerListViewProps {
   selectedTags: string[];
   availableTags: string[];
   filteredServers: ClientServer[] | AdminServer[];
-  favorites: number[];
+  favorites: string[];
   onSearchChange: (value: string) => void;
   onStatusChange: (value: StatusFilter) => void;
   onSortByChange: (value: SortOption) => void;
   onTagToggle: (tag: string) => void;
-  onToggleFavorite: (serverId: number) => void;
+  onToggleFavorite: (serverId: string) => void;
   isAdmin?: boolean;
   banFilter?: BanFilter;
   approvalMode?: ApprovalMode;
