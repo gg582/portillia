@@ -699,7 +699,7 @@ func (s *Server) runRelayDiscoveryLoop(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	ticker := time.NewTicker(types.DiscoveryPollInterval)
+	ticker := time.NewTicker(discovery.DiscoveryPollInterval)
 	defer ticker.Stop()
 
 	for {

@@ -10,7 +10,6 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/portal/acme/cloudflare"
 	"github.com/gosuda/portal-tunnel/v2/portal/acme/gcloud"
 	"github.com/gosuda/portal-tunnel/v2/portal/acme/route53"
-	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
 const (
@@ -27,7 +26,7 @@ type DNSProvider interface {
 	DeleteARecord(ctx context.Context, name string) error
 	EnsureTXTRecord(ctx context.Context, name, value string) error
 	DeleteTXTRecords(ctx context.Context, name, matchPrefix string) error
-	EnsureDNSSEC(ctx context.Context, baseDomain string) (types.DNSSECStatus, error)
+	EnsureDNSSEC(ctx context.Context, baseDomain string) (state, dsRecord, message string, err error)
 }
 
 func NewDNSProvider(providerType string, cfg Config) (DNSProvider, error) {

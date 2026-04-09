@@ -139,7 +139,7 @@ func (e *Exposure) runDiscoveryLoop(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	ticker := time.NewTicker(types.DiscoveryPollInterval)
+	ticker := time.NewTicker(discovery.DiscoveryPollInterval)
 	defer ticker.Stop()
 
 	for {

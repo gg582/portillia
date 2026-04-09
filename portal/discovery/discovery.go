@@ -16,7 +16,10 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
-const defaultRequestTimeout = 15 * time.Second
+const (
+	defaultRequestTimeout = 15 * time.Second
+	DiscoveryPollInterval = 1 * time.Minute
+)
 
 func NormalizeDescriptor(desc types.RelayDescriptor) (types.RelayDescriptor, error) {
 	desc.Name = utils.NormalizeHostname(desc.Name)
@@ -210,18 +213,6 @@ func DiscoverRelayDiscovery(ctx context.Context, baseURL string, rootCAPEM []byt
 		return types.DiscoveryResponse{}, err
 	}
 	return resp, nil
-}
-
-func DiscoveryUnavailableStatus(err error) (statusCode int, code string, unavailable bool) {
-	var apiErr *types.APIRequestError
-	if !errors.As(err, &apiErr) || apiErr == nil {
-		return 0, "", false
-	}
-	code = strings.TrimSpace(apiErr.Code)
-	if apiErr.StatusCode == http.StatusNotFound || code == types.APIErrorCodeFeatureUnavailable {
-		return apiErr.StatusCode, code, true
-	}
-	return 0, "", false
 }
 
 func RequireOverlayRelayDescriptor(desc types.RelayDescriptor) error {

@@ -198,7 +198,7 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 		Sequence:            uint64(now.UnixMilli()),
 		Version:             1,
 		IssuedAt:            now,
-		ExpiresAt:           now.Add(2 * types.DiscoveryPollInterval),
+		ExpiresAt:           now.Add(2 * discovery.DiscoveryPollInterval),
 		APIHTTPSAddr:        s.cfg.PortalURL,
 		IngressTLSAddr:      ingressAddr,
 		WireGuardPublicKey:  wireGuardField(s.wireGuardOverlayEnabled(), s.cfg.WireGuardPublicKey),

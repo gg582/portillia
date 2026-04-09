@@ -63,9 +63,6 @@ func (r *Refresher) refreshHTTPS(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if _, _, unavailable := DiscoveryUnavailableStatus(err); unavailable {
-				continue
-			}
 			continue
 		}
 

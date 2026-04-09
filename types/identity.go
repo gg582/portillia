@@ -99,11 +99,3 @@ type RelayDescriptor struct {
 	LoadScore           float64   `json:"load_score,omitempty"`
 	LastUpdated         int64     `json:"last_updated,omitempty"`
 }
-
-const DiscoveryPollInterval = 1 * time.Minute
-
-type DNSSECStatus struct {
-	State    string `json:"state,omitempty"`
-	DSRecord string `json:"ds_record,omitempty"`
-	Message  string `json:"message,omitempty"`
-}

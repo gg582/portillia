@@ -85,15 +85,15 @@ func NormalizeConfig(rootHost string, cfg Config) (Config, error) {
 }
 
 type Overlay struct {
-	selfWireGuardPublicKey string
-	stack                  *stack
-	listener               net.Listener
-	server                 *http.Server
+	publicKey string
+	stack     *stack
+	listener  net.Listener
+	server    *http.Server
 }
 
 func NewOverlay(cfg Config, handler http.Handler) (*Overlay, error) {
-	selfWireGuardPublicKey := strings.TrimSpace(cfg.PublicKey)
-	if selfWireGuardPublicKey == "" {
+	publicKey := strings.TrimSpace(cfg.PublicKey)
+	if publicKey == "" {
 		return nil, errors.New("wireguard public key is required")
 	}
 
@@ -114,10 +114,10 @@ func NewOverlay(cfg Config, handler http.Handler) (*Overlay, error) {
 	}
 
 	return &Overlay{
-		selfWireGuardPublicKey: selfWireGuardPublicKey,
-		stack:                  stack,
-		listener:               listener,
-		server:                 server,
+		publicKey: publicKey,
+		stack:     stack,
+		listener:  listener,
+		server:    server,
 	}, nil
 }
 
@@ -192,17 +192,17 @@ func (o *Overlay) Sync(view map[string]discovery.RelayState) error {
 	if o == nil || o.stack == nil {
 		return nil
 	}
-	return o.stack.ApplyPeers(peersForView(o.selfWireGuardPublicKey, view))
+	return o.stack.ApplyPeers(peersForView(o.publicKey, view))
 }
 
-func peersForView(selfWireGuardPublicKey string, view map[string]discovery.RelayState) []desiredPeer {
+func peersForView(publicKey string, view map[string]discovery.RelayState) []desiredPeer {
 	peers := make([]desiredPeer, 0, len(view))
 	for _, relay := range view {
 		if relay.Expired || relay.Banned {
 			continue
 		}
 		desc := relay.Descriptor
-		if desc.WireGuardPublicKey == selfWireGuardPublicKey || !desc.SupportsOverlayPeer {
+		if desc.WireGuardPublicKey == publicKey || !desc.SupportsOverlayPeer {
 			continue
 		}
 		if desc.WireGuardPublicKey == "" || desc.WireGuardEndpoint == "" || desc.OverlayIPv4 == "" {
