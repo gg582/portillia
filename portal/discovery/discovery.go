@@ -16,12 +16,23 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
-const defaultRequestTimeout = 15 * time.Second
+const (
+	defaultRequestTimeout = 15 * time.Second
+	DiscoveryPollInterval = 1 * time.Minute
+)
 
 func NormalizeDescriptor(desc types.RelayDescriptor) (types.RelayDescriptor, error) {
 	desc.Name = utils.NormalizeHostname(desc.Name)
 	desc.Address = strings.TrimSpace(desc.Address)
 	desc.APIHTTPSAddr = strings.TrimSpace(desc.APIHTTPSAddr)
+	desc.RelayID = strings.TrimSpace(desc.RelayID)
+	desc.IngressTLSAddr = strings.TrimSpace(desc.IngressTLSAddr)
+	desc.WireGuardPublicKey = strings.TrimSpace(desc.WireGuardPublicKey)
+	desc.WireGuardEndpoint = strings.TrimSpace(desc.WireGuardEndpoint)
+	desc.OverlayIPv4 = strings.TrimSpace(desc.OverlayIPv4)
+	desc.OverlayCIDRs = utils.NormalizeIPPrefixes(desc.OverlayCIDRs)
+	desc.OwnerAddress = strings.TrimSpace(desc.OwnerAddress)
+	desc.SignerPublicKey = strings.TrimSpace(desc.SignerPublicKey)
 	if !desc.IssuedAt.IsZero() {
 		desc.IssuedAt = desc.IssuedAt.UTC()
 	}
@@ -36,12 +47,35 @@ func NormalizeDescriptor(desc types.RelayDescriptor) (types.RelayDescriptor, err
 		}
 		desc.APIHTTPSAddr = normalized
 	}
+	if desc.RelayID != "" {
+		normalized, err := utils.NormalizeRelayURL(desc.RelayID)
+		if err != nil {
+			return types.RelayDescriptor{}, fmt.Errorf("normalize relay id: %w", err)
+		}
+		desc.RelayID = normalized
+	}
+	if desc.RelayID == "" {
+		desc.RelayID = desc.APIHTTPSAddr
+	}
 	if desc.Address != "" {
 		normalized, err := utils.NormalizeEVMAddress(desc.Address)
 		if err != nil {
 			return types.RelayDescriptor{}, fmt.Errorf("normalize address: %w", err)
 		}
 		desc.Address = normalized
+	}
+	if desc.OwnerAddress == "" {
+		desc.OwnerAddress = desc.Address
+	}
+	if desc.OwnerAddress != "" {
+		normalized, err := utils.NormalizeEVMAddress(desc.OwnerAddress)
+		if err != nil {
+			return types.RelayDescriptor{}, fmt.Errorf("normalize owner address: %w", err)
+		}
+		desc.OwnerAddress = normalized
+	}
+	if desc.SignerPublicKey == "" {
+		desc.SignerPublicKey = desc.PublicKey
 	}
 	return desc, nil
 }
@@ -61,6 +95,10 @@ func ValidateDescriptor(desc types.RelayDescriptor, now time.Time) (types.RelayD
 		return types.RelayDescriptor{}, errors.New("identity.name is required")
 	case normalized.APIHTTPSAddr == "":
 		return types.RelayDescriptor{}, errors.New("api_https_addr is required")
+	case normalized.RelayID == "":
+		return types.RelayDescriptor{}, errors.New("relay_id is required")
+	case normalized.APIHTTPSAddr != "" && normalized.RelayID != normalized.APIHTTPSAddr:
+		return types.RelayDescriptor{}, errors.New("relay_id must match api_https_addr")
 	case normalized.Sequence == 0:
 		return types.RelayDescriptor{}, errors.New("sequence is required")
 	case normalized.Version == 0:
@@ -177,14 +215,18 @@ func DiscoverRelayDiscovery(ctx context.Context, baseURL string, rootCAPEM []byt
 	return resp, nil
 }
 
-func DiscoveryUnavailableStatus(err error) (statusCode int, code string, unavailable bool) {
-	var apiErr *types.APIRequestError
-	if !errors.As(err, &apiErr) || apiErr == nil {
-		return 0, "", false
+func RequireOverlayRelayDescriptor(desc types.RelayDescriptor) error {
+	if !desc.SupportsOverlayPeer {
+		return errors.New("descriptor does not support overlay peer")
 	}
-	code = strings.TrimSpace(apiErr.Code)
-	if apiErr.StatusCode == http.StatusNotFound || code == types.APIErrorCodeFeatureUnavailable {
-		return apiErr.StatusCode, code, true
+	if desc.WireGuardPublicKey == "" {
+		return errors.New("descriptor wireguard public key is required")
 	}
-	return 0, "", false
+	if desc.WireGuardEndpoint == "" {
+		return errors.New("descriptor wireguard endpoint is required")
+	}
+	if desc.OverlayIPv4 == "" {
+		return errors.New("descriptor overlay ipv4 is required")
+	}
+	return nil
 }

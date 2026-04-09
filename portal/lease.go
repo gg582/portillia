@@ -25,9 +25,10 @@ type leaseRegistry struct {
 	mu                 sync.RWMutex
 }
 
-func newLeaseRegistry(runtime *policy.Runtime) *leaseRegistry {
-	if runtime == nil {
-		runtime = policy.NewRuntime()
+func newLeaseRegistry(udpEnabled, tcpPortEnabled bool, trustProxyHeaders bool, rawTrustedProxyCIDRs string) (*leaseRegistry, error) {
+	runtime, err := policy.NewRuntime(udpEnabled, tcpPortEnabled, trustProxyHeaders, rawTrustedProxyCIDRs)
+	if err != nil {
+		return nil, err
 	}
 
 	return &leaseRegistry{
@@ -35,7 +36,7 @@ func newLeaseRegistry(runtime *policy.Runtime) *leaseRegistry {
 		leasesByKey:        make(map[string]*leaseRecord),
 		registerChallenges: make(map[string]*auth.RegisterChallenge),
 		policy:             runtime,
-	}
+	}, nil
 }
 
 func (r *leaseRegistry) CloseAll() []*leaseRecord {
@@ -291,20 +292,6 @@ func (r *leaseRegistry) countTCPPortLeases() int {
 	return count
 }
 
-func (r *leaseRegistry) activeAdminSnapshots() []types.AdminLease {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	now := time.Now()
-	out := make([]types.AdminLease, 0, len(r.leasesByKey))
-	for _, record := range r.leasesByKey {
-		if !now.After(record.ExpiresAt) {
-			out = append(out, r.AdminSnapshot(record))
-		}
-	}
-	return out
-}
-
 func (r *leaseRegistry) Snapshot(record *leaseRecord) types.Lease {
 	snapshot := types.Lease{
 		Name:        record.Name,
@@ -337,7 +324,7 @@ type leaseRecord struct {
 	TCPEnabled  bool
 	Metadata    types.LeaseMetadata
 	datagram    *transport.RelayDatagram
-	ports       *transport.PortAllocator
+	udpPorts    *transport.PortAllocator
 	tcpPort     *transport.RelayTCPPort
 	tcpPorts    *transport.PortAllocator
 	stream      *transport.RelayStream
@@ -387,8 +374,8 @@ func (r *leaseRecord) Close() {
 	if r.datagram != nil {
 		port := r.datagram.UDPPort()
 		r.datagram.Close()
-		if port > 0 && r.ports != nil {
-			r.ports.Release(port)
+		if port > 0 && r.udpPorts != nil {
+			r.udpPorts.Release(port)
 		}
 	}
 	if r.tcpPort != nil {

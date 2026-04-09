@@ -14,6 +14,7 @@ import (
 
 	"github.com/gosuda/portal-tunnel/v2/portal"
 	"github.com/gosuda/portal-tunnel/v2/portal/acme"
+	"github.com/gosuda/portal-tunnel/v2/portal/overlay"
 	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/gosuda/portal-tunnel/v2/utils"
 )
@@ -32,23 +33,20 @@ func main() {
 
 type relayServerConfig struct {
 	PortalURL          string
-	APIPort            int
-	SNIPort            int
-	MinPort            int
-	MaxPort            int
-	UDPEnabled         bool
-	TCPEnabled         bool
-	LandingPageEnabled bool
+	IdentityPath       string
 	Bootstraps         string
 	DiscoveryEnabled   bool
-	IdentityPath       string
-	AdminSecretKey     string
+	WireGuardPort      int
+	APIPort            int
+	SNIPort            int
 	TrustProxyHeaders  bool
 	TrustedProxyCIDRs  string
-	AdminSettingsPath  string
-	KeylessDir         string
-
-	HeadlessShellURL string
+	UDPEnabled         bool
+	TCPEnabled         bool
+	MinPort            int
+	MaxPort            int
+	LandingPageEnabled bool
+	HeadlessShellURL   string
 
 	ACMEDNSProvider    string
 	ENSGaslessEnabled  bool
@@ -68,25 +66,25 @@ func runServeCommand(args []string) error {
 	fs := utils.NewFlagSet("relay-server", printRootUsage)
 
 	utils.StringFlagEnv(fs, &cfg.PortalURL, "portal-url", "https://localhost:4017", "portal base URL", "PORTAL_URL")
-	utils.IntFlagEnv(fs, &cfg.APIPort, "api-port", 4017, utils.ParsePortNumber, "Admin/API server port", "API_PORT")
-	utils.IntFlagEnv(fs, &cfg.SNIPort, "sni-port", 443, utils.ParsePortNumber, "TCP SNI router port number", "SNI_PORT")
-	utils.IntFlagEnv(fs, &cfg.MinPort, "min-port", 0, utils.ParseOptionalPortNumber, "inclusive minimum lease port shared by UDP and raw TCP transports (0=disabled)", "MIN_PORT")
-	utils.IntFlagEnv(fs, &cfg.MaxPort, "max-port", 0, utils.ParseOptionalPortNumber, "inclusive maximum lease port shared by UDP and raw TCP transports (0=disabled)", "MAX_PORT")
-	utils.BoolFlagEnv(fs, &cfg.UDPEnabled, "udp-enabled", false, "enable UDP relay transport; requires a valid --min-port/--max-port range", "UDP_ENABLED")
-	utils.BoolFlagEnv(fs, &cfg.TCPEnabled, "tcp-enabled", false, "enable raw TCP port transport; requires a valid --min-port/--max-port range", "TCP_ENABLED")
-	utils.BoolFlagEnv(fs, &cfg.LandingPageEnabled, "landing-page-enabled", false, "enable landing page by default when no admin setting has been saved yet", "LANDING_PAGE_ENABLED")
+	utils.StringFlagEnv(fs, &cfg.IdentityPath, "identity-path", "./.portal-certs", "directory path for relay identity, admin state, and keyless materials", "IDENTITY_PATH")
 	utils.StringFlagEnv(fs, &cfg.Bootstraps, "bootstraps", "", "additional bootstrap relay API URLs used for discovery expansion", "BOOTSTRAPS")
 	utils.BoolFlagEnv(fs, &cfg.DiscoveryEnabled, "discovery", false, "serve relay discovery endpoints and poll discovery peers", "DISCOVERY")
-	utils.StringFlagEnv(fs, &cfg.IdentityPath, "identity-path", "identity.json", "relay identity json file path", "IDENTITY_PATH")
-	utils.StringFlagEnv(fs, &cfg.AdminSecretKey, "admin-secret-key", "", "admin auth secret", "ADMIN_SECRET_KEY")
+	utils.IntFlagEnv(fs, &cfg.WireGuardPort, "wireguard-port", overlay.DefaultListenPort, utils.ParsePortNumber, "public and listen UDP port for relay overlay", "WIREGUARD_PORT")
+
+	utils.IntFlagEnv(fs, &cfg.APIPort, "api-port", 4017, utils.ParsePortNumber, "Admin/API server port", "API_PORT")
+	utils.IntFlagEnv(fs, &cfg.SNIPort, "sni-port", 443, utils.ParsePortNumber, "TCP SNI router port number", "SNI_PORT")
 	utils.BoolFlagEnv(fs, &cfg.TrustProxyHeaders, "trust-proxy-headers", false, "trust X-Forwarded-* and X-Real-IP headers from trusted proxies", "TRUST_PROXY_HEADERS")
 	utils.StringFlagEnv(fs, &cfg.TrustedProxyCIDRs, "trusted-proxy-cidrs", "", "trusted proxy CIDR allowlist for forwarded headers, comma-separated; defaults to private/loopback proxy ranges when trust-proxy-headers is enabled", "TRUSTED_PROXY_CIDRS")
 
+	utils.BoolFlagEnv(fs, &cfg.UDPEnabled, "udp-enabled", false, "enable UDP relay transport; requires a valid --min-port/--max-port range", "UDP_ENABLED")
+	utils.BoolFlagEnv(fs, &cfg.TCPEnabled, "tcp-enabled", false, "enable raw TCP port transport; requires a valid --min-port/--max-port range", "TCP_ENABLED")
+	utils.IntFlagEnv(fs, &cfg.MinPort, "min-port", 0, utils.ParseOptionalPortNumber, "inclusive minimum lease port shared by UDP and raw TCP transports (0=disabled)", "MIN_PORT")
+	utils.IntFlagEnv(fs, &cfg.MaxPort, "max-port", 0, utils.ParseOptionalPortNumber, "inclusive maximum lease port shared by UDP and raw TCP transports (0=disabled)", "MAX_PORT")
+
+	utils.BoolFlagEnv(fs, &cfg.LandingPageEnabled, "landing-page-enabled", false, "enable landing page by default when no admin setting has been saved yet", "LANDING_PAGE_ENABLED")
 	utils.StringFlagEnv(fs, &cfg.HeadlessShellURL, "headless-shell-url", "", "headless Chrome CDP WebSocket URL for thumbnail generation (e.g. ws://headless-shell:9222)", "HEADLESS_SHELL_URL")
 
-	utils.StringFlagEnv(fs, &cfg.KeylessDir, "keyless-dir", "./.portal-certs", "directory path for relay keyless materials", "KEYLESS_DIR")
-	utils.StringFlagEnv(fs, &cfg.AdminSettingsPath, "admin-settings-path", "admin_settings.json", "admin settings file path", "ADMIN_SETTINGS_PATH")
-	utils.StringFlagEnv(fs, &cfg.ACMEDNSProvider, "acme-dns-provider", "", "ACME DNS provider for managed DNS-01/A-record sync and ENS gasless DNSSEC/TXT automation (cloudflare|gcloud|route53); leave empty to use manual fullchain.pem/privatekey.pem from KEYLESS_DIR", "ACME_DNS_PROVIDER")
+	utils.StringFlagEnv(fs, &cfg.ACMEDNSProvider, "acme-dns-provider", "", "ACME DNS provider for managed DNS-01/A-record sync and ENS gasless DNSSEC/TXT automation (cloudflare|gcloud|route53); leave empty to use manual fullchain.pem/privatekey.pem from IDENTITY_PATH", "ACME_DNS_PROVIDER")
 	utils.BoolFlagEnv(fs, &cfg.ENSGaslessEnabled, "ens-gasless-enabled", false, "enable ENS gasless DNS import automation for the managed DNS zone and lease hostnames", "ENS_GASLESS_ENABLED")
 	utils.StringFlagEnv(fs, &cfg.CloudflareToken, "cloudflare-token", "", "Cloudflare DNS API token (required when acme-dns-provider=cloudflare)", "CLOUDFLARE_TOKEN")
 	utils.StringFlagEnv(fs, &cfg.GCPProjectID, "gcp-project-id", "", "Google Cloud project id for Cloud DNS automation; auto-detected from ADC or GCE metadata when omitted", "GCP_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCE_PROJECT")
@@ -108,20 +106,27 @@ func runServeCommand(args []string) error {
 		printRootUsage(os.Stderr)
 		return err
 	}
+	cfg.IdentityPath = utils.ResolveRelayStateDir(cfg.IdentityPath)
 
 	log.Info().
 		Str("release_version", types.ReleaseVersion).
 		Str("portal_url", cfg.PortalURL).
 		Str("identity_path", cfg.IdentityPath).
-		Str("admin_settings_path", cfg.AdminSettingsPath).
+		Str("bootstraps", cfg.Bootstraps).
+		Bool("discovery_enabled", cfg.DiscoveryEnabled).
+		Int("wireguard_port", cfg.WireGuardPort).
+		Int("api_port", cfg.APIPort).
+		Int("sni_port", cfg.SNIPort).
+		Bool("trust_proxy_headers", cfg.TrustProxyHeaders).
+		Str("trusted_proxy_cidrs", cfg.TrustedProxyCIDRs).
+		Bool("udp_enabled", cfg.UDPEnabled).
+		Bool("tcp_enabled", cfg.TCPEnabled).
 		Int("min_port", cfg.MinPort).
 		Int("max_port", cfg.MaxPort).
 		Bool("landing_page_enabled", cfg.LandingPageEnabled).
-		Bool("discovery_enabled", cfg.DiscoveryEnabled).
+		Bool("headless_shell_enabled", strings.TrimSpace(cfg.HeadlessShellURL) != "").
 		Str("acme_dns_provider", cfg.ACMEDNSProvider).
 		Bool("ens_gasless_enabled", cfg.ENSGaslessEnabled).
-		Bool("udp_enabled", cfg.UDPEnabled).
-		Bool("tcp_enabled", cfg.TCPEnabled).
 		Msg("configured relay server")
 
 	ctx, stop := utils.SignalContext()
@@ -131,17 +136,22 @@ func runServeCommand(args []string) error {
 }
 
 func runServer(ctx context.Context, cfg relayServerConfig) error {
-	bootstraps, err := utils.ResolvePortalRelayURLs(ctx, utils.SplitCSV(cfg.Bootstraps), cfg.DiscoveryEnabled)
-	if err != nil {
-		return fmt.Errorf("resolve discovery bootstraps: %w", err)
-	}
-
 	server, err := portal.NewServer(portal.ServerConfig{
-		PortalURL:    cfg.PortalURL,
-		IdentityPath: cfg.IdentityPath,
-		Bootstraps:   bootstraps,
+		PortalURL:         cfg.PortalURL,
+		IdentityPath:      cfg.IdentityPath,
+		Bootstraps:        utils.SplitCSV(cfg.Bootstraps),
+		DiscoveryEnabled:  cfg.DiscoveryEnabled,
+		WireGuardPort:     cfg.WireGuardPort,
+		APIPort:           cfg.APIPort,
+		SNIPort:           cfg.SNIPort,
+		TrustProxyHeaders: cfg.TrustProxyHeaders,
+		TrustedProxyCIDRs: cfg.TrustedProxyCIDRs,
+		UDPEnabled:        cfg.UDPEnabled,
+		TCPEnabled:        cfg.TCPEnabled,
+		MinPort:           cfg.MinPort,
+		MaxPort:           cfg.MaxPort,
 		ACME: acme.Config{
-			KeyDir:             cfg.KeylessDir,
+			KeyDir:             cfg.IdentityPath,
 			DNSProvider:        cfg.ACMEDNSProvider,
 			ENSGaslessEnabled:  cfg.ENSGaslessEnabled,
 			CloudflareToken:    cfg.CloudflareToken,
@@ -154,25 +164,16 @@ func runServer(ctx context.Context, cfg relayServerConfig) error {
 			AWSHostedZoneID:    cfg.AWSHostedZoneID,
 			AWSKMSKeyARN:       cfg.AWSDNSSECKMSKeyARN,
 		},
-		APIPort:           cfg.APIPort,
-		SNIPort:           cfg.SNIPort,
-		TrustedProxyCIDRs: cfg.TrustedProxyCIDRs,
-		TrustProxyHeaders: cfg.TrustProxyHeaders,
-		DiscoveryEnabled:  cfg.DiscoveryEnabled,
-		MinPort:           cfg.MinPort,
-		MaxPort:           cfg.MaxPort,
-		UDPEnabled:        cfg.UDPEnabled,
-		TCPEnabled:        cfg.TCPEnabled,
-		HeadlessShellURL:  cfg.HeadlessShellURL,
 	})
 	if err != nil {
 		return fmt.Errorf("create relay server: %w", err)
 	}
 
-	frontend, err := NewFrontend(server, cfg.AdminSecretKey, cfg.AdminSettingsPath, cfg.LandingPageEnabled)
+	frontend, err := NewFrontend(server, cfg.IdentityPath, cfg.LandingPageEnabled, cfg.HeadlessShellURL)
 	if err != nil {
 		return fmt.Errorf("create frontend: %w", err)
 	}
+	defer frontend.Close()
 
 	if err := server.Start(ctx, frontend.Handler()); err != nil {
 		return fmt.Errorf("start relay server: %w", err)
@@ -212,7 +213,8 @@ func printRootUsage(w io.Writer) {
 			"relay-server",
 			"relay-server serve",
 			"relay-server --portal-url https://portal.example.com",
-			"relay-server --discovery --udp-enabled --min-port 40000 --max-port 40099",
+			"relay-server --discovery --bootstraps https://bootstrap.example.com",
+			"relay-server --udp-enabled --min-port 40000 --max-port 40099",
 			"relay-server --landing-page-enabled",
 			"relay-server help",
 		},

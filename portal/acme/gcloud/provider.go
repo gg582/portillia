@@ -17,7 +17,6 @@ import (
 	"google.golang.org/api/dns/v1"
 	"google.golang.org/api/option"
 
-	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
@@ -287,38 +286,38 @@ func (p *Provider) DeleteTXTRecords(ctx context.Context, name, matchPrefix strin
 	return nil
 }
 
-func (p *Provider) EnsureDNSSEC(ctx context.Context, baseDomain string) (types.DNSSECStatus, error) {
+func (p *Provider) EnsureDNSSEC(ctx context.Context, baseDomain string) (state, dsRecord, message string, err error) {
 	if p == nil {
-		return types.DNSSECStatus{}, errors.New("gcloud provider is nil")
+		return "", "", "", errors.New("gcloud provider is nil")
 	}
 	baseDomain = utils.NormalizeBaseDomain(baseDomain)
 	if baseDomain == "" {
-		return types.DNSSECStatus{}, errors.New("base domain is required")
+		return "", "", "", errors.New("base domain is required")
 	}
 
 	service, runtimeCfg, zone, err := newService(ctx, p.cfg, baseDomain)
 	if err != nil {
-		return types.DNSSECStatus{}, err
+		return "", "", "", err
 	}
 	managedZone := zone.Name
 
-	state := strings.ToLower(strings.TrimSpace(dnssecState(zone)))
-	if state != "on" && state != "transfer" {
+	currentState := strings.ToLower(strings.TrimSpace(dnssecState(zone)))
+	if currentState != "on" && currentState != "transfer" {
 		if err := enableDNSSEC(ctx, service, runtimeCfg.ProjectID, managedZone); err != nil {
-			return types.DNSSECStatus{}, fmt.Errorf("enable gcloud dnssec: %w", err)
+			return "", "", "", fmt.Errorf("enable gcloud dnssec: %w", err)
 		}
 		zone, err = service.ManagedZones.Get(runtimeCfg.ProjectID, managedZone).Context(ctx).Do()
 		if err != nil {
-			return types.DNSSECStatus{}, fmt.Errorf("refresh gcloud managed zone %s: %w", managedZone, err)
+			return "", "", "", fmt.Errorf("refresh gcloud managed zone %s: %w", managedZone, err)
 		}
 	}
 
 	keys, err := listDNSKeys(ctx, service, runtimeCfg.ProjectID, managedZone)
 	if err != nil {
-		return types.DNSSECStatus{}, fmt.Errorf("list gcloud dnssec keys: %w", err)
+		return "", "", "", fmt.Errorf("list gcloud dnssec keys: %w", err)
 	}
 
-	return dnssecStatusFromZone(zone, keys), nil
+	return dnssecStatusFromZone(zone, keys)
 }
 
 func newRuntimeConfig(ctx context.Context, cfg Config) (runtimeConfig, error) {
@@ -527,16 +526,15 @@ func listDNSKeys(ctx context.Context, service *dns.Service, projectID, managedZo
 	return keys, nil
 }
 
-func dnssecStatusFromZone(zone *dns.ManagedZone, keys []*dns.DnsKey) types.DNSSECStatus {
-	status := types.DNSSECStatus{
-		State: strings.TrimSpace(dnssecState(zone)),
+func dnssecStatusFromZone(zone *dns.ManagedZone, keys []*dns.DnsKey) (state, dsRecord, message string, err error) {
+	state = strings.TrimSpace(dnssecState(zone))
+	dsRecord = activeDSRecord(keys)
+	if dsRecord != "" {
+		message = "publish the DS record at the registrar after Cloud DNS zone signing is enabled"
+	} else if strings.EqualFold(state, "on") || strings.EqualFold(state, "transfer") {
+		message = "wait for the active Cloud DNS DS record before updating the registrar"
 	}
-	if status.DSRecord = activeDSRecord(keys); status.DSRecord != "" {
-		status.Message = "publish the DS record at the registrar after Cloud DNS zone signing is enabled"
-	} else if strings.EqualFold(status.State, "on") || strings.EqualFold(status.State, "transfer") {
-		status.Message = "wait for the active Cloud DNS DS record before updating the registrar"
-	}
-	return status
+	return state, dsRecord, message, nil
 }
 
 func activeDSRecord(keys []*dns.DnsKey) string {

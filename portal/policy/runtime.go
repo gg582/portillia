@@ -1,7 +1,11 @@
 package policy
 
 import (
+	"fmt"
+	"net"
 	"sync"
+
+	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
 type PortPolicy struct {
@@ -24,16 +28,24 @@ type Runtime struct {
 	bannedIdentityKeys map[string]struct{}
 	udp                PortPolicy
 	tcpPort            PortPolicy
+	trustProxyHeaders  bool
+	trustedProxyCIDRs  []*net.IPNet
 	mu                 sync.RWMutex
 }
 
-func NewRuntime() *Runtime {
-	return &Runtime{
+func NewRuntime(udpEnabled, tcpPortEnabled bool, trustProxyHeaders bool, rawTrustedProxyCIDRs string) (*Runtime, error) {
+	runtime := &Runtime{
 		approver:           NewApprover(),
 		bpsManager:         NewBPSManager(),
 		ipFilter:           NewIPFilter(),
 		bannedIdentityKeys: make(map[string]struct{}),
 	}
+	runtime.udp.Set(udpEnabled, 0)
+	runtime.tcpPort.Set(tcpPortEnabled, 0)
+	if err := runtime.SetProxyTrust(trustProxyHeaders, rawTrustedProxyCIDRs); err != nil {
+		return nil, err
+	}
+	return runtime, nil
 }
 
 func (r *Runtime) Approver() *Approver {
@@ -146,6 +158,22 @@ func (r *Runtime) SetTCPPortPolicy(enabled bool, maxLeases int) {
 	r.mu.Lock()
 	r.tcpPort.Set(enabled, maxLeases)
 	r.mu.Unlock()
+}
+
+func (r *Runtime) SetProxyTrust(trustProxyHeaders bool, rawTrustedProxyCIDRs string) error {
+	if r == nil {
+		return nil
+	}
+	trustedProxyCIDRs, err := utils.ParseCIDRs(rawTrustedProxyCIDRs)
+	if err != nil {
+		return fmt.Errorf("parse trusted proxy cidrs: %w", err)
+	}
+	copied := append([]*net.IPNet(nil), trustedProxyCIDRs...)
+	r.mu.Lock()
+	r.trustProxyHeaders = trustProxyHeaders
+	r.trustedProxyCIDRs = copied
+	r.mu.Unlock()
+	return nil
 }
 
 func (r *Runtime) IsTCPPortEnabled() bool {

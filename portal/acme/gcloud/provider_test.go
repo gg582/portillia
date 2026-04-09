@@ -30,7 +30,7 @@ func TestDNSKeyDSRecordPrefersSHA256(t *testing.T) {
 func TestDNSSECStatusFromZoneUsesActiveKeySigningKey(t *testing.T) {
 	t.Parallel()
 
-	status := dnssecStatusFromZone(&gdns.ManagedZone{
+	state, dsRecord, _, err := dnssecStatusFromZone(&gdns.ManagedZone{
 		DnssecConfig: &gdns.ManagedZoneDnsSecConfig{State: "on"},
 	}, []*gdns.DnsKey{
 		{
@@ -52,11 +52,14 @@ func TestDNSSECStatusFromZoneUsesActiveKeySigningKey(t *testing.T) {
 			},
 		},
 	})
-
-	if status.State != "on" {
-		t.Fatalf("dnssecStatusFromZone().State = %q, want %q", status.State, "on")
+	if err != nil {
+		t.Fatalf("dnssecStatusFromZone() error = %v, want nil", err)
 	}
-	if status.DSRecord != "200 8 2 USEME" {
-		t.Fatalf("dnssecStatusFromZone().DSRecord = %q, want %q", status.DSRecord, "200 8 2 USEME")
+
+	if state != "on" {
+		t.Fatalf("dnssecStatusFromZone().state = %q, want %q", state, "on")
+	}
+	if dsRecord != "200 8 2 USEME" {
+		t.Fatalf("dnssecStatusFromZone().dsRecord = %q, want %q", dsRecord, "200 8 2 USEME")
 	}
 }

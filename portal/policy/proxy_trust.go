@@ -18,7 +18,7 @@ var defaultTrustedProxyCIDRs = mustParseTrustedProxyCIDRs(
 	"fe80::/10",
 )
 
-func IsTrustedProxyRemoteAddr(remoteAddr string, trustedProxyCIDRs []*net.IPNet) bool {
+func isTrustedProxyRemoteAddr(remoteAddr string, trustedProxyCIDRs []*net.IPNet) bool {
 	remoteIP := parseRemoteAddrIP(remoteAddr)
 	if remoteIP == nil {
 		return false
@@ -36,13 +36,21 @@ func IsTrustedProxyRemoteAddr(remoteAddr string, trustedProxyCIDRs []*net.IPNet)
 	return false
 }
 
-func ExtractClientIP(r *http.Request, trustProxyHeaders bool, trustedProxyCIDRs []*net.IPNet) string {
+func (r *Runtime) ExtractClientIP(req *http.Request) string {
 	if r == nil {
 		return ""
 	}
+	if req == nil {
+		return ""
+	}
 
-	if trustProxyHeaders && IsTrustedProxyRemoteAddr(r.RemoteAddr, trustedProxyCIDRs) {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+	r.mu.RLock()
+	trustProxyHeaders := r.trustProxyHeaders
+	trustedProxyCIDRs := append([]*net.IPNet(nil), r.trustedProxyCIDRs...)
+	r.mu.RUnlock()
+
+	if trustProxyHeaders && isTrustedProxyRemoteAddr(req.RemoteAddr, trustedProxyCIDRs) {
+		if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
 			if before, _, ok := strings.Cut(xff, ","); ok {
 				if ip := normalizeClientIPCandidate(before); ip != "" {
 					return ip
@@ -51,16 +59,16 @@ func ExtractClientIP(r *http.Request, trustProxyHeaders bool, trustedProxyCIDRs 
 				return ip
 			}
 		}
-		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		if xri := req.Header.Get("X-Real-IP"); xri != "" {
 			if ip := normalizeClientIPCandidate(xri); ip != "" {
 				return ip
 			}
 		}
 	}
 
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
 	if err != nil {
-		return strings.TrimSpace(r.RemoteAddr)
+		return strings.TrimSpace(req.RemoteAddr)
 	}
 	if normalized := normalizeClientIPCandidate(host); normalized != "" {
 		return normalized

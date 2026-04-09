@@ -12,11 +12,20 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
+func newTestRegistry(t *testing.T) *leaseRegistry {
+	t.Helper()
+	registry, err := newLeaseRegistry(false, false, false, "")
+	if err != nil {
+		t.Fatalf("newLeaseRegistry() error = %v", err)
+	}
+	return registry
+}
+
 func TestLeaseRegistryLifecycle(t *testing.T) {
 	t.Parallel()
 
-	runtime := policy.NewRuntime()
-	registry := newLeaseRegistry(runtime)
+	registry := newTestRegistry(t)
+	runtime := registry.policy
 	record := &leaseRecord{
 		Identity: types.Identity{
 			Name:    "demo",
@@ -66,7 +75,7 @@ func TestLeaseRegistryLifecycle(t *testing.T) {
 func TestLeaseRegistryWildcardAndConflict(t *testing.T) {
 	t.Parallel()
 
-	registry := newLeaseRegistry(policy.NewRuntime())
+	registry := newTestRegistry(t)
 	wildcardLease := &leaseRecord{
 		Identity: types.Identity{
 			Name:    "wildcard",
@@ -105,12 +114,11 @@ func TestLeaseRegistryWildcardAndConflict(t *testing.T) {
 func TestLeaseRegistrySnapshotAndRoutableUsePolicy(t *testing.T) {
 	t.Parallel()
 
-	runtime := policy.NewRuntime()
+	registry := newTestRegistry(t)
+	runtime := registry.policy
 	if err := runtime.Approver().SetMode(policy.ModeManual); err != nil {
 		t.Fatalf("SetMode() error = %v", err)
 	}
-
-	registry := newLeaseRegistry(runtime)
 	record := &leaseRecord{
 		Identity: types.Identity{
 			Name:    "demo",
@@ -151,7 +159,7 @@ func TestLeaseRegistrySnapshotAndRoutableUsePolicy(t *testing.T) {
 func TestLeaseRegistryCleanupExpiredClosesBroker(t *testing.T) {
 	t.Parallel()
 
-	registry := newLeaseRegistry(policy.NewRuntime())
+	registry := newTestRegistry(t)
 	record := &leaseRecord{
 		Identity: types.Identity{
 			Name:    "expired",
@@ -180,7 +188,7 @@ func TestLeaseRegistryCleanupExpiredClosesBroker(t *testing.T) {
 func TestServerRunLeaseJanitorRejectsNonPositiveInterval(t *testing.T) {
 	t.Parallel()
 
-	server := &Server{registry: newLeaseRegistry(policy.NewRuntime())}
+	server := &Server{registry: newTestRegistry(t)}
 	err := server.runLeaseJanitor(context.Background(), 0)
 	if err == nil {
 		t.Fatal("runLeaseJanitor() error = nil, want validation error")

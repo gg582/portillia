@@ -5,6 +5,12 @@ import (
 	"time"
 )
 
+const (
+	IdentityKeySeparator       = ":"
+	RelayIdentityFilename      = "identity.json"
+	RelayAdminSettingsFilename = "admin_settings.json"
+)
+
 type Identity struct {
 	Name       string `json:"name,omitempty"`
 	Address    string `json:"address,omitempty"`
@@ -21,7 +27,25 @@ func (i Identity) Copy() Identity {
 	}
 }
 
-const IdentityKeySeparator = ":"
+type RelayIdentity struct {
+	Identity
+	AdminSecretKey      string `json:"-"`
+	WireGuardPublicKey  string `json:"-"`
+	WireGuardPrivateKey string `json:"-"`
+}
+
+func (i RelayIdentity) Copy() RelayIdentity {
+	return RelayIdentity{
+		Identity:            i.Identity.Copy(),
+		AdminSecretKey:      i.AdminSecretKey,
+		WireGuardPublicKey:  i.WireGuardPublicKey,
+		WireGuardPrivateKey: i.WireGuardPrivateKey,
+	}
+}
+
+func (i RelayIdentity) Base() Identity {
+	return i.Identity.Copy()
+}
 
 func (i Identity) Key() string {
 	name := strings.TrimSpace(strings.ToLower(i.Name))
@@ -79,22 +103,23 @@ type AdminLease struct {
 type RelayDescriptor struct {
 	Identity
 
-	Sequence  uint64    `json:"sequence"`
-	Version   uint32    `json:"version"`
-	IssuedAt  time.Time `json:"issued_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-
-	APIHTTPSAddr   string `json:"api_https_addr"`
-	IngressTLSAddr string `json:"ingress_tls_addr,omitempty"`
-
-	SupportsUDP bool `json:"supports_udp,omitempty"`
-	SupportsTCP bool `json:"supports_tcp,omitempty"`
-}
-
-const DiscoveryPollInterval = 1 * time.Minute
-
-type DNSSECStatus struct {
-	State    string `json:"state,omitempty"`
-	DSRecord string `json:"ds_record,omitempty"`
-	Message  string `json:"message,omitempty"`
+	RelayID             string    `json:"relay_id,omitempty"`
+	OwnerAddress        string    `json:"owner_address,omitempty"`
+	SignerPublicKey     string    `json:"signer_public_key,omitempty"`
+	Sequence            uint64    `json:"sequence"`
+	Version             uint32    `json:"version"`
+	IssuedAt            time.Time `json:"issued_at"`
+	ExpiresAt           time.Time `json:"expires_at"`
+	APIHTTPSAddr        string    `json:"api_https_addr"`
+	IngressTLSAddr      string    `json:"ingress_tls_addr,omitempty"`
+	WireGuardPublicKey  string    `json:"wireguard_public_key,omitempty"`
+	WireGuardEndpoint   string    `json:"wireguard_endpoint,omitempty"`
+	OverlayIPv4         string    `json:"overlay_ipv4,omitempty"`
+	OverlayCIDRs        []string  `json:"overlay_cidrs,omitempty"`
+	SupportsUDP         bool      `json:"supports_udp,omitempty"`
+	SupportsTCP         bool      `json:"supports_tcp,omitempty"`
+	SupportsOverlayPeer bool      `json:"supports_overlay_peer,omitempty"`
+	Load                float64   `json:"load,omitempty"`
+	LoadScore           float64   `json:"load_score,omitempty"`
+	LastUpdated         int64     `json:"last_updated,omitempty"`
 }

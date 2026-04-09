@@ -19,7 +19,6 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/portal/auth"
 	"github.com/gosuda/portal-tunnel/v2/portal/discovery"
 	"github.com/gosuda/portal-tunnel/v2/portal/keyless"
-	"github.com/gosuda/portal-tunnel/v2/portal/policy"
 	"github.com/gosuda/portal-tunnel/v2/portal/transport"
 	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/gosuda/portal-tunnel/v2/utils"
@@ -127,36 +126,9 @@ func (s *Server) apiHandler(base *http.ServeMux, keylessSignerHandler http.Handl
 			}
 			keylessSignerHandler.ServeHTTP(w, r)
 		default:
-			if strings.HasPrefix(r.URL.Path, types.PathThumbnailPrefix) {
-				s.serveThumbnail(w, r)
-				return
-			}
 			base.ServeHTTP(w, r)
 		}
 	})
-}
-
-func (s *Server) serveThumbnail(w http.ResponseWriter, r *http.Request) {
-	if !utils.RequireMethod(w, r, http.MethodGet) {
-		return
-	}
-	hostname := strings.TrimPrefix(r.URL.Path, types.PathThumbnailPrefix)
-	hostname = strings.TrimSpace(strings.ToLower(hostname))
-	if hostname == "" {
-		http.NotFound(w, r)
-		return
-	}
-
-	data, contentType, ok := s.thumbnails.Get(hostname)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "public, max-age=300")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, _ *http.Request) {
@@ -171,7 +143,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) extractAllowedClientIP(w http.ResponseWriter, r *http.Request) (string, bool) {
-	clientIP := policy.ExtractClientIP(r, s.cfg.TrustProxyHeaders, s.trustedProxyCIDRs)
+	clientIP := s.registry.policy.ExtractClientIP(r)
 	if !s.registry.policy.IPFilter().IsIPBanned(clientIP) {
 		return clientIP, true
 	}
@@ -190,16 +162,35 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 		ingressAddr = fmt.Sprintf("%s:%d", ingressAddr, s.cfg.SNIPort)
 	}
 
+	var wireGuardPublicKey, wireGuardEndpoint, overlayIPv4 string
+	var overlayCIDRs []string
+	if s.overlay != nil {
+		cfg := s.overlay.Config()
+		wireGuardPublicKey = cfg.PublicKey
+		wireGuardEndpoint = cfg.Endpoint
+		overlayIPv4 = cfg.OverlayIPv4
+		overlayCIDRs = append([]string(nil), cfg.OverlayCIDRs...)
+	}
+
 	self, err := discovery.NormalizeDescriptor(types.RelayDescriptor{
-		Identity:       s.identity.Copy(),
-		Sequence:       uint64(now.UnixMilli()),
-		Version:        1,
-		IssuedAt:       now,
-		ExpiresAt:      now.Add(2 * types.DiscoveryPollInterval),
-		APIHTTPSAddr:   s.cfg.PortalURL,
-		IngressTLSAddr: ingressAddr,
-		SupportsUDP:    s.cfg.UDPEnabled && s.quicTunnel != nil,
-		SupportsTCP:    s.cfg.TCPEnabled,
+		Identity:            s.identity.Base(),
+		RelayID:             s.cfg.PortalURL,
+		OwnerAddress:        s.identity.Address,
+		SignerPublicKey:     s.identity.PublicKey,
+		Sequence:            uint64(now.UnixMilli()),
+		Version:             1,
+		IssuedAt:            now,
+		ExpiresAt:           now.Add(2 * discovery.DiscoveryPollInterval),
+		APIHTTPSAddr:        s.cfg.PortalURL,
+		IngressTLSAddr:      ingressAddr,
+		WireGuardPublicKey:  wireGuardPublicKey,
+		WireGuardEndpoint:   wireGuardEndpoint,
+		OverlayIPv4:         overlayIPv4,
+		OverlayCIDRs:        overlayCIDRs,
+		SupportsUDP:         s.cfg.UDPEnabled && s.quicTunnel != nil,
+		SupportsTCP:         s.cfg.TCPEnabled,
+		SupportsOverlayPeer: s.overlay != nil,
+		Load:                float64(s.activeConns.Load()),
 	})
 	if err != nil {
 		utils.WriteAPIError(w, http.StatusInternalServerError, types.APIErrorCodeInternal, err.Error())
@@ -213,7 +204,7 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 		Relays:          nil,
 	}
 	if s.relaySet != nil {
-		resp.Relays = s.relaySet.ActiveRelayDescriptors()
+		resp.Relays = s.relaySet.AdvertisedDescriptors()
 	}
 	utils.WriteAPIData(w, http.StatusOK, resp)
 }
@@ -593,15 +584,15 @@ func (s *Server) registerLease(req types.RegisterChallengeRequest, clientIP, rep
 		stream:      stream,
 	}
 	if req.UDPEnabled {
-		if s.ports == nil {
+		if s.udpPorts == nil {
 			return types.RegisterResponse{}, errors.New("udp port allocation not available")
 		}
-		port, err := s.ports.Allocate(identity.Name)
+		port, err := s.udpPorts.Allocate(identity.Name)
 		if err != nil {
 			return types.RegisterResponse{}, err
 		}
 		record.datagram = transport.NewRelayDatagram(identityKey, port)
-		record.ports = s.ports
+		record.udpPorts = s.udpPorts
 	}
 	if req.TCPEnabled {
 		if s.tcpPorts == nil {
@@ -633,11 +624,6 @@ func (s *Server) registerLease(req types.RegisterChallengeRequest, clientIP, rep
 		_, _ = s.registry.Unregister(record.Copy())
 		record.Close()
 		return types.RegisterResponse{}, err
-	}
-
-	// Trigger thumbnail generation for apps that don't provide one
-	if record.Metadata.Thumbnail == "" && s.thumbnails != nil {
-		s.thumbnails.TriggerAsync(hostname)
 	}
 
 	resp := types.RegisterResponse{

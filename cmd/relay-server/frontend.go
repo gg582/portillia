@@ -36,13 +36,14 @@ type Frontend struct {
 	server            *portal.Server
 	auth              *adminAuth
 	adminSettingsPath string
+	thumbnails        *thumbnailService
 
 	cachedPortalHTML     []byte
 	cachedPortalHTMLOnce sync.Once
 	landingPageEnabled   atomic.Bool
 }
 
-func NewFrontend(server *portal.Server, adminSecret string, adminSettingsPath string, defaultLandingPageEnabled bool) (*Frontend, error) {
+func NewFrontend(server *portal.Server, identityPath string, defaultLandingPageEnabled bool, headlessShellURL string) (*Frontend, error) {
 	if server == nil {
 		return nil, errors.New("frontend requires portal server")
 	}
@@ -50,7 +51,16 @@ func NewFrontend(server *portal.Server, adminSecret string, adminSettingsPath st
 	if runtime == nil {
 		return nil, errors.New("frontend requires policy runtime")
 	}
+	adminSettingsPath := utils.ResolveRelayAdminSettingsPath(identityPath)
+	if adminSettingsPath == "" {
+		return nil, errors.New("frontend requires identity path")
+	}
 	state, err := loadAdminState(adminSettingsPath, runtime)
+	if err != nil {
+		return nil, err
+	}
+	identity := server.RelayIdentity()
+	auth, err := newAdminAuth(identity.AdminSecretKey)
 	if err != nil {
 		return nil, err
 	}
@@ -58,8 +68,9 @@ func NewFrontend(server *portal.Server, adminSecret string, adminSettingsPath st
 	frontend := &Frontend{
 		distFS:            embeddedDistFS,
 		server:            server,
-		auth:              newAdminAuth(adminSecret),
+		auth:              auth,
 		adminSettingsPath: strings.TrimSpace(adminSettingsPath),
+		thumbnails:        newThumbnailService(headlessShellURL),
 	}
 	landingPageEnabled := defaultLandingPageEnabled
 	if state.LandingPageEnabled != nil {
@@ -93,6 +104,7 @@ func (f *Frontend) Handler() *http.ServeMux {
 	mux.HandleFunc(types.PathAdmin, f.serveAdmin)
 	mux.HandleFunc(types.PathAdminPrefix, f.serveAdmin)
 	mux.HandleFunc(types.PathTunnelStatus, f.serveTunnelStatus)
+	mux.HandleFunc(types.PathThumbnailPrefix, f.serveThumbnail)
 	mux.HandleFunc(types.PathInstallShell, func(w http.ResponseWriter, r *http.Request) {
 		serveInstallScript(w, r, f.server.PortalURL(), false)
 	})
@@ -198,6 +210,7 @@ func (f *Frontend) injectServerData(htmlContent string) string {
 	var snapshots []types.Lease
 	if f.server != nil {
 		snapshots = f.server.LeaseSnapshots()
+		f.attachAutomaticThumbnails(snapshots)
 	}
 	jsonData, err := json.Marshal(snapshots)
 	if err != nil {
@@ -229,6 +242,67 @@ func (f *Frontend) serveTunnelStatus(w http.ResponseWriter, r *http.Request) {
 	utils.WriteAPIData(w, http.StatusOK, resp)
 }
 
+func (f *Frontend) serveThumbnail(w http.ResponseWriter, r *http.Request) {
+	if !utils.RequireMethod(w, r, http.MethodGet) {
+		return
+	}
+
+	hostname := strings.TrimPrefix(r.URL.Path, types.PathThumbnailPrefix)
+	hostname = strings.TrimSpace(strings.ToLower(hostname))
+	if hostname == "" || f.server == nil || f.thumbnails == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	snapshot, ok := f.server.LeaseSnapshotByHostname(hostname)
+	if !ok || snapshot.Metadata.Thumbnail != "" {
+		f.thumbnails.remove(hostname)
+		http.NotFound(w, r)
+		return
+	}
+
+	data, contentType, ok := f.thumbnails.get(hostname)
+	if !ok {
+		var err error
+		data, contentType, err = f.thumbnails.load(hostname)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (f *Frontend) attachAutomaticThumbnails(leases []types.Lease) {
+	if f == nil || f.thumbnails == nil {
+		return
+	}
+	for i := range leases {
+		if leases[i].Hostname == "" || leases[i].Metadata.Thumbnail != "" {
+			continue
+		}
+		leases[i].Metadata.Thumbnail = types.PathThumbnailPrefix + leases[i].Hostname
+		f.thumbnails.triggerAsync(leases[i].Hostname)
+	}
+}
+
+func (f *Frontend) attachAutomaticAdminThumbnails(leases []types.AdminLease) {
+	if f == nil || f.thumbnails == nil {
+		return
+	}
+	for i := range leases {
+		if leases[i].Hostname == "" || leases[i].Metadata.Thumbnail != "" {
+			continue
+		}
+		leases[i].Metadata.Thumbnail = types.PathThumbnailPrefix + leases[i].Hostname
+		f.thumbnails.triggerAsync(leases[i].Hostname)
+	}
+}
+
 func (f *Frontend) injectOGMetadata(htmlContent, title, description string) string {
 	if title == "" {
 		title = "Portal Proxy Gateway"
@@ -258,6 +332,13 @@ func (f *Frontend) setLandingPageEnabled(enabled bool) {
 		return
 	}
 	f.landingPageEnabled.Store(enabled)
+}
+
+func (f *Frontend) Close() {
+	if f == nil || f.thumbnails == nil {
+		return
+	}
+	f.thumbnails.close()
 }
 
 func getContentType(ext string) string {

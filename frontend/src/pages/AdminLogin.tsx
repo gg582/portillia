@@ -29,9 +29,7 @@ export function AdminLogin() {
   // Show auth not enabled message
   useEffect(() => {
     if (!isLoading && !authEnabled) {
-      setError(
-        "Admin authentication is not configured. Set ADMIN_SECRET_KEY in your environment."
-      );
+      setError("Admin authentication is unavailable on this relay.");
     }
   }, [isLoading, authEnabled]);
 
@@ -120,7 +118,7 @@ export function AdminLogin() {
                       className="text-sm font-medium text-muted-foreground"
                       htmlFor="admin-key"
                     >
-                      ADMIN_SECRET_KEY
+                      Admin Secret Key
                     </label>
                     <div className="relative">
                       <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
