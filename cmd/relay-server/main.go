@@ -42,7 +42,6 @@ type relayServerConfig struct {
 	LandingPageEnabled  bool
 	Bootstraps          string
 	DiscoveryEnabled    bool
-	MaxRouting          int
 	WireGuardPrivateKey string
 	WireGuardEndpoint   string
 	OverlayIPv4         string
@@ -82,7 +81,6 @@ func runServeCommand(args []string) error {
 	utils.BoolFlagEnv(fs, &cfg.LandingPageEnabled, "landing-page-enabled", false, "enable landing page by default when no admin setting has been saved yet", "LANDING_PAGE_ENABLED")
 	utils.StringFlagEnv(fs, &cfg.Bootstraps, "bootstraps", "", "additional bootstrap relay API URLs used for discovery expansion", "BOOTSTRAPS")
 	utils.BoolFlagEnv(fs, &cfg.DiscoveryEnabled, "discovery", false, "serve relay discovery endpoints and poll discovery peers", "DISCOVERY")
-	utils.IntFlagEnv(fs, &cfg.MaxRouting, "max-routing", 1, nil, "maximum number of discovery routing attempts per refresh", "MAX_ROUTING")
 	utils.StringFlagEnv(fs, &cfg.WireGuardPrivateKey, "wireguard-private-key", "", "wireguard private key for relay overlay", "WIREGUARD_PRIVATE_KEY")
 	utils.StringFlagEnv(fs, &cfg.WireGuardEndpoint, "wireguard-endpoint", "", "wireguard endpoint (host:port) for relay overlay", "WIREGUARD_ENDPOINT")
 	utils.StringFlagEnv(fs, &cfg.OverlayIPv4, "overlay-ipv4", "", "explicit overlay IPv4 override (auto-derived from public key when unset)", "OVERLAY_IPV4")
@@ -118,9 +116,6 @@ func runServeCommand(args []string) error {
 		printRootUsage(os.Stderr)
 		return err
 	}
-	if err := utils.ValidateMaxRouting(cfg.MaxRouting); err != nil {
-		return err
-	}
 
 	log.Info().
 		Str("release_version", types.ReleaseVersion).
@@ -132,7 +127,6 @@ func runServeCommand(args []string) error {
 		Int("max_port", cfg.MaxPort).
 		Bool("landing_page_enabled", cfg.LandingPageEnabled).
 		Bool("discovery_enabled", cfg.DiscoveryEnabled).
-		Int("max_routing", cfg.MaxRouting).
 		Str("acme_dns_provider", cfg.ACMEDNSProvider).
 		Bool("ens_gasless_enabled", cfg.ENSGaslessEnabled).
 		Bool("udp_enabled", cfg.UDPEnabled).
@@ -180,7 +174,6 @@ func runServer(ctx context.Context, cfg relayServerConfig) error {
 		TrustedProxyCIDRs: cfg.TrustedProxyCIDRs,
 		TrustProxyHeaders: cfg.TrustProxyHeaders,
 		DiscoveryEnabled:  cfg.DiscoveryEnabled,
-		MaxRouting:        cfg.MaxRouting,
 		MinPort:           cfg.MinPort,
 		MaxPort:           cfg.MaxPort,
 		UDPEnabled:        cfg.UDPEnabled,

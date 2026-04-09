@@ -55,7 +55,6 @@ type ServerConfig struct {
 	TrustedProxyCIDRs   string
 	TrustProxyHeaders   bool
 	DiscoveryEnabled    bool
-	MaxRouting          int
 	MinPort             int
 	MaxPort             int
 	UDPEnabled          bool
