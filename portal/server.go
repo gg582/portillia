@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gosuda/keyless_tls/relay/l4"
@@ -37,190 +38,124 @@ const (
 )
 
 type ServerConfig struct {
-	PortalURL           string
-	IdentityPath        string
-	Bootstraps          []string
-	WireGuardPrivateKey string
-	DiscoveryPort       int
-	WireGuardEndpoint   string
-	WireGuardPublicKey  string
-	OverlayIPv4         string
-	OverlayCIDRs        []string
-	ACME                acme.Config
-	APIPort             int
-	SNIPort             int
-	APIListenAddr       string
-	SNIListenAddr       string
-	TrustedProxyCIDRs   string
-	TrustProxyHeaders   bool
-	DiscoveryEnabled    bool
-	MinPort             int
-	MaxPort             int
-	UDPEnabled          bool
-	TCPEnabled          bool
+	PortalURL         string
+	IdentityPath      string
+	Bootstraps        []string
+	DiscoveryEnabled  bool
+	WireGuardPort     int
+	APIPort           int
+	SNIPort           int
+	APIListenAddr     string
+	SNIListenAddr     string
+	TrustProxyHeaders bool
+	TrustedProxyCIDRs string
+	UDPEnabled        bool
+	TCPEnabled        bool
+	MinPort           int
+	MaxPort           int
+	ACME              acme.Config
 }
 
-type Server struct {
-	sniListener       net.Listener
-	apiListener       net.Listener
-	apiServer         *http.Server
-	apiTLSClose       io.Closer
-	acmeManager       *acme.Manager
-	quicTunnel        *quic.Listener
-	overlay           *wireguard.Overlay
-	cancel            context.CancelFunc
-	group             *errgroup.Group
-	registry          *leaseRegistry
-	ports             *transport.PortAllocator
-	tcpPorts          *transport.PortAllocator
-	loadMgr           *policy.LoadManager
-	identity          types.Identity
-	cfg               ServerConfig
-	trustedProxyCIDRs []*net.IPNet
-	relaySet          *discovery.RelaySet
-	shutdownOnce      sync.Once
-}
-
-func NewServer(cfg ServerConfig) (*Server, error) {
+func normalizeServerConfig(cfg ServerConfig) (ServerConfig, error) {
 	cfg.PortalURL = strings.TrimSuffix(strings.TrimSpace(cfg.PortalURL), "/")
+	cfg.IdentityPath = utils.ResolveRelayStateDir(cfg.IdentityPath)
+	if cfg.IdentityPath == "" {
+		return ServerConfig{}, errors.New("identity path is required")
+	}
+
+	selfRelayURL, err := utils.NormalizeRelayURL(cfg.PortalURL)
+	if err != nil {
+		return ServerConfig{}, fmt.Errorf("normalize portal url: %w", err)
+	}
+	if utils.PortalRootHost(selfRelayURL) == "" {
+		return ServerConfig{}, errors.New("root host is required")
+	}
+
+	bootstraps, err := utils.NormalizeRelayURLs(cfg.Bootstraps...)
+	if err != nil {
+		return ServerConfig{}, fmt.Errorf("normalize bootstraps: %w", err)
+	}
+	cfg.PortalURL = selfRelayURL
+	cfg.Bootstraps = bootstraps
+	cfg.Bootstraps = utils.RemoveRelayURL(cfg.Bootstraps, selfRelayURL)
+
 	cfg.APIPort = utils.IntOrDefault(cfg.APIPort, 4017)
 	cfg.SNIPort = utils.IntOrDefault(cfg.SNIPort, 443)
 	cfg.APIListenAddr = utils.StringOrDefault(cfg.APIListenAddr, fmt.Sprintf(":%d", cfg.APIPort))
 	cfg.SNIListenAddr = utils.StringOrDefault(cfg.SNIListenAddr, fmt.Sprintf(":%d", cfg.SNIPort))
-	rootHost := utils.PortalRootHost(cfg.PortalURL)
-	if rootHost == "" {
-		return nil, errors.New("root host is required")
-	}
-	trustedProxyCIDRs, err := utils.ParseCIDRs(cfg.TrustedProxyCIDRs)
-	if err != nil {
-		return nil, fmt.Errorf("parse trusted proxy cidrs: %w", err)
-	}
-	bootstraps, err := utils.NormalizeRelayURLs(cfg.Bootstraps...)
-	if err != nil {
-		return nil, fmt.Errorf("normalize bootstraps: %w", err)
-	}
-	selfRelayURL := ""
-	if trimmedPortalURL := strings.TrimSpace(cfg.PortalURL); trimmedPortalURL != "" {
-		normalizedPortalURL, err := utils.NormalizeRelayURL(trimmedPortalURL)
-		if err != nil {
-			return nil, fmt.Errorf("normalize portal url: %w", err)
-		}
-		selfRelayURL = normalizedPortalURL
-	}
-	if len(bootstraps) > 0 {
-		filtered := bootstraps[:0]
-		for _, relayURL := range bootstraps {
-			if selfRelayURL != "" && relayURL == selfRelayURL {
-				continue
-			}
-			filtered = append(filtered, relayURL)
-		}
-		bootstraps = filtered
-	}
-	cfg.Bootstraps = bootstraps
-	generatedWireGuardPrivateKey := ""
-	if cfg.DiscoveryEnabled && strings.TrimSpace(cfg.WireGuardPrivateKey) == "" {
-		generatedWireGuardPrivateKey, err = utils.GenerateWireGuardPrivateKey()
-		if err != nil {
-			return nil, err
-		}
-		cfg.WireGuardPrivateKey = generatedWireGuardPrivateKey
-	}
-	wgConfig, err := wireguard.NormalizeConfig(rootHost, wireguard.Config{
-		PrivateKey:   cfg.WireGuardPrivateKey,
-		PublicKey:    cfg.WireGuardPublicKey,
-		Endpoint:     cfg.WireGuardEndpoint,
-		OverlayIPv4:  cfg.OverlayIPv4,
-		OverlayCIDRs: cfg.OverlayCIDRs,
-		ListenPort:   cfg.DiscoveryPort,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if generatedWireGuardPrivateKey != "" {
-		log.Warn().
-			Str("wireguard_public_key", wgConfig.PublicKey).
-			Str("wireguard_private_key", generatedWireGuardPrivateKey).
-			Msg("generated wireguard private key; set WIREGUARD_PRIVATE_KEY to preserve relay identity")
-	}
-	cfg.WireGuardPrivateKey = wgConfig.PrivateKey
-	cfg.WireGuardPublicKey = wgConfig.PublicKey
-	cfg.WireGuardEndpoint = wgConfig.Endpoint
-	cfg.OverlayIPv4 = wgConfig.OverlayIPv4
-	cfg.OverlayCIDRs = append([]string(nil), wgConfig.OverlayCIDRs...)
-	transportEnabled := cfg.UDPEnabled || cfg.TCPEnabled
+
 	hasPortRange := cfg.MinPort > 0 && cfg.MaxPort > 0
-	if transportEnabled {
+	if cfg.UDPEnabled || cfg.TCPEnabled {
 		switch {
 		case !hasPortRange:
-			return nil, errors.New("udp and tcp relay transport require a valid min port and max port range")
+			return ServerConfig{}, errors.New("udp and tcp relay transport require a valid min port and max port range")
 		case cfg.MinPort > 65535 || cfg.MaxPort > 65535:
-			return nil, errors.New("min port and max port must be between 1 and 65535")
+			return ServerConfig{}, errors.New("min port and max port must be between 1 and 65535")
 		case cfg.MinPort > cfg.MaxPort:
-			return nil, errors.New("min port must be less than or equal to max port")
+			return ServerConfig{}, errors.New("min port must be less than or equal to max port")
 		}
 	}
 
 	cfg.UDPEnabled = cfg.UDPEnabled && hasPortRange
 	cfg.TCPEnabled = cfg.TCPEnabled && hasPortRange
+	return cfg, nil
+}
 
-	portMin, portMax := 0, 0
-	if cfg.UDPEnabled {
-		portMin = cfg.MinPort
-		portMax = cfg.MaxPort
+type Server struct {
+	cancel       context.CancelFunc
+	group        *errgroup.Group
+	shutdownOnce sync.Once
+
+	cfg         ServerConfig
+	identity    types.RelayIdentity
+	acmeManager *acme.Manager
+	activeConns atomic.Int64
+
+	apiListener net.Listener
+	sniListener net.Listener
+	apiServer   *http.Server
+	apiTLSClose io.Closer
+	quicTunnel  *quic.Listener
+
+	overlay  *wireguard.Overlay
+	relaySet *discovery.RelaySet
+	registry *leaseRegistry
+	udpPorts *transport.PortAllocator
+	tcpPorts *transport.PortAllocator
+}
+
+func NewServer(cfg ServerConfig) (*Server, error) {
+	cfg, err := normalizeServerConfig(cfg)
+	if err != nil {
+		return nil, err
 	}
 
-	identity, created, err := utils.LoadOrCreateIdentity(cfg.IdentityPath, types.Identity{Name: rootHost})
+	identity, err := utils.LoadOrCreateRelayIdentity(cfg.IdentityPath, utils.PortalRootHost(cfg.PortalURL), cfg.DiscoveryEnabled)
 	if err != nil {
 		return nil, fmt.Errorf("load relay identity: %w", err)
 	}
-	if created {
-		log.Warn().
-			Str("identity_path", cfg.IdentityPath).
-			Str("address", identity.Address).
-			Msg("generated relay identity and saved it to disk")
-	} else {
-		log.Info().
-			Str("identity_path", cfg.IdentityPath).
-			Str("address", identity.Address).
-			Msg("loaded relay identity from disk")
+	registry, err := newLeaseRegistry(cfg.UDPEnabled, cfg.TCPEnabled, cfg.TrustProxyHeaders, cfg.TrustedProxyCIDRs)
+	if err != nil {
+		return nil, err
 	}
-
-	tcpPortMin, tcpPortMax := 0, 0
-	if cfg.TCPEnabled {
-		tcpPortMin = cfg.MinPort
-		tcpPortMax = cfg.MaxPort
-	}
-
-	runtimePolicy := policy.NewRuntime()
-	runtimePolicy.SetUDPPolicy(cfg.UDPEnabled, 0)
-	runtimePolicy.SetTCPPortPolicy(cfg.TCPEnabled, 0)
-	registry := newLeaseRegistry(runtimePolicy)
-	ports := transport.NewPortAllocator(portMin, portMax, 5*time.Minute)
-	tcpPorts := transport.NewPortAllocator(tcpPortMin, tcpPortMax, 5*time.Minute)
-
-	s := &Server{
-		cfg:               cfg,
-		registry:          registry,
-		ports:             ports,
-		tcpPorts:          tcpPorts,
-		loadMgr:           policy.NewLoadManager(),
-		identity:          identity,
-		trustedProxyCIDRs: trustedProxyCIDRs,
-	}
+	var relaySet *discovery.RelaySet
 	if cfg.DiscoveryEnabled {
-		set := discovery.NewRelaySet()
-		if err := set.SetSelfRelay(identity, selfRelayURL); err != nil {
-			return nil, fmt.Errorf("set self relay: %w", err)
-		}
-		if err := set.SetBootstrapRelayURLs(cfg.Bootstraps); err != nil {
+		relaySet, err = discovery.NewRelaySet(identity.Base(), cfg.PortalURL, cfg.Bootstraps)
+		if err != nil {
 			return nil, err
 		}
-		s.relaySet = set
 	}
 
-	return s, nil
+	return &Server{
+		cfg:      cfg,
+		identity: identity,
+		registry: registry,
+		relaySet: relaySet,
+		udpPorts: transport.NewPortAllocator(cfg.MinPort, cfg.MaxPort, 5*time.Minute),
+		tcpPorts: transport.NewPortAllocator(cfg.MinPort, cfg.MaxPort, 5*time.Minute),
+	}, nil
 }
+
 func (s *Server) Start(ctx context.Context, apiMux *http.ServeMux) error {
 	if s.group != nil {
 		return errors.New("server already started")
@@ -231,30 +166,64 @@ func (s *Server) Start(ctx context.Context, apiMux *http.ServeMux) error {
 	}
 
 	serverCtx, cancel := context.WithCancel(ctx)
+	started := false
+	var apiListener net.Listener
+	var sniListener net.Listener
+	var apiServer *http.Server
+	var apiCloser io.Closer
+	var overlay *wireguard.Overlay
+	var quicTunnel *quic.Listener
+	defer func() {
+		if started {
+			return
+		}
+		acmeManager.Stop()
+		if overlay != nil {
+			_ = overlay.Shutdown(context.Background())
+		}
+		if apiServer != nil {
+			_ = apiServer.Close()
+		}
+		if apiCloser != nil {
+			_ = apiCloser.Close()
+		}
+		if sniListener != nil {
+			_ = sniListener.Close()
+		}
+		if apiListener != nil {
+			_ = apiListener.Close()
+		}
+		cancel()
+	}()
 	var listenConfig net.ListenConfig
 
-	apiListener, err := listenConfig.Listen(serverCtx, "tcp", s.cfg.APIListenAddr)
+	apiListener, err = listenConfig.Listen(serverCtx, "tcp", s.cfg.APIListenAddr)
 	if err != nil {
-		acmeManager.Stop()
-		cancel()
 		return fmt.Errorf("listen api: %w", err)
 	}
-	sniListener, err := listenConfig.Listen(serverCtx, "tcp", s.cfg.SNIListenAddr)
+	sniListener, err = listenConfig.Listen(serverCtx, "tcp", s.cfg.SNIListenAddr)
 	if err != nil {
-		acmeManager.Stop()
-		_ = apiListener.Close()
-		cancel()
 		return fmt.Errorf("listen sni: %w", err)
 	}
 
 	group, groupCtx := errgroup.WithContext(serverCtx)
 	wrappedAPIListener, apiServer, apiCloser, err := s.newAPIServer(apiListener, apiMux, apiTLS)
 	if err != nil {
-		acmeManager.Stop()
-		_ = apiListener.Close()
-		_ = sniListener.Close()
-		cancel()
 		return err
+	}
+
+	if s.relaySet != nil && strings.TrimSpace(s.identity.WireGuardPrivateKey) != "" {
+		overlay, err = s.startOverlay()
+		if err != nil {
+			return err
+		}
+	}
+	if s.cfg.UDPEnabled {
+		quicTunnel, err = s.newQUICTunnelListener(apiTLS)
+		if err != nil {
+			log.Warn().Err(err).Msg("quic tunnel listener disabled")
+			quicTunnel = nil
+		}
 	}
 
 	s.apiListener = wrappedAPIListener
@@ -264,34 +233,23 @@ func (s *Server) Start(ctx context.Context, apiMux *http.ServeMux) error {
 	s.acmeManager = acmeManager
 	s.cancel = cancel
 	s.group = group
-
-	if s.relaySet != nil && strings.TrimSpace(s.cfg.WireGuardPrivateKey) != "" {
-		if err := s.startOverlay(); err != nil {
-			acmeManager.Stop()
-			_ = apiServer.Close()
-			_ = apiCloser.Close()
-			_ = sniListener.Close()
-			cancel()
-			return err
-		}
-	}
+	s.overlay = overlay
+	s.quicTunnel = quicTunnel
+	started = true
 
 	group.Go(s.runAPIServer)
-	if s.overlay != nil {
-		group.Go(s.overlay.Serve)
-	}
 	group.Go(func() error { return s.runSNIListener(groupCtx) })
 	group.Go(func() error { return s.runLeaseJanitor(groupCtx, 5*time.Second) })
 	if s.cfg.DiscoveryEnabled {
 		group.Go(func() error { return s.runRelayDiscoveryLoop(groupCtx) })
 	}
-	s.acmeManager.Start(serverCtx)
-
-	if s.cfg.UDPEnabled {
-		if err := s.startQUICTunnelListener(apiTLS); err != nil {
-			log.Warn().Err(err).Msg("quic tunnel listener disabled")
-		}
+	if s.overlay != nil {
+		group.Go(s.overlay.Serve)
 	}
+	if s.quicTunnel != nil {
+		group.Go(s.runQUICTunnelListener)
+	}
+	s.acmeManager.Start(serverCtx)
 	group.Go(func() error {
 		<-groupCtx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -307,8 +265,8 @@ func (s *Server) Start(ctx context.Context, apiMux *http.ServeMux) error {
 		Int("min_port", s.cfg.MinPort).
 		Int("max_port", s.cfg.MaxPort).
 		Bool("discovery_enabled", s.cfg.DiscoveryEnabled).
-		Bool("wireguard_enabled", s.wireGuardOverlayEnabled()).
-		Bool("udp_enabled", s.cfg.UDPEnabled).
+		Bool("wireguard_enabled", s.overlay != nil).
+		Bool("udp_enabled", s.quicTunnel != nil).
 		Bool("tcp_enabled", s.cfg.TCPEnabled)
 	if s.quicTunnel != nil {
 		logEvent = logEvent.Str("internal_quic_tunnel_addr", s.quicTunnel.Addr().String())
@@ -329,9 +287,9 @@ func (s *Server) Wait() error {
 	return err
 }
 
-func (s *Server) Identity() types.Identity {
+func (s *Server) RelayIdentity() types.RelayIdentity {
 	if s == nil {
-		return types.Identity{}
+		return types.RelayIdentity{}
 	}
 	return s.identity.Copy()
 }
@@ -400,13 +358,6 @@ func (s *Server) PortalURL() string {
 		return ""
 	}
 	return s.cfg.PortalURL
-}
-
-func (s *Server) wireGuardOverlayEnabled() bool {
-	if s == nil {
-		return false
-	}
-	return strings.TrimSpace(s.cfg.WireGuardPrivateKey) != ""
 }
 
 func (s *Server) LeaseSnapshots() []types.Lease {
@@ -602,13 +553,13 @@ func (s *Server) runLeaseJanitor(ctx context.Context, interval time.Duration) er
 	}
 }
 
-func (s *Server) startQUICTunnelListener(apiTLS keyless.TLSMaterialConfig) error {
+func (s *Server) newQUICTunnelListener(apiTLS keyless.TLSMaterialConfig) (*quic.Listener, error) {
 	if len(apiTLS.KeyPEM) == 0 {
-		return fmt.Errorf("quic tunnel requires api tls key")
+		return nil, fmt.Errorf("quic tunnel requires api tls key")
 	}
 	tlsCert, err := tls.X509KeyPair(apiTLS.CertPEM, apiTLS.KeyPEM)
 	if err != nil {
-		return fmt.Errorf("parse quic tls keypair: %w", err)
+		return nil, fmt.Errorf("parse quic tls keypair: %w", err)
 	}
 
 	tlsConf := &tls.Config{
@@ -625,21 +576,17 @@ func (s *Server) startQUICTunnelListener(apiTLS keyless.TLSMaterialConfig) error
 
 	listener, err := quic.ListenAddr(s.cfg.SNIListenAddr, tlsConf, quicConf)
 	if err != nil {
-		return fmt.Errorf("listen quic: %w", err)
+		return nil, fmt.Errorf("listen quic: %w", err)
 	}
-
-	s.quicTunnel = listener
-	s.group.Go(func() error { return s.runQUICTunnelListener(listener) })
-
-	log.Info().
-		Str("internal_quic_tunnel_addr", listener.Addr().String()).
-		Msg("internal quic tunnel listener started")
-	return nil
+	return listener, nil
 }
 
-func (s *Server) runQUICTunnelListener(listener *quic.Listener) error {
+func (s *Server) runQUICTunnelListener() error {
+	if s.quicTunnel == nil {
+		return nil
+	}
 	for {
-		conn, err := listener.Accept(context.Background())
+		conn, err := s.quicTunnel.Accept(context.Background())
 		if err != nil {
 			if errors.Is(err, quic.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 				return nil
@@ -650,7 +597,7 @@ func (s *Server) runQUICTunnelListener(listener *quic.Listener) error {
 	}
 }
 
-func (s *Server) startOverlay() error {
+func (s *Server) startOverlay() (*wireguard.Overlay, error) {
 	peerMux := http.NewServeMux()
 	peerMux.HandleFunc(types.PathRoot, s.handleRoot)
 	peerMux.HandleFunc(types.PathHealthz, s.handleHealthz)
@@ -658,25 +605,21 @@ func (s *Server) startOverlay() error {
 		peerMux.HandleFunc(types.PathDiscovery, s.handleRelayDiscovery)
 	}
 
-	overlay, err := wireguard.NewOverlay(wireguard.Config{
-		PrivateKey:   s.cfg.WireGuardPrivateKey,
-		PublicKey:    s.cfg.WireGuardPublicKey,
-		Endpoint:     s.cfg.WireGuardEndpoint,
-		OverlayIPv4:  s.cfg.OverlayIPv4,
-		OverlayCIDRs: s.cfg.OverlayCIDRs,
-		ListenPort:   s.cfg.DiscoveryPort,
+	overlay, err := wireguard.NewOverlay(s.identity.Name, wireguard.Config{
+		PrivateKey: s.identity.WireGuardPrivateKey,
+		PublicKey:  s.identity.WireGuardPublicKey,
+		Endpoint:   net.JoinHostPort(s.identity.Name, fmt.Sprintf("%d", utils.IntOrDefault(s.cfg.WireGuardPort, wireguard.DefaultListenPort))),
 	}, peerMux)
 	if err != nil {
-		return fmt.Errorf("start wireguard overlay: %w", err)
+		return nil, fmt.Errorf("start wireguard overlay: %w", err)
 	}
 
 	if err := overlay.Sync(s.relaySet.View()); err != nil {
 		_ = overlay.Shutdown(context.Background())
-		return fmt.Errorf("sync wireguard peers: %w", err)
+		return nil, fmt.Errorf("sync wireguard peers: %w", err)
 	}
 
-	s.overlay = overlay
-	return nil
+	return overlay, nil
 }
 
 func (s *Server) runRelayDiscoveryLoop(ctx context.Context) error {
@@ -711,22 +654,20 @@ func (s *Server) runRelayDiscoveryLoop(ctx context.Context) error {
 }
 
 func (s *Server) BridgeConns(left, right net.Conn) {
-	s.loadMgr.RecordConnStart()
-	defer s.loadMgr.RecordConnEnd()
+	s.activeConns.Add(1)
+	defer s.activeConns.Add(-1)
 
 	defer left.Close()
 	defer right.Close()
 
 	var group errgroup.Group
 	group.Go(func() error {
-		n, err := io.Copy(right, left)
-		s.loadMgr.RecordBytesIn(n)
+		_, err := io.Copy(right, left)
 		closeWrite(right)
 		return err
 	})
 	group.Go(func() error {
-		n, err := io.Copy(left, right)
-		s.loadMgr.RecordBytesOut(n)
+		_, err := io.Copy(left, right)
 		closeWrite(left)
 		return err
 	})

@@ -60,7 +60,7 @@ func applyRelay(t *testing.T, set *discovery.RelaySet, identity types.Identity, 
 
 func tempIdentityPath(t *testing.T) string {
 	t.Helper()
-	return filepath.Join(t.TempDir(), "relay_identity.json")
+	return t.TempDir()
 }
 
 func newTestClient(t *testing.T, cancel context.CancelFunc, server *Server) *http.Client {
@@ -541,7 +541,7 @@ func TestServerDiscoverySkipsSelfRelayHint(t *testing.T) {
 	now := time.Now().UTC()
 	bootstrapDesc := mustRelayDescriptor(t, "https://bootstrap.example.com")
 	selfHint, err := discovery.NormalizeDescriptor(types.RelayDescriptor{
-		Identity:     server.identity.Copy(),
+		Identity:     server.identity.Base(),
 		RelayID:      "https://self-mirror.example.com",
 		Sequence:     uint64(now.UnixMilli()),
 		Version:      1,

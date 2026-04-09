@@ -93,6 +93,10 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 			return nil, fmt.Errorf("invalid --udp-addr value %q: %w", cfg.UDPAddr, err)
 		}
 	}
+	relaySet, err := discovery.NewRelaySet(types.Identity{}, "", relayURLs)
+	if err != nil {
+		return nil, err
+	}
 
 	exposureCtx, cancel := context.WithCancel(ctx)
 	exposure := &Exposure{
@@ -108,15 +112,11 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 		rootCAPEM:      append([]byte(nil), cfg.RootCAPEM...),
 		accepted:       make(chan net.Conn, max(len(relayURLs)*defaultReadyTarget*2, 1)),
 		datagrams:      make(chan types.DatagramFrame, max(len(relayURLs)*32, 1)),
-		relaySet:       discovery.NewRelaySet(),
+		relaySet:       relaySet,
 		relayListeners: make(map[string]*Listener, len(relayURLs)),
 	}
 
 	if len(relayURLs) > 0 {
-		if err := exposure.relaySet.SetBootstrapRelayURLs(relayURLs); err != nil {
-			_ = exposure.Close()
-			return nil, err
-		}
 		if err := exposure.reconcileRelayListeners(true); err != nil {
 			_ = exposure.Close()
 			return nil, err

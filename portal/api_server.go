@@ -19,7 +19,6 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/portal/auth"
 	"github.com/gosuda/portal-tunnel/v2/portal/discovery"
 	"github.com/gosuda/portal-tunnel/v2/portal/keyless"
-	"github.com/gosuda/portal-tunnel/v2/portal/policy"
 	"github.com/gosuda/portal-tunnel/v2/portal/transport"
 	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/gosuda/portal-tunnel/v2/utils"
@@ -144,7 +143,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) extractAllowedClientIP(w http.ResponseWriter, r *http.Request) (string, bool) {
-	clientIP := policy.ExtractClientIP(r, s.cfg.TrustProxyHeaders, s.trustedProxyCIDRs)
+	clientIP := s.registry.policy.ExtractClientIP(r)
 	if !s.registry.policy.IPFilter().IsIPBanned(clientIP) {
 		return clientIP, true
 	}
@@ -163,8 +162,18 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 		ingressAddr = fmt.Sprintf("%s:%d", ingressAddr, s.cfg.SNIPort)
 	}
 
+	var wireGuardPublicKey, wireGuardEndpoint, overlayIPv4 string
+	var overlayCIDRs []string
+	if s.overlay != nil {
+		cfg := s.overlay.Config()
+		wireGuardPublicKey = cfg.PublicKey
+		wireGuardEndpoint = cfg.Endpoint
+		overlayIPv4 = cfg.OverlayIPv4
+		overlayCIDRs = append([]string(nil), cfg.OverlayCIDRs...)
+	}
+
 	self, err := discovery.NormalizeDescriptor(types.RelayDescriptor{
-		Identity:            s.identity.Copy(),
+		Identity:            s.identity.Base(),
 		RelayID:             s.cfg.PortalURL,
 		OwnerAddress:        s.identity.Address,
 		SignerPublicKey:     s.identity.PublicKey,
@@ -174,14 +183,14 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:           now.Add(2 * discovery.DiscoveryPollInterval),
 		APIHTTPSAddr:        s.cfg.PortalURL,
 		IngressTLSAddr:      ingressAddr,
-		WireGuardPublicKey:  wireGuardField(s.wireGuardOverlayEnabled(), s.cfg.WireGuardPublicKey),
-		WireGuardEndpoint:   wireGuardField(s.wireGuardOverlayEnabled(), s.cfg.WireGuardEndpoint),
-		OverlayIPv4:         wireGuardField(s.wireGuardOverlayEnabled(), s.cfg.OverlayIPv4),
-		OverlayCIDRs:        overlayCIDRsField(s.wireGuardOverlayEnabled(), s.cfg.OverlayCIDRs),
+		WireGuardPublicKey:  wireGuardPublicKey,
+		WireGuardEndpoint:   wireGuardEndpoint,
+		OverlayIPv4:         overlayIPv4,
+		OverlayCIDRs:        overlayCIDRs,
 		SupportsUDP:         s.cfg.UDPEnabled && s.quicTunnel != nil,
 		SupportsTCP:         s.cfg.TCPEnabled,
-		SupportsOverlayPeer: s.wireGuardOverlayEnabled(),
-		Load:                float64(s.loadMgr.ActiveConns()),
+		SupportsOverlayPeer: s.overlay != nil,
+		Load:                float64(s.activeConns.Load()),
 	})
 	if err != nil {
 		utils.WriteAPIError(w, http.StatusInternalServerError, types.APIErrorCodeInternal, err.Error())
@@ -374,22 +383,6 @@ func (s *Server) handleUnregister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.WriteAPIData(w, http.StatusOK, map[string]any{})
-}
-
-func wireGuardField(enabled bool, value string) string {
-	if !enabled {
-		return ""
-	}
-	return value
-}
-
-func overlayCIDRsField(enabled bool, cidrs []string) []string {
-	if !enabled || len(cidrs) == 0 {
-		return nil
-	}
-	out := make([]string, len(cidrs))
-	copy(out, cidrs)
-	return out
 }
 
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
@@ -591,15 +584,15 @@ func (s *Server) registerLease(req types.RegisterChallengeRequest, clientIP, rep
 		stream:      stream,
 	}
 	if req.UDPEnabled {
-		if s.ports == nil {
+		if s.udpPorts == nil {
 			return types.RegisterResponse{}, errors.New("udp port allocation not available")
 		}
-		port, err := s.ports.Allocate(identity.Name)
+		port, err := s.udpPorts.Allocate(identity.Name)
 		if err != nil {
 			return types.RegisterResponse{}, err
 		}
 		record.datagram = transport.NewRelayDatagram(identityKey, port)
-		record.ports = s.ports
+		record.udpPorts = s.udpPorts
 	}
 	if req.TCPEnabled {
 		if s.tcpPorts == nil {

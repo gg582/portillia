@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gosuda/portal-tunnel/v2/portal/discovery"
 	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
@@ -209,7 +208,7 @@ func TestMITMProbeDetectionBansListener(t *testing.T) {
 
 	listener := &Listener{
 		api:      &apiClient{baseURL: relayURL},
-		relaySet: discovery.NewRelaySet(),
+		relaySet: mustRelaySet(t, relayURL.String()),
 		cancel: func() {
 			select {
 			case <-doneCh:
@@ -220,9 +219,6 @@ func TestMITMProbeDetectionBansListener(t *testing.T) {
 		doneCh:     doneCh,
 		registered: make(chan struct{}),
 		banMITM:    true,
-	}
-	if err := listener.relaySet.SetBootstrapRelayURLs([]string{relayURL.String()}); err != nil {
-		t.Fatalf("SetBootstrapRelayURLs() error = %v", err)
 	}
 	listener.mitmManager = newMITMManager(context.Background(), listener)
 
@@ -251,13 +247,10 @@ func TestMITMProbeDetectionWarnsWithoutBanningListener(t *testing.T) {
 
 	listener := &Listener{
 		api:        &apiClient{baseURL: relayURL},
-		relaySet:   discovery.NewRelaySet(),
+		relaySet:   mustRelaySet(t, relayURL.String()),
 		doneCh:     doneCh,
 		registered: make(chan struct{}),
 		banMITM:    false,
-	}
-	if err := listener.relaySet.SetBootstrapRelayURLs([]string{relayURL.String()}); err != nil {
-		t.Fatalf("SetBootstrapRelayURLs() error = %v", err)
 	}
 	listener.mitmManager = newMITMManager(context.Background(), listener)
 

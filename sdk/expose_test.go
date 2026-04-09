@@ -9,6 +9,16 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
+func mustRelaySet(t *testing.T, relayURLs ...string) *discovery.RelaySet {
+	t.Helper()
+
+	set, err := discovery.NewRelaySet(types.Identity{}, "", relayURLs)
+	if err != nil {
+		t.Fatalf("NewRelaySet() error = %v", err)
+	}
+	return set
+}
+
 func mustRelayDescriptor(t *testing.T, relayName, relayURL string) types.RelayDescriptor {
 	t.Helper()
 
@@ -55,11 +65,8 @@ func TestExposureBanRelayURLMovesRelay(t *testing.T) {
 	}
 
 	exposure := &Exposure{
-		relaySet:       discovery.NewRelaySet(),
+		relaySet:       mustRelaySet(t, relayA, relayB),
 		relayListeners: make(map[string]*Listener, 2),
-	}
-	if err := exposure.relaySet.SetBootstrapRelayURLs([]string{relayA, relayB}); err != nil {
-		t.Fatalf("SetBootstrapRelayURLs() error = %v", err)
 	}
 	exposure.relayListeners = map[string]*Listener{
 		relayA: listener,
@@ -94,7 +101,7 @@ func TestExposureSetRelayURLsSkipsBannedRelay(t *testing.T) {
 	)
 
 	exposure := &Exposure{
-		relaySet:       discovery.NewRelaySet(),
+		relaySet:       mustRelaySet(t),
 		relayListeners: make(map[string]*Listener, 1),
 	}
 	exposure.relaySet.BanRelayURL(relayB)
@@ -134,11 +141,8 @@ func TestExposureSetRelayURLsRemovesStaleListener(t *testing.T) {
 
 	relayAClosed := make(chan struct{})
 	exposure := &Exposure{
-		relaySet:       discovery.NewRelaySet(),
+		relaySet:       mustRelaySet(t, relayA, relayB),
 		relayListeners: make(map[string]*Listener, 2),
-	}
-	if err := exposure.relaySet.SetBootstrapRelayURLs([]string{relayA, relayB}); err != nil {
-		t.Fatalf("SetBootstrapRelayURLs() error = %v", err)
 	}
 	exposure.relayListeners = map[string]*Listener{
 		relayA: {
@@ -181,7 +185,7 @@ func TestExposureSetRelayURLsRemovesStaleListener(t *testing.T) {
 }
 
 func TestExposurePinDiscoveredDescriptorAllowsURLChangeForSameIdentity(t *testing.T) {
-	exposure := &Exposure{relaySet: discovery.NewRelaySet()}
+	exposure := &Exposure{relaySet: mustRelaySet(t)}
 	desc := mustRelayDescriptor(t, "relay-a", "https://relay-a.example")
 
 	if err := applyRelayDiscovery(t, exposure.relaySet, desc.Identity, desc.APIHTTPSAddr, types.DiscoveryResponse{ProtocolVersion: types.ProtocolVersion, Self: desc}, time.Now().UTC()); err != nil {

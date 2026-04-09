@@ -57,12 +57,19 @@ type relayDescriptorProjection struct {
 	bootstrap bool
 }
 
-func NewRelaySet() *RelaySet {
-	return &RelaySet{
+func NewRelaySet(identity types.Identity, relayURL string, bootstrapRelayURLs []string) (*RelaySet, error) {
+	set := &RelaySet{
 		relayKeysByURL: make(map[string]string),
 		relays:         make(map[string]RelayState),
 		localByURL:     make(map[string]RelayState),
 	}
+	if err := set.SetSelfRelay(identity, relayURL); err != nil {
+		return nil, err
+	}
+	if err := set.SetBootstrapRelayURLs(bootstrapRelayURLs); err != nil {
+		return nil, err
+	}
+	return set, nil
 }
 
 func relayExpiredAt(state RelayState, now time.Time) bool {

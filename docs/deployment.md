@@ -25,10 +25,10 @@ Choose one of these modes:
 
 - Manual certificate mode
   - Leave `ACME_DNS_PROVIDER` empty.
-  - Place `fullchain.pem` and `privatekey.pem` in `KEYLESS_DIR`.
+  - Place `fullchain.pem` and `privatekey.pem` in `IDENTITY_PATH`.
   - Portal uses the files as-is and does not modify DNS or renew the certificate.
 - Manual certificate + gasless mode
-  - Place `fullchain.pem` and `privatekey.pem` in `KEYLESS_DIR`.
+  - Place `fullchain.pem` and `privatekey.pem` in `IDENTITY_PATH`.
   - Set `ACME_DNS_PROVIDER`.
   - Portal keeps the manual certificate files, skips ACME certificate issuance, and still uses the provider for DNSSEC + ENS TXT automation.
 - Managed ACME mode
@@ -158,7 +158,7 @@ Portal can optionally enable ENS gasless DNS import for the base domain and leas
 - Enable it only when you specifically need ENS gasless DNS import.
 - ENS gasless automation requires `ACME_DNS_PROVIDER`.
 - Portal uses that provider for both DNSSEC automation and ENS TXT create/delete.
-- If valid manual certificate files already exist in `KEYLESS_DIR`, Portal keeps using them and does not force ACME certificate issuance just because `ACME_DNS_PROVIDER` is set.
+- If valid manual certificate files already exist in `IDENTITY_PATH`, Portal keeps using them and does not force ACME certificate issuance just because `ACME_DNS_PROVIDER` is set.
 - Cloudflare can enable zone signing directly, but some registrars still require publishing the returned DS record.
 - Google Cloud DNS can enable zone signing directly, but the registrar may still require publishing the returned DS record.
 - Route53 requires a compatible KMS key ARN when no active KSK already exists, and the registrar may still require the DS record.
@@ -201,17 +201,16 @@ Manual certificate example:
 
 ```bash
 PORTAL_URL=https://example.com
-BOOTSTRAPS=
+BOOTSTRAPS=https://bootstrap.example.com
 DISCOVERY=true
-IDENTITY_PATH=/portal-certs/identity.json
+WIREGUARD_PORT=51820
+IDENTITY_PATH=/portal-certs
 SNI_PORT=443
-ADMIN_SECRET_KEY=your-admin-secret
-KEYLESS_DIR=/portal-certs
 ACME_DNS_PROVIDER=
 ENS_GASLESS_ENABLED=false
 ```
 
-Place these files in `KEYLESS_DIR` before startup:
+Place these files in `IDENTITY_PATH` before startup:
 
 ```text
 /portal-certs/fullchain.pem
@@ -222,12 +221,11 @@ Manual certificate + gasless example:
 
 ```bash
 PORTAL_URL=https://example.com
-BOOTSTRAPS=
+BOOTSTRAPS=https://bootstrap.example.com
 DISCOVERY=true
-IDENTITY_PATH=/portal-certs/identity.json
+WIREGUARD_PORT=51820
+IDENTITY_PATH=/portal-certs
 SNI_PORT=443
-ADMIN_SECRET_KEY=your-admin-secret
-KEYLESS_DIR=/portal-certs
 ACME_DNS_PROVIDER=cloudflare
 CLOUDFLARE_TOKEN=cf_xxxxxxxxxxxxxxxxx
 ENS_GASLESS_ENABLED=true
@@ -239,12 +237,11 @@ Managed Cloudflare example:
 
 ```bash
 PORTAL_URL=https://example.com
-BOOTSTRAPS=
+BOOTSTRAPS=https://bootstrap.example.com
 DISCOVERY=true
-IDENTITY_PATH=/portal-certs/identity.json
+WIREGUARD_PORT=51820
+IDENTITY_PATH=/portal-certs
 SNI_PORT=443
-ADMIN_SECRET_KEY=your-admin-secret
-KEYLESS_DIR=/portal-certs
 ACME_DNS_PROVIDER=cloudflare
 CLOUDFLARE_TOKEN=cf_xxxxxxxxxxxxxxxxx
 ENS_GASLESS_ENABLED=false
@@ -253,8 +250,7 @@ ENS_GASLESS_ENABLED=false
 Route53 example:
 
 ```bash
-IDENTITY_PATH=/portal-certs/identity.json
-KEYLESS_DIR=/portal-certs
+IDENTITY_PATH=/portal-certs
 ACME_DNS_PROVIDER=route53
 AWS_ACCESS_KEY_ID=AKIA...
 AWS_SECRET_ACCESS_KEY=...
@@ -270,8 +266,7 @@ ENS_GASLESS_ENABLED=false
 Google Cloud DNS example:
 
 ```bash
-IDENTITY_PATH=/portal-certs/identity.json
-KEYLESS_DIR=/portal-certs
+IDENTITY_PATH=/portal-certs
 ACME_DNS_PROVIDER=gcloud
 # Optional when ADC does not expose the project id directly.
 GCP_PROJECT_ID=my-gcp-project
@@ -286,9 +281,23 @@ Notes:
 
 - For non-apex deployments, set `PORTAL_URL` to the non-apex host value, for example `https://portal.example.com:8443`
 - Portal uses the `PORTAL_URL` host for public lease hostnames
-- `IDENTITY_PATH` stores the relay identity JSON inside the container
-- `KEYLESS_DIR` stores relay certificate material inside the container
-- The Docker Compose stack stores relay identity JSON and certificate state under `./.portal-certs` on the host
+- `IDENTITY_PATH` stores the relay state directory inside the container
+- Portal stores `identity.json`, `admin_settings.json`, `fullchain.pem`, and `privatekey.pem` under `IDENTITY_PATH`
+- The Docker Compose stack stores relay state under `./.portal-certs` on the host
+
+Discovery settings:
+
+```bash
+DISCOVERY=true
+BOOTSTRAPS=https://bootstrap.example.com
+WIREGUARD_PORT=51820
+```
+
+- Open `WIREGUARD_PORT/udp` on the host or VM when discovery is enabled.
+- The relay always advertises the `PORTAL_URL` host for WireGuard discovery.
+- The relay stores its admin secret key in `IDENTITY_PATH/identity.json` and generates one automatically on first startup if the file does not already contain it.
+- The relay stores its WireGuard keypair in `IDENTITY_PATH/identity.json`. If that file has no WireGuard key yet, Portal generates one on first discovery startup and saves it back to that file.
+- `BOOTSTRAPS` should point at at least one existing relay when you want discovery to join a multi-relay mesh.
 
 If the relay sits behind a reverse proxy or ingress and you want admin/auth and lease IP tracking to use the original client IP, set:
 
@@ -336,6 +345,7 @@ UDP transport and raw TCP port transport are disabled by default.
 
 Open these ports in your cloud security group or firewall:
 
+- `WIREGUARD_PORT/udp` when discovery is enabled
 - `SNI_PORT/udp`
 - `MIN_PORT-MAX_PORT/udp` when UDP transport is enabled
 - `MIN_PORT-MAX_PORT/tcp` when raw TCP port transport is enabled

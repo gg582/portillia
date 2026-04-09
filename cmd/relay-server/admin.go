@@ -9,8 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog/log"
-
 	"github.com/gosuda/portal-tunnel/v2/portal/policy"
 	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/gosuda/portal-tunnel/v2/utils"
@@ -27,23 +25,16 @@ type adminAuth struct {
 	mu        sync.RWMutex
 }
 
-func newAdminAuth(secretKey string) *adminAuth {
+func newAdminAuth(secretKey string) (*adminAuth, error) {
 	secretKey = strings.TrimSpace(secretKey)
 	if secretKey == "" {
-		generated, err := utils.RandomHex(16)
-		if err != nil {
-			log.Fatal().Err(err).Msg("generate admin secret key")
-		}
-		secretKey = generated
-		log.Warn().
-			Str("admin_secret_key", secretKey).
-			Msg("generated random admin secret key because ADMIN_SECRET_KEY was empty")
+		return nil, errors.New("admin secret key is required")
 	}
 
 	return &adminAuth{
 		secretKey: secretKey,
 		sessions:  make(map[string]time.Time),
-	}
+	}, nil
 }
 
 func (a *adminAuth) AuthEnabled() bool {

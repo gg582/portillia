@@ -43,7 +43,7 @@ type Frontend struct {
 	landingPageEnabled   atomic.Bool
 }
 
-func NewFrontend(server *portal.Server, adminSecret string, adminSettingsPath string, defaultLandingPageEnabled bool, headlessShellURL string) (*Frontend, error) {
+func NewFrontend(server *portal.Server, identityPath string, defaultLandingPageEnabled bool, headlessShellURL string) (*Frontend, error) {
 	if server == nil {
 		return nil, errors.New("frontend requires portal server")
 	}
@@ -51,7 +51,16 @@ func NewFrontend(server *portal.Server, adminSecret string, adminSettingsPath st
 	if runtime == nil {
 		return nil, errors.New("frontend requires policy runtime")
 	}
+	adminSettingsPath := utils.ResolveRelayAdminSettingsPath(identityPath)
+	if adminSettingsPath == "" {
+		return nil, errors.New("frontend requires identity path")
+	}
 	state, err := loadAdminState(adminSettingsPath, runtime)
+	if err != nil {
+		return nil, err
+	}
+	identity := server.RelayIdentity()
+	auth, err := newAdminAuth(identity.AdminSecretKey)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +68,7 @@ func NewFrontend(server *portal.Server, adminSecret string, adminSettingsPath st
 	frontend := &Frontend{
 		distFS:            embeddedDistFS,
 		server:            server,
-		auth:              newAdminAuth(adminSecret),
+		auth:              auth,
 		adminSettingsPath: strings.TrimSpace(adminSettingsPath),
 		thumbnails:        newThumbnailService(headlessShellURL),
 	}

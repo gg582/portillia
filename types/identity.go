@@ -5,6 +5,12 @@ import (
 	"time"
 )
 
+const (
+	IdentityKeySeparator       = ":"
+	RelayIdentityFilename      = "identity.json"
+	RelayAdminSettingsFilename = "admin_settings.json"
+)
+
 type Identity struct {
 	Name       string `json:"name,omitempty"`
 	Address    string `json:"address,omitempty"`
@@ -21,7 +27,25 @@ func (i Identity) Copy() Identity {
 	}
 }
 
-const IdentityKeySeparator = ":"
+type RelayIdentity struct {
+	Identity
+	AdminSecretKey      string `json:"-"`
+	WireGuardPublicKey  string `json:"-"`
+	WireGuardPrivateKey string `json:"-"`
+}
+
+func (i RelayIdentity) Copy() RelayIdentity {
+	return RelayIdentity{
+		Identity:            i.Identity.Copy(),
+		AdminSecretKey:      i.AdminSecretKey,
+		WireGuardPublicKey:  i.WireGuardPublicKey,
+		WireGuardPrivateKey: i.WireGuardPrivateKey,
+	}
+}
+
+func (i RelayIdentity) Base() Identity {
+	return i.Identity.Copy()
+}
 
 func (i Identity) Key() string {
 	name := strings.TrimSpace(strings.ToLower(i.Name))

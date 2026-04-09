@@ -28,7 +28,16 @@ type Config struct {
 	Endpoint     string
 	OverlayIPv4  string
 	OverlayCIDRs []string
-	ListenPort   int
+}
+
+func (c Config) Copy() Config {
+	return Config{
+		PrivateKey:   c.PrivateKey,
+		PublicKey:    c.PublicKey,
+		Endpoint:     c.Endpoint,
+		OverlayIPv4:  c.OverlayIPv4,
+		OverlayCIDRs: append([]string(nil), c.OverlayCIDRs...),
+	}
 }
 
 func NormalizeConfig(rootHost string, cfg Config) (Config, error) {
@@ -59,7 +68,6 @@ func NormalizeConfig(rootHost string, cfg Config) (Config, error) {
 
 	cfg.PrivateKey = privateKey
 	cfg.PublicKey = publicKey
-	cfg.ListenPort = utils.IntOrDefault(cfg.ListenPort, DefaultListenPort)
 	if len(cfg.OverlayCIDRs) > 0 {
 		cfg.OverlayCIDRs, err = utils.NormalizeOverlayCIDRs(cfg.OverlayCIDRs)
 		if err != nil {
@@ -67,7 +75,7 @@ func NormalizeConfig(rootHost string, cfg Config) (Config, error) {
 		}
 	}
 	if strings.TrimSpace(cfg.Endpoint) == "" {
-		cfg.Endpoint = net.JoinHostPort(rootHost, fmt.Sprintf("%d", cfg.ListenPort))
+		cfg.Endpoint = net.JoinHostPort(rootHost, fmt.Sprintf("%d", DefaultListenPort))
 	}
 	if strings.TrimSpace(cfg.OverlayIPv4) == "" {
 		cfg.OverlayIPv4, err = utils.DeriveWireGuardOverlayIPv4(cfg.PublicKey)
@@ -85,13 +93,17 @@ func NormalizeConfig(rootHost string, cfg Config) (Config, error) {
 }
 
 type Overlay struct {
-	publicKey string
-	stack     *stack
-	listener  net.Listener
-	server    *http.Server
+	cfg      Config
+	stack    *stack
+	listener net.Listener
+	server   *http.Server
 }
 
-func NewOverlay(cfg Config, handler http.Handler) (*Overlay, error) {
+func NewOverlay(rootHost string, cfg Config, handler http.Handler) (*Overlay, error) {
+	cfg, err := NormalizeConfig(rootHost, cfg)
+	if err != nil {
+		return nil, err
+	}
 	publicKey := strings.TrimSpace(cfg.PublicKey)
 	if publicKey == "" {
 		return nil, errors.New("wireguard public key is required")
@@ -113,12 +125,21 @@ func NewOverlay(cfg Config, handler http.Handler) (*Overlay, error) {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	publicCfg := cfg.Copy()
+	publicCfg.PrivateKey = ""
 	return &Overlay{
-		publicKey: publicKey,
-		stack:     stack,
-		listener:  listener,
-		server:    server,
+		cfg:      publicCfg,
+		stack:    stack,
+		listener: listener,
+		server:   server,
 	}, nil
+}
+
+func (o *Overlay) Config() Config {
+	if o == nil {
+		return Config{}
+	}
+	return o.cfg.Copy()
 }
 
 func (o *Overlay) Serve() error {
@@ -192,7 +213,7 @@ func (o *Overlay) Sync(view map[string]discovery.RelayState) error {
 	if o == nil || o.stack == nil {
 		return nil
 	}
-	return o.stack.ApplyPeers(peersForView(o.publicKey, view))
+	return o.stack.ApplyPeers(peersForView(o.cfg.PublicKey, view))
 }
 
 func peersForView(publicKey string, view map[string]discovery.RelayState) []desiredPeer {
