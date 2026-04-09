@@ -916,7 +916,7 @@ func (s *RelaySet) refreshBootstrapDiscovery(ctx context.Context, rootCAPEM []by
 		resp, err := DiscoverRelayDiscovery(ctx, bootstrap.APIHTTPSAddr, rootCAPEM, nil)
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil
+				return ctx.Err()
 			}
 			s.RecordBootstrapDiscoveryFailure(bootstrap.APIHTTPSAddr, err, time.Now().UTC())
 			continue
