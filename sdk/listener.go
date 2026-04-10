@@ -423,22 +423,21 @@ func (l *Listener) runRenewLoop(ctx context.Context) {
 }
 
 func (l *Listener) renewLease(ctx context.Context) error {
-	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	err := l.api.renewLease(requestCtx, l.leaseTTL)
-	cancel()
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, &types.APIRequestError{Code: types.APIErrorCodeLeaseNotFound}) {
-		return err
+	if time.Now().Before(l.api.expiresAt) {
+		requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := l.api.renewLease(requestCtx, l.leaseTTL)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, &types.APIRequestError{Code: types.APIErrorCodeLeaseNotFound}) {
+			return err
+		}
 	}
 
-	requestCtx, cancel = context.WithTimeout(ctx, 10*time.Second)
+	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := l.registerAndConfigure(requestCtx); err != nil {
-		return err
-	}
-	return nil
+	return l.registerAndConfigure(requestCtx)
 }
 
 func (l *Listener) registerAndConfigure(ctx context.Context) error {
