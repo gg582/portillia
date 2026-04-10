@@ -47,10 +47,19 @@ func (s *ClientStream) RunLoop(
 	open func(context.Context) (net.Conn, error),
 	currentTLSConfig func() *tls.Config,
 	retry func(context.Context, string, error, int) bool,
+	resetRetries <-chan struct{},
 ) {
 	var retries int
 
 	for {
+		// Drain any pending reset signals (e.g. from system wake) before
+		// evaluating retry budget. This is non-blocking so it never stalls.
+		select {
+		case <-resetRetries:
+			retries = 0
+		default:
+		}
+
 		claimed, err := s.runSession(ctx, open, currentTLSConfig)
 		switch {
 		case err == nil:

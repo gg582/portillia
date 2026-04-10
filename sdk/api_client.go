@@ -85,6 +85,18 @@ func (a *apiClient) close() {
 	}
 }
 
+// resetTransport tears down the cached HTTP client and TLS config so the next
+// API call creates fresh TCP connections. Call this after detecting a system
+// sleep/wake cycle where pooled connections are almost certainly dead.
+func (a *apiClient) resetTransport() {
+	if a == nil {
+		return
+	}
+	a.close()
+	a.httpClient = nil
+	a.rawTLSConfig = nil
+}
+
 func (a *apiClient) registerLease(ctx context.Context, ttl time.Duration, udpEnabled, tcpEnabled bool) (types.RegisterResponse, error) {
 	if err := a.ensureHTTPClient(ctx); err != nil {
 		return types.RegisterResponse{}, err

@@ -57,6 +57,13 @@ type Listener struct {
 	closeOnce    sync.Once
 	registerOnce sync.Once
 
+	// wakeBroadcast is closed and replaced each time the renew loop detects
+	// a system sleep/wake cycle.  Stream RunLoops select on this channel to
+	// reset their retry counters so they don't exhaust budget on stale-conn
+	// errors that are really caused by the OS suspending the process.
+	wakeBroadcast chan struct{}
+	wakeMu        sync.Mutex
+
 	banMITM    bool
 	tcpEnabled bool
 	identity   types.Identity
@@ -86,19 +93,20 @@ func NewListener(ctx context.Context, relayURL string, cfg ListenerConfig) (*Lis
 	}
 
 	l := &Listener{
-		doneCh:      listenerCtx.Done(),
-		cancel:      cancel,
-		api:         api,
-		registered:  make(chan struct{}),
-		retryCount:  cfg.RetryCount,
-		retryWait:   retryWait,
-		leaseTTL:    leaseTTL,
-		renewBefore: renewBefore,
-		identity:    api.identity.Copy(),
-		metadata:    cfg.Metadata.Copy(),
-		banMITM:     cfg.BanMITM,
-		tcpEnabled:  cfg.TCPEnabled,
-		relaySet:    cfg.relaySet,
+		doneCh:        listenerCtx.Done(),
+		cancel:        cancel,
+		api:           api,
+		registered:    make(chan struct{}),
+		wakeBroadcast: make(chan struct{}),
+		retryCount:    cfg.RetryCount,
+		retryWait:     retryWait,
+		leaseTTL:      leaseTTL,
+		renewBefore:   renewBefore,
+		identity:      api.identity.Copy(),
+		metadata:      cfg.Metadata.Copy(),
+		banMITM:       cfg.BanMITM,
+		tcpEnabled:    cfg.TCPEnabled,
+		relaySet:      cfg.relaySet,
 	}
 	l.mitmManager = newMITMManager(listenerCtx, l)
 	l.stream = transport.NewClientStream(readyTarget, handshakeTimeout)
@@ -138,6 +146,7 @@ func (l *Listener) runStartup(ctx context.Context, readyTarget int) {
 						return l.tlsConfig
 					},
 					l.retryOrClose,
+					l.wakeChannel(),
 				)
 			}
 			go l.runRenewLoop(ctx)
@@ -387,6 +396,24 @@ func (l *Listener) currentDatagramState() (transport.ClientDatagramState, bool) 
 	}, true
 }
 
+// notifyWake closes the current wakeBroadcast channel (waking all stream
+// RunLoops that select on it) and replaces it with a fresh channel.
+func (l *Listener) notifyWake() {
+	l.wakeMu.Lock()
+	ch := l.wakeBroadcast
+	l.wakeBroadcast = make(chan struct{})
+	l.wakeMu.Unlock()
+	close(ch)
+}
+
+// wakeChannel returns the current wake broadcast channel. Stream RunLoops
+// select on this; when it is closed they reset their retry counters.
+func (l *Listener) wakeChannel() <-chan struct{} {
+	l.wakeMu.Lock()
+	defer l.wakeMu.Unlock()
+	return l.wakeBroadcast
+}
+
 func (l *Listener) runRenewLoop(ctx context.Context) {
 	interval := l.leaseTTL / 2
 	if interval <= 0 {
@@ -399,9 +426,47 @@ func (l *Listener) runRenewLoop(ctx context.Context) {
 		interval = 30 * time.Second
 	}
 
+	const wakeThreshold = 10 * time.Second
+
 	for {
+		// Round(0) strips the monotonic clock reading so that
+		// time.Since uses wall-clock time.  The monotonic clock
+		// freezes during macOS sleep, so without this the elapsed
+		// duration would equal the timer interval, not real time.
+		before := time.Now().Round(0)
 		if !utils.SleepOrDone(ctx, interval) {
 			return
+		}
+		elapsed := time.Since(before)
+
+		// If the wall-clock jump is much larger than expected, the OS
+		// likely suspended the process (e.g. macOS lid close).  The
+		// server-side lease is almost certainly expired, so skip the
+		// normal renew and go straight to re-registration.
+		if elapsed > interval+wakeThreshold {
+			log.Info().
+				Dur("expected", interval).
+				Dur("actual", elapsed).
+				Str("address", l.Address()).
+				Msg("system sleep/wake detected; resetting transport and re-registering")
+
+			l.api.resetTransport()
+			l.notifyWake()
+
+			var retries int
+			for {
+				if err := l.registerAndConfigure(ctx); err == nil {
+					break
+				} else if errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
+					return
+				} else {
+					retries++
+					if !l.retryOrClose(ctx, "post-wake re-registration", err, retries) {
+						return
+					}
+				}
+			}
+			continue
 		}
 
 		var retries int
@@ -526,7 +591,23 @@ func (l *Listener) retryOrClose(ctx context.Context, operation string, err error
 			Msg("operation failed; retrying")
 	}
 
-	return utils.SleepOrDone(ctx, l.retryWait)
+	// Detect sleep/wake during the retry wait itself.  If the OS
+	// suspended the process, the renew loop will be re-registering
+	// concurrently.  Give it a moment to finish so the next attempt
+	// uses a fresh access token and transport.
+	// Round(0) forces wall-clock comparison (monotonic clock freezes
+	// during macOS sleep).
+	before := time.Now().Round(0)
+	ok := utils.SleepOrDone(ctx, l.retryWait)
+	if ok && time.Since(before) > l.retryWait+10*time.Second {
+		logger.Info().
+			Dur("expected", l.retryWait).
+			Dur("actual", time.Since(before)).
+			Msg("system sleep/wake detected during retry wait; pausing for re-registration")
+		// Wait briefly for the renew loop to complete re-registration.
+		utils.SleepOrDone(ctx, 3*time.Second)
+	}
+	return ok
 }
 
 type listenerAddr string
