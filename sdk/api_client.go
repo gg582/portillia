@@ -46,6 +46,7 @@ type apiClient struct {
 	rootCAPEM        []byte
 	identity         types.Identity
 	accessToken      string
+	expiresAt        time.Time
 	metadata         types.LeaseMetadata
 	resolvedPublicIP string
 	sniPort          int
@@ -138,6 +139,7 @@ func (a *apiClient) registerLease(ctx context.Context, ttl time.Duration, udpEna
 
 	a.mu.Lock()
 	a.accessToken = resp.AccessToken
+	a.expiresAt = resp.ExpiresAt
 	a.sniPort = sniPort
 	a.mu.Unlock()
 	return resp, nil
@@ -226,6 +228,7 @@ func (a *apiClient) renewLease(ctx context.Context, ttl time.Duration) error {
 	a.mu.Lock()
 	if a.accessToken == accessToken {
 		a.accessToken = resp.AccessToken
+		a.expiresAt = resp.ExpiresAt
 	}
 	a.mu.Unlock()
 	return nil
