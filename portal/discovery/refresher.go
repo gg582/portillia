@@ -162,7 +162,7 @@ func (r *Refresher) refreshHTTPS(ctx context.Context) error {
 func (r *Refresher) refreshOverlay(ctx context.Context) error {
 	states := r.relaySet.OverlayPeerStates()
 	if len(states) == 0 {
-		return errors.New("overlay discovery unavailable")
+		return nil
 	}
 	if err := r.overlay.Sync(states); err != nil {
 		return err
