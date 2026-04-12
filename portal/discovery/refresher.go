@@ -64,7 +64,11 @@ func NewRefresher(relaySet *RelaySet, rootCAPEM []byte, overlay OverlayRuntime) 
 
 func (r *Refresher) Refresh(ctx context.Context) error {
 	if r.overlay != nil {
-		r.refreshOverlay(ctx)
+		if err := r.refreshOverlay(ctx); err != nil && ctx.Err() == nil {
+			log.Warn().
+				Err(err).
+				Msg("overlay discovery failed")
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
