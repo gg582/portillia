@@ -86,6 +86,20 @@ func NormalizeDescriptor(desc types.RelayDescriptor) (types.RelayDescriptor, err
 	if desc.SignerPublicKey == "" {
 		desc.SignerPublicKey = desc.PublicKey
 	}
+
+	switch {
+	case desc.Name == "":
+		return types.RelayDescriptor{}, errors.New("identity.name is required")
+	case desc.APIHTTPSAddr == "":
+		return types.RelayDescriptor{}, errors.New("api_https_addr is required")
+	case desc.RelayID != desc.APIHTTPSAddr:
+		return types.RelayDescriptor{}, errors.New("relay_id must match api_https_addr")
+	case desc.ExpiresAt.IsZero():
+		return types.RelayDescriptor{}, errors.New("expires_at is required")
+	case desc.IssuedAt.After(desc.ExpiresAt):
+		return types.RelayDescriptor{}, errors.New("issued_at must be before expires_at")
+	}
+
 	return desc, nil
 }
 

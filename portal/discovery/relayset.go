@@ -2,8 +2,8 @@ package discovery
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -17,28 +17,23 @@ import (
 // the latest validated descriptor seen for each relay, and local runtime state
 // such as ban/reachability/failure tracking.
 type RelaySet struct {
-	mu             sync.RWMutex
-	knownRelayURLs []string
-	relays         map[string]RelayState
-	policy         RelayPolicy
-	selfRelayKey   string
-	selfRelayURL   string
+	mu     sync.RWMutex
+	relays map[string]RelayState
+	policy RelayPolicy
+	self   RelayState
 }
 
 func NewRelaySet(identity types.Identity, relayURL string, bootstrapRelayURLs []string) (*RelaySet, error) {
-	if relayURL != "" {
-		normalized, err := utils.NormalizeRelayURL(relayURL)
-		if err != nil {
-			return nil, err
-		}
-		relayURL = normalized
-	}
-
 	set := &RelaySet{
-		relays:       make(map[string]RelayState),
-		policy:       DefaultRelayPolicy{},
-		selfRelayKey: identity.Key(),
-		selfRelayURL: relayURL,
+		relays: make(map[string]RelayState),
+		policy: DefaultRelayPolicy{},
+		self: RelayState{
+			Descriptor: types.RelayDescriptor{
+				Identity:     identity,
+				RelayID:      relayURL,
+				APIHTTPSAddr: relayURL,
+			},
+		},
 	}
 	if err := set.SetBootstrapRelayURLs(bootstrapRelayURLs); err != nil {
 		return nil, err
@@ -56,127 +51,70 @@ func (s *RelaySet) SetRelayPolicy(policy RelayPolicy) {
 }
 
 func (s *RelaySet) SetBootstrapRelayURLs(inputs []string) error {
-	normalized, err := utils.NormalizeRelayURLs(inputs...)
-	if err != nil {
-		return err
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	filtered := utils.RemoveRelayURL(normalized, s.selfRelayURL)
-
+	filtered := utils.RemoveRelayURL(inputs, s.self.Descriptor.APIHTTPSAddr)
 	keep := make(map[string]struct{}, len(filtered))
 	for _, relayURL := range filtered {
 		keep[relayURL] = struct{}{}
 	}
 
-	for _, relayURL := range s.knownRelayURLs {
-		if _, ok := keep[relayURL]; ok {
+	seen := make(map[string]struct{}, len(filtered))
+	for key, state := range s.relays {
+		if state.Equal(s.self) {
+			delete(s.relays, key)
 			continue
 		}
-		state := s.relays[relayURL]
-		if state.hasDescriptor() {
+
+		_, bootstrap := keep[key]
+		state.Bootstrap = bootstrap
+		if !state.Bootstrap &&
+			!state.hasDescriptor() &&
+			!state.Banned &&
+			state.consecutiveFailures == 0 {
+			delete(s.relays, key)
 			continue
 		}
-		if !s.policy.KeepState(state) {
-			delete(s.relays, relayURL)
+
+		s.relays[key] = state
+		if bootstrap {
+			seen[key] = struct{}{}
 		}
 	}
 
-	s.knownRelayURLs = append([]string(nil), filtered...)
+	for _, relayURL := range filtered {
+		if _, ok := seen[relayURL]; ok {
+			continue
+		}
+
+		state := newRelayStateFromURL(relayURL)
+		state.Bootstrap = true
+		s.relays[relayURL] = state
+	}
 	return nil
-}
-
-func (s *RelaySet) relayURLForKeyLocked(relayKey string) string {
-	if relayKey == "" {
-		return ""
-	}
-	for relayURL, state := range s.relays {
-		if state.hasDescriptor() && state.Descriptor.Key() == relayKey {
-			return relayURL
-		}
-	}
-	return ""
-}
-
-func (s *RelaySet) RelayStates() []RelayState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	states := s.relayStatesLocked()
-	for i := range states {
-		states[i] = s.policy.Decide(states[i])
-	}
-	return states
 }
 
 func (s *RelaySet) ActiveRelays() []RelayState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	states := s.relayStatesLocked()
-	out := make([]RelayState, 0, len(states))
-	for _, state := range states {
-		state = s.policy.Decide(state)
-		if state.Active && state.Descriptor.APIHTTPSAddr != "" {
-			out = append(out, state)
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	return s.policy.SelectActive(s.relayStatesLocked())
 }
 
-func (s *RelaySet) relayStatesLocked() []RelayState {
-	out := make([]RelayState, 0, len(s.knownRelayURLs)+len(s.relays))
-	seen := make(map[string]struct{}, len(s.knownRelayURLs)+len(s.relays))
+func (s *RelaySet) OverlayPeerStates() []RelayState {
+	s.mu.RLock()
+	states := s.relayStatesLocked()
+	s.mu.RUnlock()
 
-	for _, relayURL := range s.knownRelayURLs {
-		if relayURL == "" {
+	now := time.Now().UTC()
+	out := make([]RelayState, 0, len(states))
+	for _, state := range states {
+		if !state.discoverable(now) || !state.Descriptor.SupportsOverlayPeer {
 			continue
 		}
-		if _, ok := seen[relayURL]; ok {
-			continue
-		}
-		seen[relayURL] = struct{}{}
-
-		state, ok := s.relays[relayURL]
-		if !ok {
-			state = newRelayHintState(relayURL)
-		}
-		if selfRelay(state, s.selfRelayKey, s.selfRelayURL) {
-			continue
-		}
-		state.Bootstrap = true
 		out = append(out, state)
 	}
-
-	descriptorStates := make([]RelayState, 0, len(s.relays))
-	for relayURL, record := range s.relays {
-		if !record.hasDescriptor() {
-			continue
-		}
-		relayURL = strings.TrimSpace(record.Descriptor.APIHTTPSAddr)
-		if relayURL == "" {
-			continue
-		}
-		if selfRelay(record, s.selfRelayKey, s.selfRelayURL) {
-			continue
-		}
-		if _, ok := seen[relayURL]; ok {
-			continue
-		}
-
-		record.Bootstrap = slices.Contains(s.knownRelayURLs, relayURL)
-		descriptorStates = append(descriptorStates, record)
-	}
-	sort.Slice(descriptorStates, func(i, j int) bool {
-		return descriptorStates[i].Descriptor.APIHTTPSAddr < descriptorStates[j].Descriptor.APIHTTPSAddr
-	})
-	out = append(out, descriptorStates...)
-
 	if len(out) == 0 {
 		return nil
 	}
@@ -187,62 +125,99 @@ func (s *RelaySet) AdvertisedDescriptors() []types.RelayDescriptor {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return s.policy.AdvertisedDescriptors(s.relayStatesLocked())
+	states := s.policy.SelectAdvertised(s.relayStatesLocked())
+	out := make([]types.RelayDescriptor, 0, len(states))
+	for _, state := range states {
+		out = append(out, state.Descriptor)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].APIHTTPSAddr < out[j].APIHTTPSAddr
+	})
+	return out
+}
+
+func (s *RelaySet) relayStatesLocked() []RelayState {
+	out := make([]RelayState, 0, len(s.relays))
+	for _, state := range s.relays {
+		out = append(out, state)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Descriptor.APIHTTPSAddr < out[j].Descriptor.APIHTTPSAddr
+	})
+	return out
 }
 
 func (s *RelaySet) BanRelayURL(relayURL string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	relayURL = strings.TrimSpace(relayURL)
-	if relayURL == "" {
-		return
-	}
 
-	state := s.relays[relayURL]
-	if state.Descriptor.APIHTTPSAddr == "" {
-		state = newRelayHintState(relayURL)
+	state, ok := s.relays[relayURL]
+	if !ok {
+		state = newRelayStateFromURL(relayURL)
+	}
+	if state.Equal(s.self) {
+		delete(s.relays, relayURL)
+		return
 	}
 	state = s.policy.OnBanned(state)
 	s.relays[relayURL] = state
 }
 
-func (s *RelaySet) storeDescriptorLocked(state RelayState, policy RelayPolicy) (bool, bool, error) {
-	desc := state.Descriptor
-	relayKey := desc.Key()
-	if relayKey == "" {
-		return false, false, errors.New("descriptor identity is required")
-	}
-	if existing := s.relays[desc.APIHTTPSAddr]; existing.hasDescriptor() && existing.Descriptor.Key() != relayKey {
-		return false, false, errors.New("descriptor identity does not match known relay url")
+func (s *RelaySet) applyDiscoveredStateLocked(state RelayState, confirmed bool) (bool, error) {
+	relayURL := state.Descriptor.APIHTTPSAddr
+	relayKey := state.Descriptor.Key()
+
+	previousState, hadPrevious := s.relays[relayURL]
+	record := previousState
+
+	if hadPrevious && record.hasDescriptor() && record.Descriptor.Key() != relayKey {
+		return false, errors.New("descriptor identity does not match known relay url")
 	}
 
-	previousURL := s.relayURLForKeyLocked(relayKey)
-	record := s.relays[desc.APIHTTPSAddr]
-	previousDescriptor := record.Descriptor
-	if previousURL != "" && previousURL != desc.APIHTTPSAddr {
-		previous := s.relays[previousURL]
-		previousDescriptor = previous.Descriptor
-		if !policy.KeepState(record) {
-			record.Status = previous.Status
-			record.consecutiveFailures = previous.consecutiveFailures
+	previousURL := ""
+	for url, existing := range s.relays {
+		if url == relayURL || !existing.hasDescriptor() || existing.Descriptor.Key() != relayKey {
+			continue
 		}
-		delete(s.relays, previousURL)
+		previousURL = url
+		if !record.hasDescriptor() &&
+			!record.Banned &&
+			record.consecutiveFailures == 0 {
+			record.Reachable = existing.Reachable
+			record.Confirmed = existing.Confirmed
+			record.Banned = existing.Banned
+			record.consecutiveFailures = existing.consecutiveFailures
+		}
+		break
 	}
 
-	added := previousURL == ""
-	if !policy.KeepState(record) {
+	if !record.hasDescriptor() &&
+		!record.Banned &&
+		record.consecutiveFailures == 0 {
 		record = state
 	} else {
-		if record.FirstSeenAt.IsZero() {
-			record.FirstSeenAt = state.FirstSeenAt
-		}
-		record.Descriptor = desc
+		record.Descriptor = state.Descriptor
 		record.LastSeenAt = state.LastSeenAt
 	}
-	s.relays[desc.APIHTTPSAddr] = record
 
-	changed := added || !reflect.DeepEqual(previousDescriptor, desc)
-	return added, changed, nil
+	if confirmed {
+		record = s.policy.OnConfirmed(record)
+	} else {
+		record = s.policy.OnHinted(record)
+	}
+
+	if previousURL != "" {
+		delete(s.relays, previousURL)
+	}
+	s.relays[relayURL] = record
+
+	return !hadPrevious || previousURL != "" || !reflect.DeepEqual(previousState, record), nil
 }
 
 func (s *RelaySet) ApplyRelayDiscoveryResponse(targetIdentity types.Identity, targetURL string, resp types.DiscoveryResponse, now time.Time) (relaySetChanged bool, err error) {
@@ -255,39 +230,63 @@ func (s *RelaySet) ApplyRelayDiscoveryResponse(targetIdentity types.Identity, ta
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	policy := s.policy
+	if resp.ProtocolVersion != types.ProtocolVersion {
+		return false, fmt.Errorf("relay protocol version mismatch: relay=%q client=%q", resp.ProtocolVersion, types.ProtocolVersion)
+	}
 
-	selfState, relayStates, err := policy.DiscoveryStates(targetIdentity, targetURL, s.selfRelayKey, s.selfRelayURL, resp, now)
+	selfState, err := newRelayState(resp.Self, now)
 	if err != nil {
 		return false, err
 	}
-
-	apply := func(state RelayState, advertise bool) error {
-		desc := state.Descriptor
-		added, descriptorChanged, err := s.storeDescriptorLocked(state, policy)
+	if selfState.Equal(s.self) {
+		return false, nil
+	}
+	if strings.TrimSpace(targetIdentity.Name) == "" && strings.TrimSpace(targetIdentity.Address) == "" {
+		return false, errors.New("target relay identity is required")
+	}
+	if targetName := strings.TrimSpace(targetIdentity.Name); targetName != "" {
+		if selfState.Descriptor.Name != utils.NormalizeHostname(targetName) {
+			return false, errors.New("descriptor name does not match target relay")
+		}
+	}
+	if targetAddress := strings.TrimSpace(targetIdentity.Address); targetAddress != "" {
+		normalizedTargetAddress, err := utils.NormalizeEVMAddress(targetAddress)
 		if err != nil {
-			return err
-		}
-
-		storedState := s.relays[desc.APIHTTPSAddr]
-		previousState := storedState
-		storedState = policy.OnDiscovered(storedState, advertise)
-		s.relays[desc.APIHTTPSAddr] = storedState
-
-		changed := added || descriptorChanged || !reflect.DeepEqual(previousState, s.relays[desc.APIHTTPSAddr])
-		if changed {
-			relaySetChanged = true
-		}
-		return nil
-	}
-
-	if err := apply(selfState, true); err != nil {
-		return false, err
-	}
-	for _, relayState := range relayStates {
-		if err := apply(relayState, false); err != nil {
 			return false, err
 		}
+		if selfState.Descriptor.Address != normalizedTargetAddress {
+			return false, errors.New("descriptor address does not match target relay")
+		}
+	}
+	if targetURL != "" && selfState.Descriptor.APIHTTPSAddr != strings.TrimSpace(targetURL) {
+		return false, errors.New("descriptor api_https_addr does not match target url")
+	}
+	changed, err := s.applyDiscoveredStateLocked(selfState, true)
+	if err != nil {
+		return false, err
+	}
+	relaySetChanged = relaySetChanged || changed
+
+	seen := map[string]struct{}{selfState.Descriptor.Key(): {}}
+	for _, descriptor := range resp.Relays {
+		relayState, err := newRelayState(descriptor, now)
+		if err != nil {
+			continue
+		}
+		if relayState.Equal(s.self) {
+			continue
+		}
+		relayKey := relayState.Descriptor.Key()
+		if _, ok := seen[relayKey]; ok {
+			continue
+		}
+		seen[relayKey] = struct{}{}
+
+		changed, err := s.applyDiscoveredStateLocked(relayState, false)
+		if err != nil {
+			return false, err
+		}
+		relaySetChanged = relaySetChanged || changed
 	}
 	return relaySetChanged, nil
 }
@@ -297,22 +296,29 @@ func (s *RelaySet) RecordDiscoveryFailure(identity types.Identity, relayURL stri
 	if relayKey == "" {
 		return false, "", 0
 	}
-	relayURL = strings.TrimSpace(relayURL)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if relayURL == "" || s.relays[relayURL].Descriptor.Key() != relayKey {
-		relayURL = s.relayURLForKeyLocked(relayKey)
-	}
-	if relayURL == "" {
-		return false, "", 0
-	}
-
 	state, ok := s.relays[relayURL]
+	if ok && state.hasDescriptor() && state.Descriptor.Key() != relayKey {
+		ok = false
+	}
+	if !ok {
+		for url, existing := range s.relays {
+			if !existing.hasDescriptor() || existing.Descriptor.Key() != relayKey {
+				continue
+			}
+			relayURL = url
+			state = existing
+			ok = true
+			break
+		}
+	}
 	if !ok {
 		return false, "", 0
 	}
+
 	state, expired, expireReason = s.policy.OnFailure(state, err, recoveryFailures)
 	s.relays[relayURL] = state
 	return expired, expireReason, state.consecutiveFailures

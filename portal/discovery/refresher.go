@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	DiscoveryPollInterval = 1 * time.Minute
+	DiscoveryPollInterval   = 1 * time.Minute
 	defaultRecoveryFailures = 3
 )
 
@@ -68,7 +68,7 @@ func (r *Refresher) Refresh(ctx context.Context) error {
 	if r.overlay == nil {
 		return ctx.Err()
 	}
-	if err := r.overlay.Sync(r.relaySet.RelayStates()); err != nil {
+	if err := r.overlay.Sync(r.relaySet.OverlayPeerStates()); err != nil {
 		log.Warn().
 			Err(err).
 			Msg("sync wireguard peers")
@@ -78,9 +78,13 @@ func (r *Refresher) Refresh(ctx context.Context) error {
 }
 
 func (r *Refresher) refreshHTTPS(ctx context.Context) error {
-	states := r.relaySet.RelayStates()
+	r.relaySet.mu.RLock()
+	states := r.relaySet.relayStatesLocked()
+	r.relaySet.mu.RUnlock()
+
+	now := time.Now().UTC()
 	for _, state := range states {
-		if state.Descriptor.APIHTTPSAddr == "" || !state.BootstrapDiscovery {
+		if !state.discoverable(now) || !state.Bootstrap {
 			continue
 		}
 		relay := state.Descriptor
@@ -102,9 +106,13 @@ func (r *Refresher) refreshHTTPS(ctx context.Context) error {
 		return err
 	}
 
-	states = r.relaySet.RelayStates()
+	r.relaySet.mu.RLock()
+	states = r.relaySet.relayStatesLocked()
+	r.relaySet.mu.RUnlock()
+
+	now = time.Now().UTC()
 	for _, state := range states {
-		if state.Descriptor.APIHTTPSAddr == "" || !state.DirectDiscovery {
+		if !state.discoverable(now) || state.Bootstrap {
 			continue
 		}
 		if r.overlay != nil && state.Descriptor.SupportsOverlayPeer {
@@ -144,11 +152,15 @@ func (r *Refresher) discoverHTTPS(ctx context.Context, relay types.RelayDescript
 }
 
 func (r *Refresher) refreshOverlay(ctx context.Context) error {
-	for _, state := range r.relaySet.RelayStates() {
-		if state.Descriptor.APIHTTPSAddr == "" || !state.OverlayDiscovery {
+	r.relaySet.mu.RLock()
+	states := r.relaySet.relayStatesLocked()
+	r.relaySet.mu.RUnlock()
+
+	now := time.Now().UTC()
+	for _, state := range states {
+		if !state.discoverable(now) || state.Bootstrap || !state.Descriptor.SupportsOverlayPeer {
 			continue
 		}
-
 		relay := state.Descriptor
 		var failureErr error
 
@@ -162,7 +174,7 @@ func (r *Refresher) refreshOverlay(ctx context.Context) error {
 			now := time.Now().UTC()
 			relaySetChanged, err := r.relaySet.ApplyRelayDiscoveryResponse(relay.Identity, relay.APIHTTPSAddr, resp, now)
 			if relaySetChanged {
-				if syncErr := r.overlay.Sync(r.relaySet.RelayStates()); syncErr != nil {
+				if syncErr := r.overlay.Sync(r.relaySet.OverlayPeerStates()); syncErr != nil {
 					log.Warn().
 						Err(syncErr).
 						Str("relay", relay.APIHTTPSAddr).
@@ -178,7 +190,7 @@ func (r *Refresher) refreshOverlay(ctx context.Context) error {
 
 		expired, expireReason, consecutiveFailures := r.relaySet.RecordDiscoveryFailure(relay.Identity, relay.APIHTTPSAddr, failureErr, r.overlayRecoveryFailures)
 		if expired {
-			if syncErr := r.overlay.Sync(r.relaySet.RelayStates()); syncErr != nil && failureErr == nil {
+			if syncErr := r.overlay.Sync(r.relaySet.OverlayPeerStates()); syncErr != nil && failureErr == nil {
 				failureErr = syncErr
 			}
 		}

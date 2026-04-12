@@ -509,10 +509,8 @@ func TestServerSetBootstrapRelayURLsAllowsLoopbackButSkipsSelfRelay(t *testing.T
 	}
 	advertisedDescriptors := server.relaySet.AdvertisedDescriptors()
 	knownURLs := make([]string, 0)
-	for _, state := range server.relaySet.RelayStates() {
-		if state.Active && state.Descriptor.APIHTTPSAddr != "" {
-			knownURLs = append(knownURLs, state.Descriptor.APIHTTPSAddr)
-		}
+	for _, state := range server.relaySet.ActiveRelays() {
+		knownURLs = append(knownURLs, state.Descriptor.APIHTTPSAddr)
 	}
 	sort.Strings(knownURLs)
 	if !reflect.DeepEqual(knownURLs, []string{
@@ -567,10 +565,8 @@ func TestServerDiscoverySkipsSelfRelayHint(t *testing.T) {
 	}
 
 	knownURLs := make([]string, 0)
-	for _, state := range server.relaySet.RelayStates() {
-		if state.Active && state.Descriptor.APIHTTPSAddr != "" {
-			knownURLs = append(knownURLs, state.Descriptor.APIHTTPSAddr)
-		}
+	for _, state := range server.relaySet.ActiveRelays() {
+		knownURLs = append(knownURLs, state.Descriptor.APIHTTPSAddr)
 	}
 	sort.Strings(knownURLs)
 	if !reflect.DeepEqual(knownURLs, []string{"https://bootstrap.example.com"}) {
@@ -617,10 +613,8 @@ func TestServerRecordVerifiedDiscoveryPeerRequiresDirectConfirmation(t *testing.
 		t.Fatalf("applyRelayDiscoveryResponse() hinted error = %v", err)
 	}
 	knownURLs := make([]string, 0)
-	for _, state := range server.relaySet.RelayStates() {
-		if state.Active && state.Descriptor.APIHTTPSAddr != "" {
-			knownURLs = append(knownURLs, state.Descriptor.APIHTTPSAddr)
-		}
+	for _, state := range server.relaySet.ActiveRelays() {
+		knownURLs = append(knownURLs, state.Descriptor.APIHTTPSAddr)
 	}
 	sort.Strings(knownURLs)
 	if !reflect.DeepEqual(knownURLs, []string{"https://bootstrap.example.com"}) {

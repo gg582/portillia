@@ -219,7 +219,7 @@ func (o *Overlay) Sync(relays []discovery.RelayState) error {
 func peersForRelays(publicKey string, relays []discovery.RelayState) []desiredPeer {
 	peers := make([]desiredPeer, 0, len(relays))
 	for _, relay := range relays {
-		if !relay.OverlayPeer {
+		if !relay.Descriptor.SupportsOverlayPeer {
 			continue
 		}
 

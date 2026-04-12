@@ -228,8 +228,8 @@ func TestMITMProbeDetectionBansListener(t *testing.T) {
 		Reason:   types.MITMProbeReasonExporterMismatch,
 	}, nil)
 
-	for _, state := range listener.relaySet.RelayStates() {
-		if state.Active && state.Descriptor.APIHTTPSAddr == relayURL.String() {
+	for _, state := range listener.relaySet.ActiveRelays() {
+		if state.Descriptor.APIHTTPSAddr == relayURL.String() {
 			t.Fatal("relay still active after mitm detection")
 		}
 	}
@@ -261,10 +261,8 @@ func TestMITMProbeDetectionWarnsWithoutBanningListener(t *testing.T) {
 	}, nil)
 
 	activeRelayURLs := make([]string, 0)
-	for _, state := range listener.relaySet.RelayStates() {
-		if state.Active && state.Descriptor.APIHTTPSAddr != "" {
-			activeRelayURLs = append(activeRelayURLs, state.Descriptor.APIHTTPSAddr)
-		}
+	for _, state := range listener.relaySet.ActiveRelays() {
+		activeRelayURLs = append(activeRelayURLs, state.Descriptor.APIHTTPSAddr)
 	}
 	if len(activeRelayURLs) != 1 || activeRelayURLs[0] != relayURL.String() {
 		t.Fatalf("ActiveRelayURLs() = %v, want [%q]", activeRelayURLs, relayURL.String())
