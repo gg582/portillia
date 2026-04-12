@@ -75,18 +75,49 @@ func newApiClient(relayURL string, cfg ListenerConfig) (*apiClient, error) {
 	}, nil
 }
 
-func (a *apiClient) close() {
-	if a == nil || a.httpClient == nil {
+func closeIdleHTTPClient(httpClient *http.Client) {
+	if httpClient == nil {
 		return
 	}
-	if transport, ok := a.httpClient.Transport.(*http.Transport); ok {
+	if transport, ok := httpClient.Transport.(*http.Transport); ok {
 		transport.CloseIdleConnections()
 	}
+}
+
+func (a *apiClient) close() {
+	if a == nil {
+		return
+	}
+	a.mu.RLock()
+	httpClient := a.httpClient
+	a.mu.RUnlock()
+	closeIdleHTTPClient(httpClient)
+}
+
+// resetTransport tears down the cached HTTP client and TLS config so the next
+// API call creates fresh TCP connections. Call this after detecting a system
+// sleep/wake cycle where pooled connections are almost certainly dead.
+func (a *apiClient) resetTransport() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	httpClient := a.httpClient
+	a.httpClient = nil
+	a.rawTLSConfig = nil
+	a.mu.Unlock()
+	closeIdleHTTPClient(httpClient)
 }
 
 func (a *apiClient) registerLease(ctx context.Context, ttl time.Duration, udpEnabled, tcpEnabled bool) (types.RegisterResponse, error) {
 	if err := a.ensureHTTPClient(ctx); err != nil {
 		return types.RegisterResponse{}, err
+	}
+	a.mu.RLock()
+	httpClient := a.httpClient
+	a.mu.RUnlock()
+	if httpClient == nil {
+		return types.RegisterResponse{}, errors.New("relay http client is unavailable")
 	}
 
 	var challenge types.RegisterChallengeResponse
@@ -97,7 +128,7 @@ func (a *apiClient) registerLease(ctx context.Context, ttl time.Duration, udpEna
 		UDPEnabled: udpEnabled,
 		TCPEnabled: tcpEnabled,
 	}
-	if err := utils.HTTPDoAPIPath(ctx, a.httpClient, a.baseURL, http.MethodPost, types.PathSDKRegisterChallenge, challengeReq, nil, &challenge); err != nil {
+	if err := utils.HTTPDoAPIPath(ctx, httpClient, a.baseURL, http.MethodPost, types.PathSDKRegisterChallenge, challengeReq, nil, &challenge); err != nil {
 		return types.RegisterResponse{}, err
 	}
 
@@ -107,7 +138,7 @@ func (a *apiClient) registerLease(ctx context.Context, ttl time.Duration, udpEna
 	}
 
 	var resp types.RegisterResponse
-	if err := utils.HTTPDoAPIPath(ctx, a.httpClient, a.baseURL, http.MethodPost, types.PathSDKRegister, types.RegisterRequest{
+	if err := utils.HTTPDoAPIPath(ctx, httpClient, a.baseURL, http.MethodPost, types.PathSDKRegister, types.RegisterRequest{
 		ChallengeID:   challenge.ChallengeID,
 		SIWEMessage:   challenge.SIWEMessage,
 		SIWESignature: signature,
@@ -145,9 +176,12 @@ func (a *apiClient) registerLease(ctx context.Context, ttl time.Duration, udpEna
 }
 
 func (a *apiClient) ensureHTTPClient(ctx context.Context) error {
+	a.mu.RLock()
 	if a.httpClient != nil && a.rawTLSConfig != nil {
+		a.mu.RUnlock()
 		return nil
 	}
+	a.mu.RUnlock()
 
 	bootstrapCtx, cancel := context.WithTimeout(ctx, defaultDialTimeout+defaultHandshakeTimeout)
 	defer cancel()
@@ -157,16 +191,21 @@ func (a *apiClient) ensureHTTPClient(ctx context.Context) error {
 		return err
 	}
 	if err := a.ensureCompatible(ctx, httpClient); err != nil {
-		if transport, ok := httpClient.Transport.(*http.Transport); ok {
-			transport.CloseIdleConnections()
-		}
-		a.close()
+		closeIdleHTTPClient(httpClient)
 		return err
 	}
 
-	a.close()
+	a.mu.Lock()
+	if a.httpClient != nil && a.rawTLSConfig != nil {
+		a.mu.Unlock()
+		closeIdleHTTPClient(httpClient)
+		return nil
+	}
+	oldHTTPClient := a.httpClient
 	a.httpClient = httpClient
 	a.rawTLSConfig = rawTLSConfig
+	a.mu.Unlock()
+	closeIdleHTTPClient(oldHTTPClient)
 
 	return nil
 }
@@ -205,14 +244,18 @@ func (a *apiClient) renewLease(ctx context.Context, ttl time.Duration) error {
 	}
 
 	a.mu.RLock()
+	httpClient := a.httpClient
 	accessToken := a.accessToken
 	a.mu.RUnlock()
+	if httpClient == nil {
+		return errors.New("relay http client is unavailable")
+	}
 	if strings.TrimSpace(accessToken) == "" {
 		return errors.New("access token is not available")
 	}
 
 	var resp types.RenewResponse
-	if err := utils.HTTPDoAPIPath(ctx, a.httpClient, a.baseURL, http.MethodPost, types.PathSDKRenew, types.RenewRequest{
+	if err := utils.HTTPDoAPIPath(ctx, httpClient, a.baseURL, http.MethodPost, types.PathSDKRenew, types.RenewRequest{
 		AccessToken: accessToken,
 		TTL:         int(ttl / time.Second),
 		ReportedIP:  a.reportedIP(ctx),
@@ -234,10 +277,17 @@ func (a *apiClient) renewLease(ctx context.Context, ttl time.Duration) error {
 }
 
 func (a *apiClient) unregisterLease(ctx context.Context) error {
+	if err := a.ensureHTTPClient(ctx); err != nil {
+		return err
+	}
 	a.mu.RLock()
+	httpClient := a.httpClient
 	accessToken := a.accessToken
 	a.mu.RUnlock()
-	return utils.HTTPDoAPIPath(ctx, a.httpClient, a.baseURL, http.MethodPost, types.PathSDKUnregister, types.UnregisterRequest{
+	if httpClient == nil {
+		return errors.New("relay http client is unavailable")
+	}
+	return utils.HTTPDoAPIPath(ctx, httpClient, a.baseURL, http.MethodPost, types.PathSDKUnregister, types.UnregisterRequest{
 		AccessToken: accessToken,
 	}, nil, nil)
 }
@@ -246,10 +296,17 @@ func (a *apiClient) openReverseSession(ctx context.Context) (net.Conn, error) {
 	if err := a.ensureHTTPClient(ctx); err != nil {
 		return nil, err
 	}
+	a.mu.RLock()
+	rawTLSConfig := a.rawTLSConfig
+	accessToken := a.accessToken
+	a.mu.RUnlock()
+	if rawTLSConfig == nil {
+		return nil, errors.New("relay tls config is unavailable")
+	}
 
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: a.dialTimeout},
-		Config:    a.rawTLSConfig.Clone(),
+		Config:    rawTLSConfig.Clone(),
 	}
 
 	conn, err := dialer.DialContext(ctx, "tcp", utils.EnsurePort(a.baseURL.Host))
@@ -263,9 +320,6 @@ func (a *apiClient) openReverseSession(ctx context.Context) (net.Conn, error) {
 		Host:   a.baseURL.Host,
 		Header: make(http.Header),
 	}
-	a.mu.RLock()
-	accessToken := a.accessToken
-	a.mu.RUnlock()
 	req.Header.Set(types.HeaderAccessToken, accessToken)
 	req.Header.Set("Connection", "keep-alive")
 
@@ -320,7 +374,15 @@ func (a *apiClient) openQUICSession(ctx context.Context, accessToken string) (*q
 		return nil, err
 	}
 
-	tlsConf := a.rawTLSConfig.Clone()
+	a.mu.RLock()
+	rawTLSConfig := a.rawTLSConfig
+	sniPort := a.sniPort
+	a.mu.RUnlock()
+	if rawTLSConfig == nil {
+		return nil, errors.New("relay tls config is unavailable")
+	}
+
+	tlsConf := rawTLSConfig.Clone()
 	tlsConf.NextProtos = []string{"portal-tunnel"}
 
 	quicConf := &quic.Config{
@@ -328,10 +390,6 @@ func (a *apiClient) openQUICSession(ctx context.Context, accessToken string) (*q
 		KeepAlivePeriod: 15 * time.Second,
 		MaxIdleTimeout:  60 * time.Second,
 	}
-
-	a.mu.RLock()
-	sniPort := a.sniPort
-	a.mu.RUnlock()
 
 	if sniPort <= 0 {
 		return nil, errors.New("sni port is not available")
