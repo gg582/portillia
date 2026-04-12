@@ -146,7 +146,7 @@
 		</main>
 
 		<aside class="hidden w-56 shrink-0 border-l border-border xl:block">
-			<div class="sticky top-[var(--header-h)] h-[calc(100vh-var(--header-h))] overflow-y-auto py-8 pr-4">
+			<div class="sticky top-[var(--header-h)] h-[calc(100vh-var(--header-h))] overflow-y-auto py-8 px-4">
 				<TableOfContents />
 			</div>
 		</aside>
