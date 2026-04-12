@@ -9,6 +9,30 @@ export interface NavSection {
 	items: NavItem[];
 }
 
+export interface FlatNavItem extends NavItem {
+	section: string;
+}
+
+export function flattenNavigation(): FlatNavItem[] {
+	return navigation.flatMap((s) => s.items.map((item) => ({ ...item, section: s.title })));
+}
+
+export function getPrevNext(
+	pathname: string,
+	basePath: string
+): { prev: FlatNavItem | null; next: FlatNavItem | null } {
+	const items = flattenNavigation();
+	const index = items.findIndex(
+		(item) =>
+			pathname === `${basePath}${item.href}/` || pathname === `${basePath}${item.href}`
+	);
+	if (index === -1) return { prev: null, next: null };
+	return {
+		prev: index > 0 ? items[index - 1] : null,
+		next: index < items.length - 1 ? items[index + 1] : null
+	};
+}
+
 export const navigation: NavSection[] = [
 	{
 		title: 'Getting Started',

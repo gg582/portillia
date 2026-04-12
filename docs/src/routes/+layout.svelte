@@ -6,6 +6,8 @@
 	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 	import MobileNav from '$lib/components/MobileNav.svelte';
 	import TableOfContents from '$lib/components/TableOfContents.svelte';
+	import PrevNextNav from '$lib/components/PrevNextNav.svelte';
+	import { getPrevNext } from '$lib/nav';
 	import '../app.css';
 
 	let { children } = $props();
@@ -14,6 +16,8 @@
 	const isLandingPage = $derived(
 		$page.url.pathname === `${base}/` || $page.url.pathname === base || $page.url.pathname === '/'
 	);
+
+	const prevNext = $derived(getPrevNext($page.url.pathname, base));
 </script>
 
 <ModeWatcher defaultMode="system" />
@@ -135,6 +139,9 @@
 			<article class="prose prose-gray dark:prose-invert mx-auto max-w-3xl">
 				{@render children()}
 			</article>
+			<div class="mx-auto max-w-3xl">
+				<PrevNextNav prev={prevNext.prev} next={prevNext.next} />
+			</div>
 		</main>
 
 		<aside class="hidden w-56 shrink-0 border-l border-gray-200 xl:block dark:border-white/8">
