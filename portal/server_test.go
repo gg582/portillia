@@ -51,11 +51,8 @@ func mustRelayDescriptor(t *testing.T, relayURL string) types.RelayDescriptor {
 
 func applyRelay(t *testing.T, set *discovery.RelaySet, identity types.Identity, targetURL string, resp types.DiscoveryResponse, now time.Time) error {
 	t.Helper()
-	_, warnErr, err := set.ApplyRelayDiscoveryResponse(identity, targetURL, resp, now)
-	if err != nil {
-		return err
-	}
-	return warnErr
+	_, err := set.ApplyRelayDiscoveryResponse(identity, targetURL, resp, now)
+	return err
 }
 
 func tempIdentityPath(t *testing.T) string {
@@ -511,7 +508,12 @@ func TestServerSetBootstrapRelayURLsAllowsLoopbackButSkipsSelfRelay(t *testing.T
 		t.Fatalf("SetBootstrapRelayURLs() error = %v", err)
 	}
 	advertisedDescriptors := server.relaySet.AdvertisedDescriptors()
-	knownURLs := append([]string(nil), server.relaySet.ActiveRelayURLs()...)
+	knownURLs := make([]string, 0)
+	for _, state := range server.relaySet.RelayStates() {
+		if state.Active && state.Descriptor.APIHTTPSAddr != "" {
+			knownURLs = append(knownURLs, state.Descriptor.APIHTTPSAddr)
+		}
+	}
 	sort.Strings(knownURLs)
 	if !reflect.DeepEqual(knownURLs, []string{
 		"https://bootstrap.example.com",
@@ -564,7 +566,12 @@ func TestServerDiscoverySkipsSelfRelayHint(t *testing.T) {
 		t.Fatalf("ApplyRelayDiscoveryResponse() error = %v", err)
 	}
 
-	knownURLs := append([]string(nil), server.relaySet.ActiveRelayURLs()...)
+	knownURLs := make([]string, 0)
+	for _, state := range server.relaySet.RelayStates() {
+		if state.Active && state.Descriptor.APIHTTPSAddr != "" {
+			knownURLs = append(knownURLs, state.Descriptor.APIHTTPSAddr)
+		}
+	}
 	sort.Strings(knownURLs)
 	if !reflect.DeepEqual(knownURLs, []string{"https://bootstrap.example.com"}) {
 		t.Fatalf("ActiveRelayURLs() = %v, want self hint excluded", knownURLs)
@@ -609,7 +616,12 @@ func TestServerRecordVerifiedDiscoveryPeerRequiresDirectConfirmation(t *testing.
 	if err != nil {
 		t.Fatalf("applyRelayDiscoveryResponse() hinted error = %v", err)
 	}
-	knownURLs := append([]string(nil), server.relaySet.ActiveRelayURLs()...)
+	knownURLs := make([]string, 0)
+	for _, state := range server.relaySet.RelayStates() {
+		if state.Active && state.Descriptor.APIHTTPSAddr != "" {
+			knownURLs = append(knownURLs, state.Descriptor.APIHTTPSAddr)
+		}
+	}
 	sort.Strings(knownURLs)
 	if !reflect.DeepEqual(knownURLs, []string{"https://bootstrap.example.com"}) {
 		t.Fatalf("ActiveRelayURLs() = %v, want [%q]", knownURLs, "https://bootstrap.example.com")

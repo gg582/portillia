@@ -614,7 +614,7 @@ func (s *Server) startOverlay() (*overlay.Overlay, error) {
 		return nil, fmt.Errorf("start wireguard overlay: %w", err)
 	}
 
-	if err := overlay.Sync(s.relaySet.View()); err != nil {
+	if err := overlay.Sync(s.relaySet.RelayStates()); err != nil {
 		_ = overlay.Shutdown(context.Background())
 		return nil, fmt.Errorf("sync wireguard peers: %w", err)
 	}

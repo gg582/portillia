@@ -159,7 +159,11 @@ func (e *Exposure) runDiscoveryLoop(ctx context.Context) {
 }
 
 func (e *Exposure) ActiveRelayURLs() []string {
-	return e.relaySet.ActiveRelayURLs()
+	var out []string
+	for _, state := range e.relaySet.ActiveRelays() {
+		out = append(out, state.Descriptor.APIHTTPSAddr)
+	}
+	return out
 }
 
 func (e *Exposure) Addr() net.Addr {
@@ -254,11 +258,10 @@ func (e *Exposure) WaitDatagramReady(ctx context.Context) ([]string, error) {
 
 func (e *Exposure) RunHTTP(ctx context.Context, handler http.Handler, localAddr string) error {
 	var relayListener net.Listener
-	activeRelayURLs := e.relaySet.ActiveRelayURLs()
 	e.listenerMu.RLock()
 	activeListeners := make([]*Listener, 0, len(e.relayListeners))
-	for _, relayURL := range activeRelayURLs {
-		listener, ok := e.relayListeners[relayURL]
+	for _, state := range e.relaySet.ActiveRelays() {
+		listener, ok := e.relayListeners[state.Descriptor.APIHTTPSAddr]
 		if !ok {
 			continue
 		}
@@ -365,11 +368,14 @@ func (e *Exposure) Close() error {
 }
 
 func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
-	activeRelayURLs := e.relaySet.ActiveRelayURLs()
 	e.listenerMu.Lock()
 	currentRelayURLs := make([]string, 0, len(e.relayListeners))
 	for relayURL := range e.relayListeners {
 		currentRelayURLs = append(currentRelayURLs, relayURL)
+	}
+	activeRelayURLs := make([]string, 0, len(e.relayListeners))
+	for _, state := range e.relaySet.ActiveRelays() {
+		activeRelayURLs = append(activeRelayURLs, state.Descriptor.APIHTTPSAddr)
 	}
 	missingRelayURLs := utils.FilterRelayURLs(activeRelayURLs, currentRelayURLs)
 	staleRelayURLs := utils.FilterRelayURLs(currentRelayURLs, activeRelayURLs)

@@ -209,24 +209,22 @@ func (o *Overlay) DiscoverRelay(ctx context.Context, relay types.RelayDescriptor
 	return resp, nil
 }
 
-func (o *Overlay) Sync(view map[string]discovery.RelayState) error {
+func (o *Overlay) Sync(relays []discovery.RelayState) error {
 	if o == nil || o.stack == nil {
 		return nil
 	}
-	return o.stack.ApplyPeers(peersForView(o.cfg.PublicKey, view))
+	return o.stack.ApplyPeers(peersForRelays(o.cfg.PublicKey, relays))
 }
 
-func peersForView(publicKey string, view map[string]discovery.RelayState) []desiredPeer {
-	peers := make([]desiredPeer, 0, len(view))
-	for _, relay := range view {
-		if relay.Expired || relay.Banned {
+func peersForRelays(publicKey string, relays []discovery.RelayState) []desiredPeer {
+	peers := make([]desiredPeer, 0, len(relays))
+	for _, relay := range relays {
+		if !relay.OverlayPeer {
 			continue
 		}
+
 		desc := relay.Descriptor
-		if desc.WireGuardPublicKey == publicKey || !desc.SupportsOverlayPeer {
-			continue
-		}
-		if desc.WireGuardPublicKey == "" || desc.WireGuardEndpoint == "" || desc.OverlayIPv4 == "" {
+		if desc.WireGuardPublicKey == publicKey {
 			continue
 		}
 
