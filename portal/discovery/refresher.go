@@ -165,9 +165,6 @@ func (r *Refresher) refreshOverlay(ctx context.Context) error {
 		return errors.New("overlay discovery unavailable")
 	}
 	if err := r.overlay.Sync(states); err != nil {
-		log.Warn().
-			Err(err).
-			Msg("sync wireguard peers")
 		return err
 	}
 	for _, state := range states {
@@ -185,10 +182,6 @@ func (r *Refresher) refreshOverlay(ctx context.Context) error {
 			continue
 		}
 		if err := r.overlay.Sync(r.relaySet.OverlayPeerStates()); err != nil {
-			log.Warn().
-				Err(err).
-				Str("relay", relay.APIHTTPSAddr).
-				Msg("sync wireguard peers")
 			return err
 		}
 	}
