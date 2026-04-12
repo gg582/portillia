@@ -6,6 +6,7 @@ export interface NavItem {
 export interface NavSection {
 	title: string;
 	badge?: string;
+	defaultOpen?: boolean;
 	items: NavItem[];
 }
 
@@ -35,30 +36,37 @@ export function getPrevNext(
 
 export const navigation: NavSection[] = [
 	{
-		title: 'Getting Started',
+		title: 'Quick Start',
+		defaultOpen: true,
 		items: [
-			{ title: 'Quick Start', href: '/getting-started' },
-			{ title: 'Concepts', href: '/concepts' },
-			{ title: 'Self-Hosting', href: '/self-hosting' }
+			{ title: 'What is Portal?', href: '/what-is-portal' },
+			{ title: 'Prerequisites', href: '/prerequisites' },
+			{ title: 'Getting Started', href: '/getting-started' }
+		]
+	},
+	{
+		title: 'Core Concepts',
+		items: [
+			{ title: 'Overview', href: '/concepts' },
+			{ title: 'Architecture', href: '/architecture' },
+			{ title: 'Security Model', href: '/security-model' }
 		]
 	},
 	{
 		title: 'Guides',
-		items: [{ title: 'TCP/UDP Tunneling', href: '/tcp-udp-tunneling' }]
+		items: [
+			{ title: 'Self-Hosting', href: '/self-hosting' },
+			{ title: 'TCP/UDP Tunneling', href: '/tcp-udp-tunneling' },
+			{ title: 'SIWE Authentication', href: '/siwe-authentication' },
+			{ title: 'Deployment', href: '/deployment' },
+			{ title: 'Configuration', href: '/configuration' }
+		]
 	},
 	{
 		title: 'Reference',
 		items: [
 			{ title: 'CLI Reference', href: '/cli-reference' },
-			{ title: 'API Reference', href: '/api-reference' },
-			{ title: 'Configuration', href: '/configuration' }
-		]
-	},
-	{
-		title: 'Advanced',
-		items: [
-			{ title: 'Architecture', href: '/architecture' },
-			{ title: 'Deployment', href: '/deployment' }
+			{ title: 'API Reference', href: '/api-reference' }
 		]
 	}
 ];
