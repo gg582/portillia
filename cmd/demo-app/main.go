@@ -34,18 +34,19 @@ func main() {
 }
 
 type demoConfig struct {
-	relayURLs    string
-	discovery    bool
-	banMITM      bool
-	identityPath string
-	identityJSON string
-	addr         string
-	name         string
-	desc         string
-	tags         string
-	owner        string
-	hide         bool
-	thumbnail    string
+	relayURLs       string
+	discovery       bool
+	banMITM         bool
+	identityPath    string
+	identityJSON    string
+	addr            string
+	name            string
+	desc            string
+	tags            string
+	owner           string
+	hide            bool
+	thumbnail       string
+	maxActiveRelays int
 }
 
 // registerConnectivityFlags registers the relay, discovery, identity, and
@@ -56,6 +57,7 @@ func registerConnectivityFlags(fs *flag.FlagSet, cfg *demoConfig, defaultRelays 
 	utils.BoolFlagEnv(fs, &cfg.banMITM, "ban-mitm", false, "ban relay when the MITM self-probe detects TLS termination", "BAN_MITM")
 	utils.StringFlagEnv(fs, &cfg.identityPath, "identity-path", "identity.json", "identity json file path", "IDENTITY_PATH")
 	utils.StringFlagEnv(fs, &cfg.identityJSON, "identity-json", "", "identity json payload; overrides --identity-path contents and is persisted there when both are set", "IDENTITY_JSON")
+	utils.IntFlagEnv(fs, &cfg.maxActiveRelays, "max-active-relays", 3, nil, "maximum number of active relays to keep connected", "MAX_ACTIVE_RELAYS")
 	utils.StringFlag(fs, &cfg.owner, "owner", "PortalApp Developer", "lease owner")
 }
 
@@ -128,12 +130,13 @@ func runUDPCommand(args []string) error {
 
 func runTCPDemo(ctx context.Context, cfg demoConfig) error {
 	exposure, err := sdk.Expose(ctx, sdk.ExposeConfig{
-		RelayURLs:    utils.SplitCSV(cfg.relayURLs),
-		IdentityPath: cfg.identityPath,
-		IdentityJSON: cfg.identityJSON,
-		Name:         cfg.name,
-		BanMITM:      cfg.banMITM,
-		Discovery:    cfg.discovery,
+		RelayURLs:       utils.SplitCSV(cfg.relayURLs),
+		IdentityPath:    cfg.identityPath,
+		IdentityJSON:    cfg.identityJSON,
+		Name:            cfg.name,
+		BanMITM:         cfg.banMITM,
+		MaxActiveRelays: cfg.maxActiveRelays,
+		Discovery:       cfg.discovery,
 		Metadata: types.LeaseMetadata{
 			Description: cfg.desc,
 			Tags:        utils.SplitCSV(cfg.tags),
@@ -170,13 +173,14 @@ func runTCPDemo(ctx context.Context, cfg demoConfig) error {
 
 func runUDPDemo(ctx context.Context, cfg demoConfig) error {
 	exposure, err := sdk.Expose(ctx, sdk.ExposeConfig{
-		RelayURLs:    utils.SplitCSV(cfg.relayURLs),
-		IdentityPath: cfg.identityPath,
-		IdentityJSON: cfg.identityJSON,
-		Name:         cfg.name,
-		UDPEnabled:   true,
-		BanMITM:      cfg.banMITM,
-		Discovery:    cfg.discovery,
+		RelayURLs:       utils.SplitCSV(cfg.relayURLs),
+		IdentityPath:    cfg.identityPath,
+		IdentityJSON:    cfg.identityJSON,
+		Name:            cfg.name,
+		UDPEnabled:      true,
+		BanMITM:         cfg.banMITM,
+		MaxActiveRelays: cfg.maxActiveRelays,
+		Discovery:       cfg.discovery,
 		Metadata: types.LeaseMetadata{
 			Description: cfg.desc,
 			Tags:        utils.SplitCSV(cfg.tags),

@@ -29,7 +29,6 @@ func mustRelayDescriptor(t *testing.T, relayName, relayURL string) types.RelayDe
 			Name: relayName,
 		},
 		RelayID:      relayURL,
-		Sequence:     uint64(now.UnixMilli()),
 		Version:      1,
 		IssuedAt:     now,
 		ExpiresAt:    now.Add(time.Hour),

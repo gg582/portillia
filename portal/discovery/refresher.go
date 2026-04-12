@@ -97,6 +97,7 @@ func (r *Refresher) refreshHTTPS(ctx context.Context) error {
 			continue
 		}
 
+		startedAt := time.Now()
 		var resp types.DiscoveryResponse
 		if err := utils.HTTPDoAPIPath(ctx, r.httpClient, baseURL, http.MethodGet, types.PathDiscovery, nil, nil, &resp); err != nil {
 			if ctx.Err() != nil {
@@ -105,9 +106,11 @@ func (r *Refresher) refreshHTTPS(ctx context.Context) error {
 			continue
 		}
 
-		if _, err := r.relaySet.ApplyRelayDiscoveryResponse(relay.Identity, relay.APIHTTPSAddr, resp, time.Now().UTC()); err != nil {
+		measuredAt := time.Now().UTC()
+		if _, err := r.relaySet.ApplyRelayDiscoveryResponse(relay.Identity, relay.APIHTTPSAddr, resp, measuredAt); err != nil {
 			continue
 		}
+		r.relaySet.RecordDiscoveryRTT(relay.APIHTTPSAddr, time.Since(startedAt), measuredAt)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -135,6 +138,7 @@ func (r *Refresher) refreshHTTPS(ctx context.Context) error {
 			continue
 		}
 
+		startedAt := time.Now()
 		var resp types.DiscoveryResponse
 		if err := utils.HTTPDoAPIPath(ctx, r.httpClient, baseURL, http.MethodGet, types.PathDiscovery, nil, nil, &resp); err != nil {
 			if ctx.Err() != nil {
@@ -144,10 +148,12 @@ func (r *Refresher) refreshHTTPS(ctx context.Context) error {
 			continue
 		}
 
-		if _, err := r.relaySet.ApplyRelayDiscoveryResponse(relay.Identity, relay.APIHTTPSAddr, resp, time.Now().UTC()); err != nil {
+		measuredAt := time.Now().UTC()
+		if _, err := r.relaySet.ApplyRelayDiscoveryResponse(relay.Identity, relay.APIHTTPSAddr, resp, measuredAt); err != nil {
 			r.logDirectDiscoveryFailure(relay, err, r.directRecoveryFailures)
 			continue
 		}
+		r.relaySet.RecordDiscoveryRTT(relay.APIHTTPSAddr, time.Since(startedAt), measuredAt)
 	}
 	return nil
 }

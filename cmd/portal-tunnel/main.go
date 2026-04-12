@@ -33,22 +33,23 @@ func main() {
 }
 
 type exposeFlags struct {
-	relayCSV     string
-	discovery    bool
-	banMITM      bool
-	identityPath string
-	identityJSON string
-	name         string
-	desc         string
-	tags         string
-	owner        string
-	thumbnail    string
-	hide         bool
-	targetAddr   string
-	httpRoutes   []string
-	udp          bool
-	udpAddr      string
-	tcp          bool
+	relayCSV        string
+	discovery       bool
+	banMITM         bool
+	identityPath    string
+	identityJSON    string
+	name            string
+	desc            string
+	tags            string
+	owner           string
+	thumbnail       string
+	hide            bool
+	targetAddr      string
+	httpRoutes      []string
+	udp             bool
+	udpAddr         string
+	tcp             bool
+	maxActiveRelays int
 }
 
 func runExposeCommand(args []string) error {
@@ -70,6 +71,7 @@ func runExposeCommand(args []string) error {
 	utils.BoolFlagEnv(fs, &flags.udp, "udp", false, "Enable public UDP relay in addition to the default TCP relay", "UDP_ENABLED")
 	utils.StringFlagEnv(fs, &flags.udpAddr, "udp-addr", "", "Local UDP target address for relayed datagrams (host:port or port only); defaults to the target when --udp is enabled", "UDP_ADDR")
 	utils.BoolFlagEnv(fs, &flags.tcp, "tcp", false, "Request a dedicated TCP port on the relay for raw TCP services (no TLS; e.g., Minecraft, game servers)", "TCP_ENABLED")
+	utils.IntFlagEnv(fs, &flags.maxActiveRelays, "max-active-relays", 3, nil, "Maximum number of active relays to keep connected", "MAX_ACTIVE_RELAYS")
 
 	if err := utils.ParseFlagSet(fs, args, printExposeUsage); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -99,16 +101,17 @@ func runExposeCommand(args []string) error {
 	defer stop()
 
 	exposure, err := sdk.Expose(ctx, sdk.ExposeConfig{
-		RelayURLs:    utils.SplitCSV(flags.relayCSV),
-		IdentityPath: flags.identityPath,
-		IdentityJSON: flags.identityJSON,
-		Name:         flags.name,
-		TargetAddr:   flags.targetAddr,
-		UDPAddr:      flags.udpAddr,
-		UDPEnabled:   flags.udp,
-		TCPEnabled:   flags.tcp,
-		BanMITM:      flags.banMITM,
-		Discovery:    flags.discovery,
+		RelayURLs:       utils.SplitCSV(flags.relayCSV),
+		IdentityPath:    flags.identityPath,
+		IdentityJSON:    flags.identityJSON,
+		Name:            flags.name,
+		TargetAddr:      flags.targetAddr,
+		UDPAddr:         flags.udpAddr,
+		UDPEnabled:      flags.udp,
+		TCPEnabled:      flags.tcp,
+		BanMITM:         flags.banMITM,
+		MaxActiveRelays: flags.maxActiveRelays,
+		Discovery:       flags.discovery,
 		Metadata: types.LeaseMetadata{
 			Description: flags.desc,
 			Tags:        utils.SplitCSV(flags.tags),

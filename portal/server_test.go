@@ -506,7 +506,7 @@ func TestServerSetBootstrapRelayURLsAllowsLoopbackButSkipsSelfRelay(t *testing.T
 	}); err != nil {
 		t.Fatalf("SetBootstrapRelayURLs() error = %v", err)
 	}
-	advertisedDescriptors := server.relaySet.AdvertisedDescriptors()
+	advertisedDescriptors := server.relaySet.ConfirmedDescriptors()
 	knownURLs := make([]string, 0)
 	for _, state := range server.relaySet.ActiveRelays() {
 		knownURLs = append(knownURLs, state.Descriptor.APIHTTPSAddr)
@@ -618,7 +618,7 @@ func TestServerRecordVerifiedDiscoveryPeerRequiresDirectConfirmation(t *testing.
 	if !reflect.DeepEqual(knownURLs, []string{"https://bootstrap.example.com"}) {
 		t.Fatalf("ActiveRelayURLs() = %v, want [%q]", knownURLs, "https://bootstrap.example.com")
 	}
-	advertisedDescriptors := server.relaySet.AdvertisedDescriptors()
+	advertisedDescriptors := server.relaySet.ConfirmedDescriptors()
 	advertisedURLs := make([]string, 0, len(advertisedDescriptors))
 	for _, descriptor := range advertisedDescriptors {
 		if strings.TrimSpace(descriptor.APIHTTPSAddr) == "" {
@@ -628,7 +628,7 @@ func TestServerRecordVerifiedDiscoveryPeerRequiresDirectConfirmation(t *testing.
 	}
 	sort.Strings(advertisedURLs)
 	if !reflect.DeepEqual(advertisedURLs, []string{"https://bootstrap.example.com"}) {
-		t.Fatalf("AdvertisedDescriptors() = %v, want [%q]", advertisedURLs, "https://bootstrap.example.com")
+		t.Fatalf("ConfirmedDescriptors() = %v, want [%q]", advertisedURLs, "https://bootstrap.example.com")
 	}
 
 	err = applyDiscovery(
@@ -639,7 +639,7 @@ func TestServerRecordVerifiedDiscoveryPeerRequiresDirectConfirmation(t *testing.
 	if err != nil {
 		t.Fatalf("applyRelayDiscoveryResponse() confirm error = %v", err)
 	}
-	advertisedDescriptors = server.relaySet.AdvertisedDescriptors()
+	advertisedDescriptors = server.relaySet.ConfirmedDescriptors()
 	advertisedURLs = advertisedURLs[:0]
 	for _, descriptor := range advertisedDescriptors {
 		if strings.TrimSpace(descriptor.APIHTTPSAddr) == "" {
@@ -649,7 +649,7 @@ func TestServerRecordVerifiedDiscoveryPeerRequiresDirectConfirmation(t *testing.
 	}
 	sort.Strings(advertisedURLs)
 	if !reflect.DeepEqual(advertisedURLs, []string{"https://bootstrap.example.com", "https://relay-a.example.com"}) {
-		t.Fatalf("AdvertisedDescriptors() = %v, want [%q %q]", advertisedURLs, "https://bootstrap.example.com", "https://relay-a.example.com")
+		t.Fatalf("ConfirmedDescriptors() = %v, want [%q %q]", advertisedURLs, "https://bootstrap.example.com", "https://relay-a.example.com")
 	}
 }
 
@@ -693,7 +693,7 @@ func TestServerBannedDiscoveryPeerIsNotAdvertised(t *testing.T) {
 
 	server.relaySet.BanRelayURL(relayADesc.APIHTTPSAddr)
 
-	advertisedDescriptors := server.relaySet.AdvertisedDescriptors()
+	advertisedDescriptors := server.relaySet.ConfirmedDescriptors()
 	advertisedURLs := make([]string, 0, len(advertisedDescriptors))
 	for _, descriptor := range advertisedDescriptors {
 		if strings.TrimSpace(descriptor.APIHTTPSAddr) == "" {
@@ -703,7 +703,7 @@ func TestServerBannedDiscoveryPeerIsNotAdvertised(t *testing.T) {
 	}
 	sort.Strings(advertisedURLs)
 	if !reflect.DeepEqual(advertisedURLs, []string{"https://bootstrap.example.com"}) {
-		t.Fatalf("AdvertisedDescriptors() = %v, want banned relay excluded", advertisedURLs)
+		t.Fatalf("ConfirmedDescriptors() = %v, want banned relay excluded", advertisedURLs)
 	}
 }
 
@@ -763,7 +763,7 @@ func TestServerRecordVerifiedDiscoveryPeerExpiresAfterRepeatedDirectFailures(t *
 		}
 	}
 
-	advertisedDescriptors := server.relaySet.AdvertisedDescriptors()
+	advertisedDescriptors := server.relaySet.ConfirmedDescriptors()
 	advertisedURLs := make([]string, 0, len(advertisedDescriptors))
 	for _, descriptor := range advertisedDescriptors {
 		if strings.TrimSpace(descriptor.APIHTTPSAddr) == "" {
@@ -773,7 +773,7 @@ func TestServerRecordVerifiedDiscoveryPeerExpiresAfterRepeatedDirectFailures(t *
 	}
 	sort.Strings(advertisedURLs)
 	if !reflect.DeepEqual(advertisedURLs, []string{"https://bootstrap.example.com"}) {
-		t.Fatalf("AdvertisedDescriptors() = %v, want [%q] after relay expiry", advertisedURLs, "https://bootstrap.example.com")
+		t.Fatalf("ConfirmedDescriptors() = %v, want [%q] after relay expiry", advertisedURLs, "https://bootstrap.example.com")
 	}
 }
 
@@ -840,7 +840,7 @@ func TestServerBootstrapHintDoesNotResetDirectFailureBudget(t *testing.T) {
 			t.Fatalf("ApplyRelayDiscoveryResponse() hinted refresh error = %v", err)
 		}
 
-		advertisedDescriptors := server.relaySet.AdvertisedDescriptors()
+		advertisedDescriptors := server.relaySet.ConfirmedDescriptors()
 		advertisedURLs := make([]string, 0, len(advertisedDescriptors))
 		for _, descriptor := range advertisedDescriptors {
 			if strings.TrimSpace(descriptor.APIHTTPSAddr) == "" {
@@ -850,7 +850,7 @@ func TestServerBootstrapHintDoesNotResetDirectFailureBudget(t *testing.T) {
 		}
 		sort.Strings(advertisedURLs)
 		if !reflect.DeepEqual(advertisedURLs, []string{"https://bootstrap.example.com", "https://relay-a.example.com"}) {
-			t.Fatalf("AdvertisedDescriptors() = %v, want relay to remain advertised before expiry", advertisedURLs)
+			t.Fatalf("ConfirmedDescriptors() = %v, want relay to remain advertised before expiry", advertisedURLs)
 		}
 	}
 
@@ -926,7 +926,7 @@ func TestServerExpiredDiscoveryPeerNeedsFreshDirectConfirmation(t *testing.T) {
 		t.Fatalf("ApplyRelayDiscoveryResponse() fresh bootstrap error = %v", err)
 	}
 
-	advertisedDescriptors := server.relaySet.AdvertisedDescriptors()
+	advertisedDescriptors := server.relaySet.ConfirmedDescriptors()
 	advertisedURLs := make([]string, 0, len(advertisedDescriptors))
 	for _, descriptor := range advertisedDescriptors {
 		if strings.TrimSpace(descriptor.APIHTTPSAddr) == "" {
@@ -936,7 +936,7 @@ func TestServerExpiredDiscoveryPeerNeedsFreshDirectConfirmation(t *testing.T) {
 	}
 	sort.Strings(advertisedURLs)
 	if !reflect.DeepEqual(advertisedURLs, []string{"https://bootstrap.example.com"}) {
-		t.Fatalf("AdvertisedDescriptors() = %v, want relay to stay hidden until reconfirmed", advertisedURLs)
+		t.Fatalf("ConfirmedDescriptors() = %v, want relay to stay hidden until reconfirmed", advertisedURLs)
 	}
 
 	if err := applyRelay(
@@ -950,7 +950,7 @@ func TestServerExpiredDiscoveryPeerNeedsFreshDirectConfirmation(t *testing.T) {
 		t.Fatalf("ApplyRelayDiscoveryResponse() reconfirm error = %v", err)
 	}
 
-	advertisedDescriptors = server.relaySet.AdvertisedDescriptors()
+	advertisedDescriptors = server.relaySet.ConfirmedDescriptors()
 	advertisedURLs = advertisedURLs[:0]
 	for _, descriptor := range advertisedDescriptors {
 		if strings.TrimSpace(descriptor.APIHTTPSAddr) == "" {
@@ -960,7 +960,7 @@ func TestServerExpiredDiscoveryPeerNeedsFreshDirectConfirmation(t *testing.T) {
 	}
 	sort.Strings(advertisedURLs)
 	if !reflect.DeepEqual(advertisedURLs, []string{"https://bootstrap.example.com", "https://relay-a.example.com"}) {
-		t.Fatalf("AdvertisedDescriptors() = %v, want relay restored after direct confirmation", advertisedURLs)
+		t.Fatalf("ConfirmedDescriptors() = %v, want relay restored after direct confirmation", advertisedURLs)
 	}
 }
 

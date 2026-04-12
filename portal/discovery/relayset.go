@@ -15,7 +15,7 @@ import (
 
 // RelaySet owns the shared relay discovery view: configured bootstrap relay URLs,
 // the latest validated descriptor seen for each relay, and local runtime state
-// such as ban/reachability/failure tracking.
+// such as ban/reachability/failure tracking and observed discovery RTT.
 type RelaySet struct {
 	mu     sync.RWMutex
 	relays map[string]RelayState
@@ -102,6 +102,13 @@ func (s *RelaySet) ActiveRelays() []RelayState {
 	return s.policy.SelectActive(s.relayStatesLocked())
 }
 
+func (s *RelaySet) PriorityRelays(clientState ClientState) []RelayState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.policy.SelectPriority(s.relayStatesLocked(), clientState)
+}
+
 func (s *RelaySet) OverlayPeerStates() []RelayState {
 	s.mu.RLock()
 	states := s.relayStatesLocked()
@@ -126,11 +133,11 @@ func (s *RelaySet) OverlayPeerStates() []RelayState {
 	return out
 }
 
-func (s *RelaySet) AdvertisedDescriptors() []types.RelayDescriptor {
+func (s *RelaySet) ConfirmedDescriptors() []types.RelayDescriptor {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	states := s.policy.SelectAdvertised(s.relayStatesLocked())
+	states := s.policy.SelectConfirmed(s.relayStatesLocked())
 	out := make([]types.RelayDescriptor, 0, len(states))
 	for _, state := range states {
 		out = append(out, state.Descriptor)
@@ -138,9 +145,6 @@ func (s *RelaySet) AdvertisedDescriptors() []types.RelayDescriptor {
 	if len(out) == 0 {
 		return nil
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].APIHTTPSAddr < out[j].APIHTTPSAddr
-	})
 	return out
 }
 
@@ -197,6 +201,8 @@ func (s *RelaySet) applyDiscoveredStateLocked(state RelayState, confirmed bool) 
 			record.Reachable = existing.Reachable
 			record.Confirmed = existing.Confirmed
 			record.Banned = existing.Banned
+			record.DiscoveryRTT = existing.DiscoveryRTT
+			record.DiscoveryRTTAt = existing.DiscoveryRTTAt
 			record.consecutiveFailures = existing.consecutiveFailures
 		}
 		break
@@ -294,6 +300,20 @@ func (s *RelaySet) ApplyRelayDiscoveryResponse(targetIdentity types.Identity, ta
 		relaySetChanged = relaySetChanged || changed
 	}
 	return relaySetChanged, nil
+}
+
+func (s *RelaySet) RecordDiscoveryRTT(relayURL string, rtt time.Duration, measuredAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, ok := s.relays[relayURL]
+	if !ok {
+		return
+	}
+
+	state.DiscoveryRTT = rtt
+	state.DiscoveryRTTAt = measuredAt
+	s.relays[relayURL] = state
 }
 
 func (s *RelaySet) RecordDiscoveryFailure(identity types.Identity, relayURL string, err error, recoveryFailures int) (expired bool, expireReason string, consecutiveFailures int) {

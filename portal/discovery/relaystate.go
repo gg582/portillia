@@ -10,14 +10,23 @@ import (
 )
 
 type RelayState struct {
-	Descriptor types.RelayDescriptor
-	Bootstrap  bool
-	Reachable  bool
-	Confirmed  bool
-	Banned     bool
-	LastSeenAt time.Time
+	Descriptor     types.RelayDescriptor
+	Bootstrap      bool
+	Reachable      bool
+	Confirmed      bool
+	Banned         bool
+	LastSeenAt     time.Time
+	DiscoveryRTT   time.Duration
+	DiscoveryRTTAt time.Time
 
 	consecutiveFailures int
+}
+
+type ClientState struct {
+	ActiveRelayURLs []string
+	MaxActiveRelays int
+	RequireUDP      bool
+	RequireTCP      bool
 }
 
 func newRelayState(desc types.RelayDescriptor, seenAt time.Time) (RelayState, error) {

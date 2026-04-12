@@ -206,7 +206,7 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 		Relays:          nil,
 	}
 	if s.relaySet != nil {
-		resp.Relays = s.relaySet.AdvertisedDescriptors()
+		resp.Relays = s.relaySet.ConfirmedDescriptors()
 	}
 	utils.WriteAPIData(w, http.StatusOK, resp)
 }
