@@ -37,7 +37,6 @@ func mustRelayDescriptor(t *testing.T, relayURL string) types.RelayDescriptor {
 			Name: utils.PortalRootHost(relayURL),
 		},
 		RelayID:      relayURL,
-		Sequence:     uint64(now.UnixMilli()),
 		Version:      1,
 		IssuedAt:     now,
 		ExpiresAt:    now.Add(time.Hour),
@@ -543,7 +542,6 @@ func TestServerDiscoverySkipsSelfRelayHint(t *testing.T) {
 	selfHint, err := utils.NormalizeDescriptor(types.RelayDescriptor{
 		Identity:     server.identity.Base(),
 		RelayID:      "https://self-mirror.example.com",
-		Sequence:     uint64(now.UnixMilli()),
 		Version:      1,
 		IssuedAt:     now,
 		ExpiresAt:    now.Add(time.Hour),

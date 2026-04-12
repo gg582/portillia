@@ -157,6 +157,8 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC()
+	activeConns := float64(s.proxy.ActiveConns())
+	tcpTrafficBPS := s.proxy.CurrentTCPBPS(now)
 	ingressAddr := s.identity.Name
 	if s.cfg.SNIPort != 0 && s.cfg.SNIPort != 443 {
 		ingressAddr = fmt.Sprintf("%s:%d", ingressAddr, s.cfg.SNIPort)
@@ -176,8 +178,6 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 		Identity:            s.identity.Base(),
 		RelayID:             s.cfg.PortalURL,
 		OwnerAddress:        s.identity.Address,
-		SignerPublicKey:     s.identity.PublicKey,
-		Sequence:            uint64(now.UnixMilli()),
 		Version:             1,
 		IssuedAt:            now,
 		ExpiresAt:           now.Add(2 * discovery.DiscoveryPollInterval),
@@ -190,7 +190,9 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 		SupportsUDP:         s.cfg.UDPEnabled && s.quicTunnel != nil,
 		SupportsTCP:         s.cfg.TCPEnabled,
 		SupportsOverlayPeer: s.overlay != nil,
-		Load:                float64(s.activeConns.Load()),
+		Load:                activeConns,
+		LoadScore:           tcpTrafficBPS,
+		LastUpdated:         now.UnixMilli(),
 	})
 	if err != nil {
 		utils.WriteAPIError(w, http.StatusInternalServerError, types.APIErrorCodeInternal, err.Error())

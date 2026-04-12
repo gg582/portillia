@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gosuda/keyless_tls/relay/l4"
@@ -109,7 +108,7 @@ type Server struct {
 	cfg         ServerConfig
 	identity    types.RelayIdentity
 	acmeManager *acme.Manager
-	activeConns atomic.Int64
+	proxy       proxy
 
 	apiListener net.Listener
 	sniListener net.Listener
@@ -491,7 +490,7 @@ func (s *Server) runSNIListener(ctx context.Context) error {
 						_ = wrappedConn.Close()
 						return
 					}
-					s.BridgeConns(wrappedConn, upstream)
+					s.proxy.Bridge(wrappedConn, upstream)
 					return
 				}
 
@@ -510,7 +509,7 @@ func (s *Server) runSNIListener(ctx context.Context) error {
 					return
 				}
 
-				s.BridgeConns(wrappedConn, session)
+				s.proxy.Bridge(wrappedConn, session)
 			}(conn)
 		case errors.Is(err, net.ErrClosed):
 			return nil
@@ -650,35 +649,5 @@ func (s *Server) runRelayDiscoveryLoop(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 		}
-	}
-}
-
-func (s *Server) BridgeConns(left, right net.Conn) {
-	s.activeConns.Add(1)
-	defer s.activeConns.Add(-1)
-
-	defer left.Close()
-	defer right.Close()
-
-	var group errgroup.Group
-	group.Go(func() error {
-		_, err := io.Copy(right, left)
-		closeWrite(right)
-		return err
-	})
-	group.Go(func() error {
-		_, err := io.Copy(left, right)
-		closeWrite(left)
-		return err
-	})
-	_ = group.Wait()
-}
-
-func closeWrite(conn net.Conn) {
-	type closeWriter interface {
-		CloseWrite() error
-	}
-	if cw, ok := conn.(closeWriter); ok {
-		_ = cw.CloseWrite()
 	}
 }

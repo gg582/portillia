@@ -41,7 +41,6 @@ func NormalizeDescriptor(desc types.RelayDescriptor) (types.RelayDescriptor, err
 	desc.OverlayIPv4 = strings.TrimSpace(desc.OverlayIPv4)
 	desc.OverlayCIDRs = NormalizeIPPrefixes(desc.OverlayCIDRs)
 	desc.OwnerAddress = strings.TrimSpace(desc.OwnerAddress)
-	desc.SignerPublicKey = strings.TrimSpace(desc.SignerPublicKey)
 	if !desc.IssuedAt.IsZero() {
 		desc.IssuedAt = desc.IssuedAt.UTC()
 	}
@@ -82,9 +81,6 @@ func NormalizeDescriptor(desc types.RelayDescriptor) (types.RelayDescriptor, err
 			return types.RelayDescriptor{}, fmt.Errorf("normalize owner address: %w", err)
 		}
 		desc.OwnerAddress = normalized
-	}
-	if desc.SignerPublicKey == "" {
-		desc.SignerPublicKey = desc.PublicKey
 	}
 
 	switch {

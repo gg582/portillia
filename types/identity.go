@@ -105,8 +105,6 @@ type RelayDescriptor struct {
 
 	RelayID             string    `json:"relay_id,omitempty"`
 	OwnerAddress        string    `json:"owner_address,omitempty"`
-	SignerPublicKey     string    `json:"signer_public_key,omitempty"`
-	Sequence            uint64    `json:"sequence"`
 	Version             uint32    `json:"version"`
 	IssuedAt            time.Time `json:"issued_at"`
 	ExpiresAt           time.Time `json:"expires_at"`
