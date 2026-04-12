@@ -8,11 +8,27 @@
 	import TableOfContents from '$lib/components/TableOfContents.svelte';
 	import PrevNextNav from '$lib/components/PrevNextNav.svelte';
 	import { getPrevNext } from '$lib/nav';
+	import SearchButton from '$lib/components/SearchButton.svelte';
+	import SearchModal from '$lib/components/SearchModal.svelte';
 	import { copyCode } from '$lib/actions/copy-code';
+	import { useEventListener } from 'runed';
 	import '../app.css';
 
 	let { children } = $props();
 	let mobileNavOpen = $state(false);
+	let searchOpen = $state(false);
+
+	useEventListener(
+		() => (typeof window !== 'undefined' ? window : null),
+		'keydown',
+		(e: Event) => {
+			const ke = e as KeyboardEvent;
+			if ((ke.metaKey || ke.ctrlKey) && ke.key === 'k') {
+				ke.preventDefault();
+				searchOpen = !searchOpen;
+			}
+		}
+	);
 
 	const isLandingPage = $derived(
 		$page.url.pathname === `${base}/` || $page.url.pathname === base || $page.url.pathname === '/'
@@ -22,6 +38,7 @@
 </script>
 
 <ModeWatcher defaultMode="system" />
+<SearchModal bind:open={searchOpen} />
 
 <div class="min-h-screen">
 	<!-- Header — relay-style with glassmorphism for docs -->
@@ -81,6 +98,8 @@
 
 			<div class="flex-1"></div>
 
+			<SearchButton onclick={() => (searchOpen = true)} />
+
 			<!-- GitHub icon button -->
 			<a
 				href="https://github.com/gosuda/portal-tunnel"
@@ -137,8 +156,11 @@
 		</aside>
 
 		<main class="min-w-0 flex-1 px-4 py-8 lg:px-8">
+			<aside role="note" data-disclaimer class="mx-auto mb-6 max-w-3xl rounded-xl border border-primary/20 bg-primary/[0.08] px-4 py-3 text-sm font-medium text-foreground/70 shadow-sm backdrop-blur-sm">
+				This documentation is under active development. Some pages may be incomplete or change without notice.
+			</aside>
 			{#key $page.url.pathname}
-			<article use:copyCode class="prose prose-gray dark:prose-invert mx-auto max-w-3xl">
+			<article use:copyCode data-pagefind-body class="prose prose-gray dark:prose-invert mx-auto max-w-3xl">
 				{@render children()}
 			</article>
 			{/key}
