@@ -137,9 +137,11 @@
 		</aside>
 
 		<main class="min-w-0 flex-1 px-4 py-8 lg:px-8">
-			<article use:copyCode={$page.url.pathname} class="prose prose-gray dark:prose-invert mx-auto max-w-3xl">
+			{#key $page.url.pathname}
+			<article use:copyCode class="prose prose-gray dark:prose-invert mx-auto max-w-3xl">
 				{@render children()}
 			</article>
+			{/key}
 			<div class="mx-auto max-w-3xl">
 				<PrevNextNav prev={prevNext.prev} next={prevNext.next} />
 			</div>
