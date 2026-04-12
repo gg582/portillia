@@ -9,6 +9,16 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
+func mustRelaySet(t *testing.T, relayURLs ...string) *discovery.RelaySet {
+	t.Helper()
+
+	set, err := discovery.NewRelaySet(types.Identity{}, "", relayURLs)
+	if err != nil {
+		t.Fatalf("NewRelaySet() error = %v", err)
+	}
+	return set
+}
+
 func mustRelayDescriptor(t *testing.T, relayName, relayURL string) types.RelayDescriptor {
 	t.Helper()
 
@@ -17,6 +27,7 @@ func mustRelayDescriptor(t *testing.T, relayName, relayURL string) types.RelayDe
 		Identity: types.Identity{
 			Name: relayName,
 		},
+		RelayID:      relayURL,
 		Sequence:     uint64(now.UnixMilli()),
 		Version:      1,
 		IssuedAt:     now,
@@ -27,6 +38,15 @@ func mustRelayDescriptor(t *testing.T, relayName, relayURL string) types.RelayDe
 		t.Fatalf("NormalizeDescriptor() error = %v", err)
 	}
 	return desc
+}
+
+func applyRelayDiscovery(t *testing.T, set *discovery.RelaySet, identity types.Identity, targetURL string, resp types.DiscoveryResponse, now time.Time) error {
+	t.Helper()
+	_, warnErr, err := set.ApplyRelayDiscoveryResponse(identity, targetURL, resp, now)
+	if err != nil {
+		return err
+	}
+	return warnErr
 }
 
 func TestExposureBanRelayURLMovesRelay(t *testing.T) {
@@ -45,10 +65,9 @@ func TestExposureBanRelayURLMovesRelay(t *testing.T) {
 	}
 
 	exposure := &Exposure{
-		relaySet:       discovery.NewRelaySet(),
+		relaySet:       mustRelaySet(t, relayA, relayB),
 		relayListeners: make(map[string]*Listener, 2),
 	}
-	exposure.relaySet.SetBootstrapRelayURLs([]string{relayA, relayB})
 	exposure.relayListeners = map[string]*Listener{
 		relayA: listener,
 		relayB: {},
@@ -82,7 +101,7 @@ func TestExposureSetRelayURLsSkipsBannedRelay(t *testing.T) {
 	)
 
 	exposure := &Exposure{
-		relaySet:       discovery.NewRelaySet(),
+		relaySet:       mustRelaySet(t),
 		relayListeners: make(map[string]*Listener, 1),
 	}
 	exposure.relaySet.BanRelayURL(relayB)
@@ -90,7 +109,9 @@ func TestExposureSetRelayURLsSkipsBannedRelay(t *testing.T) {
 		relayA: {},
 	}
 
-	exposure.relaySet.SetBootstrapRelayURLs([]string{relayA, relayB})
+	if err := exposure.relaySet.SetBootstrapRelayURLs([]string{relayA, relayB}); err != nil {
+		t.Fatalf("SetBootstrapRelayURLs() error = %v", err)
+	}
 	if err := exposure.reconcileRelayListeners(false); err != nil {
 		t.Fatalf("reconcileRelayListeners() error = %v", err)
 	}
@@ -120,10 +141,9 @@ func TestExposureSetRelayURLsRemovesStaleListener(t *testing.T) {
 
 	relayAClosed := make(chan struct{})
 	exposure := &Exposure{
-		relaySet:       discovery.NewRelaySet(),
+		relaySet:       mustRelaySet(t, relayA, relayB),
 		relayListeners: make(map[string]*Listener, 2),
 	}
-	exposure.relaySet.SetBootstrapRelayURLs([]string{relayA, relayB})
 	exposure.relayListeners = map[string]*Listener{
 		relayA: {
 			api:    &apiClient{baseURL: relayAURL},
@@ -135,7 +155,9 @@ func TestExposureSetRelayURLsRemovesStaleListener(t *testing.T) {
 		},
 	}
 
-	exposure.relaySet.SetBootstrapRelayURLs([]string{relayB})
+	if err := exposure.relaySet.SetBootstrapRelayURLs([]string{relayB}); err != nil {
+		t.Fatalf("SetBootstrapRelayURLs() error = %v", err)
+	}
 	if err := exposure.reconcileRelayListeners(false); err != nil {
 		t.Fatalf("reconcileRelayListeners() error = %v", err)
 	}
@@ -163,15 +185,15 @@ func TestExposureSetRelayURLsRemovesStaleListener(t *testing.T) {
 }
 
 func TestExposurePinDiscoveredDescriptorAllowsURLChangeForSameIdentity(t *testing.T) {
-	exposure := &Exposure{relaySet: discovery.NewRelaySet()}
+	exposure := &Exposure{relaySet: mustRelaySet(t)}
 	desc := mustRelayDescriptor(t, "relay-a", "https://relay-a.example")
 
-	if err := exposure.relaySet.ApplyRelayDiscoveryResponse(desc.Identity, desc.APIHTTPSAddr, types.DiscoveryResponse{ProtocolVersion: types.ProtocolVersion, Self: desc}, time.Now().UTC()); err != nil {
+	if err := applyRelayDiscovery(t, exposure.relaySet, desc.Identity, desc.APIHTTPSAddr, types.DiscoveryResponse{ProtocolVersion: types.ProtocolVersion, Self: desc}, time.Now().UTC()); err != nil {
 		t.Fatalf("ApplyRelayDiscoveryResponse() error = %v", err)
 	}
 
 	changedURL := mustRelayDescriptor(t, desc.Name, "https://relay-b.example")
-	err := exposure.relaySet.ApplyRelayDiscoveryResponse(desc.Identity, "", types.DiscoveryResponse{ProtocolVersion: types.ProtocolVersion, Self: changedURL}, time.Now().UTC())
+	err := applyRelayDiscovery(t, exposure.relaySet, desc.Identity, "", types.DiscoveryResponse{ProtocolVersion: types.ProtocolVersion, Self: changedURL}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("ApplyRelayDiscoveryResponse() error = %v, want nil for same relay identity", err)
 	}

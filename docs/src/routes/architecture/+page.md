@@ -195,12 +195,12 @@ UDP client
 
 ### Operational Constraints
 
-- For non-localhost deployments, relay TLS can run from manual certificate files in `KEYLESS_DIR` or from managed ACME.
+- For non-localhost deployments, relay TLS can run from manual certificate files in the relay `IDENTITY_PATH` directory or from managed ACME.
 - When managed ACME is enabled, supported DNS providers are `cloudflare`, `gcloud`, and `route53`.
 - ENS gasless automation reuses `ACME_DNS_PROVIDER` for DNSSEC and ENS TXT sync.
-- Relay, tunnel, and demo-app identities are persisted as JSON at `IDENTITY_PATH` / `--identity-path`. Missing files are generated automatically and stored with `name`, `address`, `public_key`, and `private_key`.
+- Relay stores its state under `IDENTITY_PATH`, including `identity.json`, `admin_settings.json`, and certificate material. Tunnel and demo-app identities still use `IDENTITY_PATH` / `--identity-path` as a direct JSON file path.
 - Managed non-localhost ACME keeps both root and wildcard DNS A records in sync.
-- Relay certificate material lives under `KEYLESS_DIR` as `fullchain.pem` and `privatekey.pem`.
+- Relay certificate material lives under `IDENTITY_PATH` as `fullchain.pem` and `privatekey.pem`.
 - Localhost uses the development certificate path instead of public managed/manual certificate setup.
 
 ## Connection Model

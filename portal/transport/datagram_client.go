@@ -1,21 +1,12 @@
 package transport
 
 import (
-	"context"
 	"net"
-	"time"
 
 	"github.com/quic-go/quic-go"
-	"github.com/rs/zerolog/log"
 
 	"github.com/gosuda/portal-tunnel/v2/types"
-	"github.com/gosuda/portal-tunnel/v2/utils"
 )
-
-type ClientDatagramState struct {
-	Identity    types.Identity
-	AccessToken string
-}
 
 type ClientDatagram struct {
 	session *datagramSession
@@ -27,75 +18,14 @@ func NewClientDatagram(onReceiveError func(error)) *ClientDatagram {
 	}
 }
 
-func (d *ClientDatagram) RunLoop(
-	ctx context.Context,
-	currentState func() (ClientDatagramState, bool),
-	open func(context.Context, ClientDatagramState) (*quic.Conn, error),
-) {
-	for {
-		select {
-		case <-ctx.Done():
-			d.session.Stop("listener context closed")
-			return
-		default:
+func (d *ClientDatagram) Bind(conn *quic.Conn) (<-chan struct{}, error) {
+	if d == nil || d.session == nil {
+		if conn != nil {
+			_ = conn.CloseWithError(0, "listener closed")
 		}
-
-		state, ok := currentState()
-		if !ok {
-			if !utils.SleepOrDone(ctx, time.Second) {
-				d.session.Stop("listener context closed")
-				return
-			}
-			continue
-		}
-
-		conn, err := open(ctx, state)
-		if err != nil {
-			log.Info().
-				Err(err).
-				Str("component", "sdk-datagram-plane").
-				Str("address", state.Identity.Address).
-				Msg("quic datagram plane unavailable; retrying")
-			if !utils.SleepOrDone(ctx, 2*time.Second) {
-				d.session.Stop("listener context closed")
-				return
-			}
-			continue
-		}
-
-		log.Info().
-			Str("component", "sdk-datagram-plane").
-			Str("address", state.Identity.Address).
-			Str("remote_addr", conn.RemoteAddr().String()).
-			Msg("quic tunnel connected")
-
-		recvDone, err := d.session.Bind(conn)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			log.Info().
-				Err(err).
-				Str("component", "sdk-datagram-plane").
-				Str("address", state.Identity.Address).
-				Msg("quic datagram plane did not bind cleanly; retrying")
-			if !utils.SleepOrDone(ctx, time.Second) {
-				return
-			}
-			continue
-		}
-
-		select {
-		case <-ctx.Done():
-			d.session.Stop("listener context closed")
-			return
-		case <-recvDone:
-		}
-
-		if !utils.SleepOrDone(ctx, time.Second) {
-			return
-		}
+		return nil, net.ErrClosed
 	}
+	return d.session.Bind(conn)
 }
 
 func (d *ClientDatagram) Accept(done <-chan struct{}) (types.DatagramFrame, error) {

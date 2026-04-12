@@ -381,7 +381,7 @@ func (m *Manager) syncENSGasless(ctx context.Context) error {
 		return errors.New("ACME_DNS_PROVIDER is required")
 	}
 
-	status, err := m.dns.EnsureDNSSEC(ctx, m.cfg.BaseDomain)
+	state, dsRecord, message, err := m.dns.EnsureDNSSEC(ctx, m.cfg.BaseDomain)
 	if err != nil {
 		return fmt.Errorf("ensure dnssec: %w", err)
 	}
@@ -389,12 +389,12 @@ func (m *Manager) syncENSGasless(ctx context.Context) error {
 		event := log.Info().
 			Str("provider", m.dns.Name()).
 			Str("base_domain", m.cfg.BaseDomain).
-			Str("state", strings.TrimSpace(status.State))
-		if strings.TrimSpace(status.DSRecord) != "" {
-			event = event.Str("ds_record", strings.TrimSpace(status.DSRecord))
+			Str("state", strings.TrimSpace(state))
+		if strings.TrimSpace(dsRecord) != "" {
+			event = event.Str("ds_record", strings.TrimSpace(dsRecord))
 		}
-		if strings.TrimSpace(status.Message) != "" {
-			event = event.Str("message", strings.TrimSpace(status.Message))
+		if strings.TrimSpace(message) != "" {
+			event = event.Str("message", strings.TrimSpace(message))
 		}
 		event.Msg("dnssec configured")
 	})

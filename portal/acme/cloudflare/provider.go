@@ -11,7 +11,6 @@ import (
 	"github.com/go-acme/lego/v4/challenge"
 	"github.com/go-acme/lego/v4/providers/dns/cloudflare"
 
-	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
@@ -244,48 +243,46 @@ func (p *Provider) DeleteTXTRecords(ctx context.Context, name, matchPrefix strin
 	return nil
 }
 
-func (p *Provider) EnsureDNSSEC(ctx context.Context, baseDomain string) (types.DNSSECStatus, error) {
+func (p *Provider) EnsureDNSSEC(ctx context.Context, baseDomain string) (state, dsRecord, message string, err error) {
 	if p == nil {
-		return types.DNSSECStatus{}, errors.New("cloudflare provider is nil")
+		return "", "", "", errors.New("cloudflare provider is nil")
 	}
 	baseDomain = utils.NormalizeBaseDomain(baseDomain)
 	if baseDomain == "" {
-		return types.DNSSECStatus{}, errors.New("base domain is required")
+		return "", "", "", errors.New("base domain is required")
 	}
 	if p.token == "" {
-		return types.DNSSECStatus{}, errors.New("cloudflare token is required")
+		return "", "", "", errors.New("cloudflare token is required")
 	}
 
 	zoneID, err := findZoneID(ctx, p.token, baseDomain)
 	if err != nil {
-		return types.DNSSECStatus{}, fmt.Errorf("find cloudflare zone: %w", err)
+		return "", "", "", fmt.Errorf("find cloudflare zone: %w", err)
 	}
 
 	details, err := getDNSSEC(ctx, p.token, zoneID)
 	if err != nil {
-		return types.DNSSECStatus{}, fmt.Errorf("get cloudflare dnssec status: %w", err)
+		return "", "", "", fmt.Errorf("get cloudflare dnssec status: %w", err)
 	}
 
 	switch strings.ToLower(strings.TrimSpace(details.Status)) {
 	case "active", "pending":
 	default:
 		if err := enableDNSSEC(ctx, p.token, zoneID); err != nil {
-			return types.DNSSECStatus{}, fmt.Errorf("enable cloudflare dnssec: %w", err)
+			return "", "", "", fmt.Errorf("enable cloudflare dnssec: %w", err)
 		}
 		details, err = getDNSSEC(ctx, p.token, zoneID)
 		if err != nil {
-			return types.DNSSECStatus{}, fmt.Errorf("refresh cloudflare dnssec status: %w", err)
+			return "", "", "", fmt.Errorf("refresh cloudflare dnssec status: %w", err)
 		}
 	}
 
-	status := types.DNSSECStatus{
-		State:    strings.TrimSpace(details.Status),
-		DSRecord: strings.TrimSpace(details.DS),
+	state = strings.TrimSpace(details.Status)
+	dsRecord = strings.TrimSpace(details.DS)
+	if dsRecord != "" {
+		message = "publish the DS record at the registrar if Cloudflare Registrar does not manage the zone"
 	}
-	if status.DSRecord != "" {
-		status.Message = "publish the DS record at the registrar if Cloudflare Registrar does not manage the zone"
-	}
-	return status, nil
+	return state, dsRecord, message, nil
 }
 
 func findZoneID(ctx context.Context, token, domain string) (string, error) {

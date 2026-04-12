@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/rs/zerolog/log"
 
 	"github.com/gosuda/portal-tunnel/v2/portal/discovery"
@@ -44,6 +43,7 @@ type Listener struct {
 	cancel context.CancelFunc
 	doneCh <-chan struct{}
 
+	readyTarget int
 	retryCount  int
 	retryWait   time.Duration
 	leaseTTL    time.Duration
@@ -56,6 +56,7 @@ type Listener struct {
 	registered   chan struct{}
 	closeOnce    sync.Once
 	registerOnce sync.Once
+	streamCancel context.CancelFunc
 
 	banMITM    bool
 	tcpEnabled bool
@@ -90,6 +91,7 @@ func NewListener(ctx context.Context, relayURL string, cfg ListenerConfig) (*Lis
 		cancel:      cancel,
 		api:         api,
 		registered:  make(chan struct{}),
+		readyTarget: readyTarget,
 		retryCount:  cfg.RetryCount,
 		retryWait:   retryWait,
 		leaseTTL:    leaseTTL,
@@ -110,35 +112,22 @@ func NewListener(ctx context.Context, relayURL string, cfg ListenerConfig) (*Lis
 				Str("address", l.Address()).
 				Msg("quic datagram plane disconnected; waiting to reconnect")
 		})
-		go l.datagram.RunLoop(listenerCtx, l.currentDatagramState, func(ctx context.Context, state transport.ClientDatagramState) (*quic.Conn, error) {
-			return l.api.openQUICSession(ctx, state.AccessToken)
-		})
 	}
 
-	go l.runStartup(listenerCtx, readyTarget)
+	go l.runStartup(listenerCtx)
 	return l, nil
 }
 
-func (l *Listener) runStartup(ctx context.Context, readyTarget int) {
+func (l *Listener) runStartup(ctx context.Context) {
 	var retries int
 
 	for {
 		err := l.registerAndConfigure(ctx)
 		switch {
 		case err == nil:
-			for range readyTarget {
-				go l.stream.RunLoop(
-					ctx,
-					func(ctx context.Context) (net.Conn, error) {
-						return l.api.openReverseSession(ctx)
-					},
-					func() *tls.Config {
-						l.mu.Lock()
-						defer l.mu.Unlock()
-						return l.tlsConfig
-					},
-					l.retryOrClose,
-				)
+			l.startStreamLoops(ctx)
+			if l.datagram != nil {
+				go l.runDatagramLoop(ctx)
 			}
 			go l.runRenewLoop(ctx)
 			publicURL := l.PublicURL()
@@ -185,6 +174,7 @@ func (l *Listener) Close() error {
 		identity := l.identity.Copy()
 		registered := l.hostname != ""
 		tlsCloser := l.tlsCloser
+		streamCancel := l.streamCancel
 		stream := l.stream
 		datagram := l.datagram
 		api := l.api
@@ -192,10 +182,14 @@ func (l *Listener) Close() error {
 		l.udpAddr = ""
 		l.tlsConfig = nil
 		l.tlsCloser = nil
+		l.streamCancel = nil
 		l.mu.Unlock()
 
 		if l.mitmManager != nil {
 			l.mitmManager.reset()
+		}
+		if streamCancel != nil {
+			streamCancel()
 		}
 
 		if stream != nil {
@@ -366,25 +360,154 @@ func (l *Listener) PublicURL() string {
 	}).String()
 }
 
-func (l *Listener) currentDatagramState() (transport.ClientDatagramState, bool) {
-	if l.datagram == nil {
-		return transport.ClientDatagramState{}, false
+func (l *Listener) startStreamLoops(parentCtx context.Context) {
+	if l.stream == nil || l.readyTarget <= 0 {
+		return
 	}
+
+	streamCtx, cancel := context.WithCancel(parentCtx)
 
 	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if l.api == nil || l.identity.Key() == "" || l.udpAddr == "" {
-		return transport.ClientDatagramState{}, false
+	if l.streamCancel != nil {
+		l.streamCancel()
 	}
-	l.api.mu.RLock()
-	accessToken := l.api.accessToken
-	l.api.mu.RUnlock()
+	l.streamCancel = cancel
+	readyTarget := l.readyTarget
+	l.mu.Unlock()
 
-	return transport.ClientDatagramState{
-		Identity:    l.identity.Copy(),
-		AccessToken: accessToken,
-	}, true
+	for range readyTarget {
+		go l.runReverseSessionLoop(streamCtx)
+	}
+}
+
+func (l *Listener) stopStreamLoops() {
+	l.mu.Lock()
+	cancel := l.streamCancel
+	l.streamCancel = nil
+	l.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (l *Listener) runReverseSessionLoop(ctx context.Context) {
+	if l.stream == nil {
+		return
+	}
+
+	var retries int
+	for {
+		claimed, err := l.stream.RunSession(
+			ctx,
+			func(ctx context.Context) (net.Conn, error) {
+				return l.api.openReverseSession(ctx)
+			},
+			func() *tls.Config {
+				l.mu.Lock()
+				defer l.mu.Unlock()
+				return l.tlsConfig
+			},
+		)
+		switch {
+		case err == nil:
+			retries = 0
+		case errors.Is(err, context.Canceled), errors.Is(err, net.ErrClosed):
+			return
+		case claimed:
+			retries = 0
+		default:
+			retries++
+			if !l.retryOrClose(ctx, "reverse session connect", err, retries) {
+				return
+			}
+		}
+	}
+}
+
+func (l *Listener) runDatagramLoop(ctx context.Context) {
+	if l.datagram == nil {
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			l.datagram.Close()
+			return
+		default:
+		}
+
+		l.mu.Lock()
+		api := l.api
+		identity := l.identity.Copy()
+		udpAddr := l.udpAddr
+		l.mu.Unlock()
+		if api == nil || identity.Key() == "" || udpAddr == "" {
+			if !utils.SleepOrDone(ctx, time.Second) {
+				l.datagram.Close()
+				return
+			}
+			continue
+		}
+		api.mu.RLock()
+		accessToken := api.accessToken
+		api.mu.RUnlock()
+		if strings.TrimSpace(accessToken) == "" {
+			if !utils.SleepOrDone(ctx, time.Second) {
+				l.datagram.Close()
+				return
+			}
+			continue
+		}
+
+		conn, err := api.openQUICSession(ctx, accessToken)
+		if err != nil {
+			log.Info().
+				Err(err).
+				Str("component", "sdk-datagram-plane").
+				Str("address", identity.Address).
+				Msg("quic datagram plane unavailable; retrying")
+			if !utils.SleepOrDone(ctx, 2*time.Second) {
+				l.datagram.Close()
+				return
+			}
+			continue
+		}
+
+		log.Info().
+			Str("component", "sdk-datagram-plane").
+			Str("address", identity.Address).
+			Str("remote_addr", conn.RemoteAddr().String()).
+			Msg("quic tunnel connected")
+
+		recvDone, err := l.datagram.Bind(conn)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			log.Info().
+				Err(err).
+				Str("component", "sdk-datagram-plane").
+				Str("address", identity.Address).
+				Msg("quic datagram plane did not bind cleanly; retrying")
+			if !utils.SleepOrDone(ctx, time.Second) {
+				return
+			}
+			continue
+		}
+
+		select {
+		case <-ctx.Done():
+			l.datagram.Close()
+			return
+		case <-recvDone:
+		}
+
+		if !utils.SleepOrDone(ctx, time.Second) {
+			return
+		}
+	}
 }
 
 func (l *Listener) runRenewLoop(ctx context.Context) {
@@ -399,9 +522,48 @@ func (l *Listener) runRenewLoop(ctx context.Context) {
 		interval = 30 * time.Second
 	}
 
+	const wakeThreshold = 10 * time.Second
+
 	for {
+		// Round(0) strips the monotonic clock reading so that
+		// time.Since uses wall-clock time.  The monotonic clock
+		// freezes during macOS sleep, so without this the elapsed
+		// duration would equal the timer interval, not real time.
+		before := time.Now().Round(0)
 		if !utils.SleepOrDone(ctx, interval) {
 			return
+		}
+		elapsed := time.Since(before)
+
+		// If the wall-clock jump is much larger than expected, the OS
+		// likely suspended the process (e.g. macOS lid close).  The
+		// server-side lease is almost certainly expired, so skip the
+		// normal renew and go straight to re-registration.
+		if elapsed > interval+wakeThreshold {
+			log.Info().
+				Dur("expected", interval).
+				Dur("actual", elapsed).
+				Str("address", l.Address()).
+				Msg("system sleep/wake detected; resetting transport and re-registering")
+
+			l.stopStreamLoops()
+			l.api.resetTransport()
+
+			var retries int
+			for {
+				if err := l.registerAndConfigure(ctx); err == nil {
+					l.startStreamLoops(ctx)
+					break
+				} else if errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
+					return
+				} else {
+					retries++
+					if !l.retryOrClose(ctx, "post-wake re-registration", err, retries) {
+						return
+					}
+				}
+			}
+			continue
 		}
 
 		var retries int
@@ -423,22 +585,21 @@ func (l *Listener) runRenewLoop(ctx context.Context) {
 }
 
 func (l *Listener) renewLease(ctx context.Context) error {
-	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	err := l.api.renewLease(requestCtx, l.leaseTTL)
-	cancel()
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, &types.APIRequestError{Code: types.APIErrorCodeLeaseNotFound}) {
-		return err
+	if time.Now().Before(l.api.expiresAt) {
+		requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := l.api.renewLease(requestCtx, l.leaseTTL)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, &types.APIRequestError{Code: types.APIErrorCodeLeaseNotFound}) {
+			return err
+		}
 	}
 
-	requestCtx, cancel = context.WithTimeout(ctx, 10*time.Second)
+	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := l.registerAndConfigure(requestCtx); err != nil {
-		return err
-	}
-	return nil
+	return l.registerAndConfigure(requestCtx)
 }
 
 func (l *Listener) registerAndConfigure(ctx context.Context) error {
@@ -527,7 +688,23 @@ func (l *Listener) retryOrClose(ctx context.Context, operation string, err error
 			Msg("operation failed; retrying")
 	}
 
-	return utils.SleepOrDone(ctx, l.retryWait)
+	// Detect sleep/wake during the retry wait itself.  If the OS
+	// suspended the process, the renew loop will be re-registering
+	// concurrently.  Give it a moment to finish so the next attempt
+	// uses a fresh access token and transport.
+	// Round(0) forces wall-clock comparison (monotonic clock freezes
+	// during macOS sleep).
+	before := time.Now().Round(0)
+	ok := utils.SleepOrDone(ctx, l.retryWait)
+	if ok && time.Since(before) > l.retryWait+10*time.Second {
+		logger.Info().
+			Dur("expected", l.retryWait).
+			Dur("actual", time.Since(before)).
+			Msg("system sleep/wake detected during retry wait; pausing for re-registration")
+		// Wait briefly for the renew loop to complete re-registration.
+		utils.SleepOrDone(ctx, 3*time.Second)
+	}
+	return ok
 }
 
 type listenerAddr string

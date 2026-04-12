@@ -16,7 +16,6 @@ import (
 	"github.com/go-acme/lego/v4/challenge"
 	"github.com/go-acme/lego/v4/providers/dns/route53"
 
-	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
@@ -221,58 +220,59 @@ func (p *Provider) DeleteTXTRecords(ctx context.Context, name, matchPrefix strin
 	return nil
 }
 
-func (p *Provider) EnsureDNSSEC(ctx context.Context, baseDomain string) (types.DNSSECStatus, error) {
+func (p *Provider) EnsureDNSSEC(ctx context.Context, baseDomain string) (state, dsRecord, message string, err error) {
 	if p == nil {
-		return types.DNSSECStatus{}, errors.New("route53 provider is nil")
+		return "", "", "", errors.New("route53 provider is nil")
 	}
 	baseDomain = utils.NormalizeBaseDomain(baseDomain)
 	if baseDomain == "" {
-		return types.DNSSECStatus{}, errors.New("base domain is required")
+		return "", "", "", errors.New("base domain is required")
 	}
 
 	client, err := newClient(ctx, p.cfg)
 	if err != nil {
-		return types.DNSSECStatus{}, err
+		return "", "", "", err
 	}
 
 	hostedZoneID, err := findHostedZoneID(ctx, client, baseDomain, p.cfg.HostedZoneID)
 	if err != nil {
-		return types.DNSSECStatus{}, err
+		return "", "", "", err
 	}
 
 	out, err := getDNSSECStatus(ctx, client, hostedZoneID)
 	if err != nil {
-		return types.DNSSECStatus{}, fmt.Errorf("get route53 dnssec status: %w", err)
+		return "", "", "", fmt.Errorf("get route53 dnssec status: %w", err)
 	}
-	status := dnssecStatusFromOutput(out)
-	if strings.EqualFold(status.State, "SIGNING") {
-		return status, nil
+	state, dsRecord, message = dnssecStatusFromOutput(out)
+	if strings.EqualFold(state, "SIGNING") {
+		return state, dsRecord, message, nil
 	}
 
 	if _, ok := activeKeySigningKey(out.KeySigningKeys); !ok {
 		if err := ensureActiveKeySigningKey(ctx, client, hostedZoneID, p.cfg, out.KeySigningKeys); err != nil {
-			return types.DNSSECStatus{}, err
+			return "", "", "", err
 		}
 		out, err = getDNSSECStatus(ctx, client, hostedZoneID)
 		if err != nil {
-			return types.DNSSECStatus{}, fmt.Errorf("refresh route53 dnssec status: %w", err)
+			return "", "", "", fmt.Errorf("refresh route53 dnssec status: %w", err)
 		}
 		if _, ok := activeKeySigningKey(out.KeySigningKeys); !ok {
-			return types.DNSSECStatus{}, errors.New("route53 dnssec requires an ACTIVE key-signing key")
+			return "", "", "", errors.New("route53 dnssec requires an ACTIVE key-signing key")
 		}
 	}
 
 	if _, err := client.EnableHostedZoneDNSSEC(ctx, &awsroute53.EnableHostedZoneDNSSECInput{
 		HostedZoneId: aws.String(hostedZoneID),
 	}); err != nil {
-		return types.DNSSECStatus{}, fmt.Errorf("enable route53 dnssec: %w", err)
+		return "", "", "", fmt.Errorf("enable route53 dnssec: %w", err)
 	}
 
 	out, err = getDNSSECStatus(ctx, client, hostedZoneID)
 	if err != nil {
-		return types.DNSSECStatus{}, fmt.Errorf("refresh route53 dnssec status: %w", err)
+		return "", "", "", fmt.Errorf("refresh route53 dnssec status: %w", err)
 	}
-	return dnssecStatusFromOutput(out), nil
+	state, dsRecord, message = dnssecStatusFromOutput(out)
+	return state, dsRecord, message, nil
 }
 
 func newClient(ctx context.Context, cfg Config) (*awsroute53.Client, error) {
@@ -587,30 +587,29 @@ func ensureActiveKeySigningKey(ctx context.Context, client *awsroute53.Client, h
 	return nil
 }
 
-func dnssecStatusFromOutput(out *awsroute53.GetDNSSECOutput) types.DNSSECStatus {
+func dnssecStatusFromOutput(out *awsroute53.GetDNSSECOutput) (state, dsRecord, message string) {
 	if out == nil {
-		return types.DNSSECStatus{}
+		return "", "", ""
 	}
 
-	status := types.DNSSECStatus{}
 	if out.Status != nil {
-		status.State = strings.TrimSpace(aws.ToString(out.Status.ServeSignature))
-		status.Message = strings.TrimSpace(aws.ToString(out.Status.StatusMessage))
+		state = strings.TrimSpace(aws.ToString(out.Status.ServeSignature))
+		message = strings.TrimSpace(aws.ToString(out.Status.StatusMessage))
 	}
 	if active, ok := activeKeySigningKey(out.KeySigningKeys); ok {
-		status.DSRecord = strings.TrimSpace(aws.ToString(active.DSRecord))
+		dsRecord = strings.TrimSpace(aws.ToString(active.DSRecord))
 	} else {
 		for _, key := range out.KeySigningKeys {
 			if strings.TrimSpace(aws.ToString(key.DSRecord)) != "" {
-				status.DSRecord = strings.TrimSpace(aws.ToString(key.DSRecord))
+				dsRecord = strings.TrimSpace(aws.ToString(key.DSRecord))
 				break
 			}
 		}
 	}
-	if status.Message == "" && status.DSRecord != "" {
-		status.Message = "publish the DS record at the registrar after Route53 zone signing is enabled"
+	if message == "" && dsRecord != "" {
+		message = "publish the DS record at the registrar after Route53 zone signing is enabled"
 	}
-	return status
+	return state, dsRecord, message
 }
 
 func activeKeySigningKey(keys []route53types.KeySigningKey) (route53types.KeySigningKey, bool) {

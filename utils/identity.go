@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/gosuda/portal-tunnel/v2/types"
@@ -29,6 +30,35 @@ func NormalizeIdentity(identity types.Identity) (types.Identity, error) {
 	return normalized, nil
 }
 
+func ResolveRelayStateDir(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	switch strings.ToLower(filepath.Base(trimmed)) {
+	case types.RelayIdentityFilename, types.RelayAdminSettingsFilename:
+		return filepath.Dir(trimmed)
+	default:
+		return trimmed
+	}
+}
+
+func ResolveRelayIdentityPath(path string) string {
+	stateDir := ResolveRelayStateDir(path)
+	if stateDir == "" {
+		return ""
+	}
+	return filepath.Join(stateDir, types.RelayIdentityFilename)
+}
+
+func ResolveRelayAdminSettingsPath(path string) string {
+	stateDir := ResolveRelayStateDir(path)
+	if stateDir == "" {
+		return ""
+	}
+	return filepath.Join(stateDir, types.RelayAdminSettingsFilename)
+}
+
 func NormalizeStoredIdentity(identity types.Identity) (types.Identity, error) {
 	normalized := identity.Copy()
 	normalized.Name = strings.TrimSpace(normalized.Name)
@@ -36,7 +66,8 @@ func NormalizeStoredIdentity(identity types.Identity) (types.Identity, error) {
 	normalized.PublicKey = strings.TrimSpace(normalized.PublicKey)
 	normalized.PrivateKey = strings.TrimSpace(normalized.PrivateKey)
 
-	if normalized.PrivateKey != "" {
+	switch {
+	case normalized.PrivateKey != "":
 		resolved, err := ResolveSecp256k1Identity(normalized.PrivateKey)
 		if err != nil {
 			return types.Identity{}, err
@@ -50,10 +81,7 @@ func NormalizeStoredIdentity(identity types.Identity) (types.Identity, error) {
 		normalized.Address = resolved.Address
 		normalized.PublicKey = resolved.PublicKey
 		normalized.PrivateKey = resolved.PrivateKey
-		return normalized, nil
-	}
-
-	if normalized.PublicKey != "" {
+	case normalized.PublicKey != "":
 		address, err := AddressFromCompressedPublicKeyHex(normalized.PublicKey)
 		if err != nil {
 			return types.Identity{}, err
@@ -61,16 +89,13 @@ func NormalizeStoredIdentity(identity types.Identity) (types.Identity, error) {
 		normalized.PublicKey = strings.ToLower(TrimHexPrefix(normalized.PublicKey))
 		if normalized.Address == "" {
 			normalized.Address = address
-			return normalized, nil
+			break
 		}
 		if !strings.EqualFold(normalized.Address, address) {
 			return types.Identity{}, errors.New("identity address does not match public key")
 		}
 		normalized.Address = address
-		return normalized, nil
-	}
-
-	if normalized.Address != "" {
+	case normalized.Address != "":
 		address, err := NormalizeEVMAddress(normalized.Address)
 		if err != nil {
 			return types.Identity{}, err
@@ -80,11 +105,57 @@ func NormalizeStoredIdentity(identity types.Identity) (types.Identity, error) {
 	return normalized, nil
 }
 
+func NormalizeStoredRelayIdentity(identity types.RelayIdentity) (types.RelayIdentity, error) {
+	normalized := identity.Copy()
+	baseIdentity, err := NormalizeStoredIdentity(normalized.Identity)
+	if err != nil {
+		return types.RelayIdentity{}, err
+	}
+	normalized.Identity = baseIdentity
+	normalized.AdminSecretKey = strings.TrimSpace(normalized.AdminSecretKey)
+	normalized.WireGuardPublicKey = strings.TrimSpace(normalized.WireGuardPublicKey)
+	normalized.WireGuardPrivateKey = strings.TrimSpace(normalized.WireGuardPrivateKey)
+
+	switch {
+	case normalized.WireGuardPrivateKey != "":
+		privateKey, err := NormalizeWireGuardPrivateKey(normalized.WireGuardPrivateKey)
+		if err != nil {
+			return types.RelayIdentity{}, fmt.Errorf("normalize wireguard private key: %w", err)
+		}
+		publicKey, err := WireGuardPublicKeyFromPrivate(privateKey)
+		if err != nil {
+			return types.RelayIdentity{}, fmt.Errorf("derive wireguard public key: %w", err)
+		}
+		if configuredPublicKey := strings.TrimSpace(normalized.WireGuardPublicKey); configuredPublicKey != "" {
+			if err := ValidateWireGuardPublicKey(configuredPublicKey); err != nil {
+				return types.RelayIdentity{}, err
+			}
+			if configuredPublicKey != publicKey {
+				return types.RelayIdentity{}, errors.New("identity wireguard public key does not match private key")
+			}
+		}
+		normalized.WireGuardPrivateKey = privateKey
+		normalized.WireGuardPublicKey = publicKey
+	case normalized.WireGuardPublicKey != "":
+		if err := ValidateWireGuardPublicKey(normalized.WireGuardPublicKey); err != nil {
+			return types.RelayIdentity{}, err
+		}
+	}
+	return normalized, nil
+}
+
 type storedIdentity struct {
 	Name       string `json:"name,omitempty"`
 	Address    string `json:"address,omitempty"`
 	PublicKey  string `json:"public_key,omitempty"`
 	PrivateKey string `json:"private_key,omitempty"`
+}
+
+type storedRelayIdentity struct {
+	storedIdentity
+	AdminSecretKey      string `json:"admin_secret_key,omitempty"`
+	WireGuardPublicKey  string `json:"wireguard_public_key,omitempty"`
+	WireGuardPrivateKey string `json:"wireguard_private_key,omitempty"`
 }
 
 func SaveIdentity(path string, identity types.Identity) error {
@@ -107,6 +178,31 @@ func SaveIdentity(path string, identity types.Identity) error {
 	return nil
 }
 
+func SaveRelayIdentity(path string, identity types.RelayIdentity) error {
+	path = ResolveRelayIdentityPath(path)
+	if path == "" {
+		return errors.New("identity path is required")
+	}
+	normalized, err := NormalizeStoredRelayIdentity(identity)
+	if err != nil {
+		return err
+	}
+	if err := WriteJSONFile(path, storedRelayIdentity{
+		storedIdentity: storedIdentity{
+			Name:       normalized.Name,
+			Address:    normalized.Address,
+			PublicKey:  normalized.PublicKey,
+			PrivateKey: normalized.PrivateKey,
+		},
+		AdminSecretKey:      normalized.AdminSecretKey,
+		WireGuardPublicKey:  normalized.WireGuardPublicKey,
+		WireGuardPrivateKey: normalized.WireGuardPrivateKey,
+	}, 0o600); err != nil {
+		return fmt.Errorf("write identity file: %w", err)
+	}
+	return nil
+}
+
 func LoadIdentity(path string) (types.Identity, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -121,6 +217,28 @@ func LoadIdentity(path string) (types.Identity, error) {
 		Address:    payload.Address,
 		PublicKey:  payload.PublicKey,
 		PrivateKey: payload.PrivateKey,
+	})
+}
+
+func LoadRelayIdentity(path string) (types.RelayIdentity, error) {
+	path = ResolveRelayIdentityPath(path)
+	if path == "" {
+		return types.RelayIdentity{}, errors.New("identity path is required")
+	}
+	var payload storedRelayIdentity
+	if err := ReadJSONFile(path, &payload); err != nil {
+		return types.RelayIdentity{}, fmt.Errorf("read identity file: %w", err)
+	}
+	return NormalizeStoredRelayIdentity(types.RelayIdentity{
+		Identity: types.Identity{
+			Name:       payload.Name,
+			Address:    payload.Address,
+			PublicKey:  payload.PublicKey,
+			PrivateKey: payload.PrivateKey,
+		},
+		AdminSecretKey:      payload.AdminSecretKey,
+		WireGuardPublicKey:  payload.WireGuardPublicKey,
+		WireGuardPrivateKey: payload.WireGuardPrivateKey,
 	})
 }
 
@@ -198,6 +316,94 @@ func LoadOrCreateIdentity(path string, identity types.Identity) (types.Identity,
 		return types.Identity{}, false, fmt.Errorf("load identity: %w", err)
 	}
 	return loaded, true, nil
+}
+
+func LoadOrCreateRelayIdentity(path, rootHost string, discoveryEnabled bool) (types.RelayIdentity, error) {
+	path = ResolveRelayIdentityPath(path)
+	if path == "" {
+		return types.RelayIdentity{}, errors.New("identity path is required")
+	}
+	rootHost = strings.TrimSpace(rootHost)
+	if normalizedRootHost := PortalRootHost(rootHost); normalizedRootHost != "" {
+		rootHost = normalizedRootHost
+	} else {
+		rootHost = NormalizeHostname(rootHost)
+	}
+
+	stored, err := LoadRelayIdentity(path)
+	switch {
+	case err == nil:
+		if rootHost != "" {
+			stored.Name = rootHost
+		}
+
+		if err := populateRelayIdentity(&stored, discoveryEnabled); err != nil {
+			return types.RelayIdentity{}, err
+		}
+		if err := SaveRelayIdentity(path, stored); err != nil {
+			return types.RelayIdentity{}, fmt.Errorf("persist identity: %w", err)
+		}
+		loaded, err := LoadRelayIdentity(path)
+		if err != nil {
+			return types.RelayIdentity{}, fmt.Errorf("load identity: %w", err)
+		}
+		return loaded, nil
+	case !errors.Is(err, os.ErrNotExist):
+		return types.RelayIdentity{}, fmt.Errorf("load identity: %w", err)
+	}
+
+	created := types.RelayIdentity{
+		Identity: types.Identity{Name: rootHost},
+	}
+	generated, err := ResolveSecp256k1Identity(created.PrivateKey)
+	if err != nil {
+		return types.RelayIdentity{}, fmt.Errorf("generate identity: %w", err)
+	}
+	if strings.TrimSpace(created.Address) == "" {
+		created.Address = generated.Address
+	}
+	if strings.TrimSpace(created.PublicKey) == "" {
+		created.PublicKey = generated.PublicKey
+	}
+	created.PrivateKey = generated.PrivateKey
+
+	if err := populateRelayIdentity(&created, discoveryEnabled); err != nil {
+		return types.RelayIdentity{}, err
+	}
+	if err := SaveRelayIdentity(path, created); err != nil {
+		return types.RelayIdentity{}, fmt.Errorf("persist identity: %w", err)
+	}
+	loaded, err := LoadRelayIdentity(path)
+	if err != nil {
+		return types.RelayIdentity{}, fmt.Errorf("load identity: %w", err)
+	}
+	return loaded, nil
+}
+
+func populateRelayIdentity(identity *types.RelayIdentity, discoveryEnabled bool) error {
+	if identity == nil {
+		return errors.New("relay identity is required")
+	}
+
+	if strings.TrimSpace(identity.AdminSecretKey) == "" {
+		var err error
+		adminSecretKey, err := RandomHex(16)
+		if err != nil {
+			return fmt.Errorf("generate relay admin secret key: %w", err)
+		}
+		identity.AdminSecretKey = adminSecretKey
+	}
+
+	if discoveryEnabled && strings.TrimSpace(identity.WireGuardPrivateKey) == "" {
+		var err error
+		wireGuardPrivateKey, err := GenerateWireGuardPrivateKey()
+		if err != nil {
+			return fmt.Errorf("generate relay wireguard private key: %w", err)
+		}
+		identity.WireGuardPrivateKey = wireGuardPrivateKey
+	}
+
+	return nil
 }
 
 func ResolveListenerIdentity(identity types.Identity, target, identityPath, identityJSON string) (types.Identity, bool, error) {
