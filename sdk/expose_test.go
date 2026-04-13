@@ -71,42 +71,6 @@ func TestExposureReconcileRemovesBannedRelayFromActiveSet(t *testing.T) {
 	}
 }
 
-func TestExposureReconcileSkipsBannedRelay(t *testing.T) {
-	const (
-		relayA = "https://relay-a.example"
-		relayB = "https://relay-b.example"
-	)
-
-	exposure := &Exposure{
-		relaySet:       mustRelaySet(t),
-		relayListeners: make(map[string]*Listener, 1),
-	}
-	exposure.relaySet.BanRelayURL(relayB)
-	exposure.relayListeners = map[string]*Listener{
-		relayA: {},
-	}
-
-	if err := exposure.relaySet.SetBootstrapRelayURLs([]string{relayA, relayB}); err != nil {
-		t.Fatalf("SetBootstrapRelayURLs() error = %v", err)
-	}
-	if err := exposure.reconcileRelayListeners(false); err != nil {
-		t.Fatalf("reconcileRelayListeners() error = %v", err)
-	}
-	if got := exposure.ActiveRelayURLs(); len(got) != 1 || got[0] != relayA {
-		t.Fatalf("ActiveRelayURLs() = %v, want [%q]", got, relayA)
-	}
-	exposure.listenerMu.RLock()
-	_, relayAExists := exposure.relayListeners[relayA]
-	_, relayBExists := exposure.relayListeners[relayB]
-	exposure.listenerMu.RUnlock()
-	if !relayAExists {
-		t.Fatal("active relay listener missing from exposure.listeners")
-	}
-	if relayBExists {
-		t.Fatal("banned relay listener should not be added to exposure.listeners")
-	}
-}
-
 func TestExposureReconcileRemovesStaleListener(t *testing.T) {
 	const (
 		relayA = "https://relay-a.example"

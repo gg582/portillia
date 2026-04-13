@@ -15,7 +15,7 @@ import (
 
 // RelaySet owns the shared relay discovery view: configured bootstrap relay URLs,
 // the latest validated descriptor seen for each relay, and local runtime state
-// such as ban/reachability/failure tracking and observed discovery RTT.
+// such as ban/failure tracking and observed discovery RTT.
 type RelaySet struct {
 	mu     sync.RWMutex
 	relays map[string]RelayState
@@ -74,11 +74,18 @@ func (s *RelaySet) SetBootstrapRelayURLs(inputs []string) error {
 	return nil
 }
 
-func (s *RelaySet) ActiveRelays() []RelayState {
+func (s *RelaySet) AggregateRelays() []RelayState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return s.policy.SelectActive(s.relayStatesLocked())
+	return s.policy.SelectAggregate(s.relayStatesLocked())
+}
+
+func (s *RelaySet) ConfirmedRelays() []RelayState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.policy.SelectConfirmed(s.relayStatesLocked())
 }
 
 func (s *RelaySet) PriorityRelays(clientState ClientState) []string {
@@ -96,7 +103,7 @@ func (s *RelaySet) OverlayPeerStates() []RelayState {
 	now := time.Now().UTC()
 	out := make([]RelayState, 0, len(states))
 	for _, state := range states {
-		if !state.discoverable(now) || !state.Descriptor.SupportsOverlayPeer {
+		if state.Banned || !state.hasDescriptor() || !state.Descriptor.ExpiresAt.After(now) || !state.Descriptor.SupportsOverlayPeer {
 			continue
 		}
 		if state.Descriptor.WireGuardPublicKey == "" ||
@@ -120,10 +127,21 @@ func (s *RelaySet) Descriptors() []types.RelayDescriptor {
 	now := time.Now().UTC()
 	out := make([]types.RelayDescriptor, 0, len(states))
 	for _, state := range states {
-		if !state.hasDescriptor() || !state.Descriptor.ExpiresAt.After(now) || !state.Descriptor.Discovery {
+		if state.Banned || !state.hasDescriptor() || !state.Descriptor.Discovery {
 			continue
 		}
-		out = append(out, state.Descriptor)
+		desc := state.Descriptor
+		if !desc.ExpiresAt.After(now) {
+			if state.LastSeenAt.IsZero() || !state.LastSeenAt.After(now.Add(-DiscoveryHintRetentionTTL)) {
+				continue
+			}
+
+			// Keep stale relay hints flowing through discovery so the mesh converges
+			// on a large shared relay set. Local listener confirmation and direct
+			// refresh retry state are tracked separately.
+			desc.ExpiresAt = now.Add(DiscoveryDescriptorTTL)
+		}
+		out = append(out, desc)
 	}
 	if len(out) == 0 {
 		return nil
@@ -191,32 +209,53 @@ func (s *RelaySet) BanRelayURL(relayURL string) {
 	s.relays[relayURL] = state
 }
 
+func (s *RelaySet) ConfirmRelayURL(relayURL string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, ok := s.relays[relayURL]
+	if !ok {
+		state = newRelayStateFromURL(relayURL)
+	}
+	state = s.policy.OnConfirmed(state)
+	s.relays[relayURL] = state
+}
+
+func (s *RelaySet) UnconfirmRelayURL(relayURL string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, ok := s.relays[relayURL]
+	if !ok {
+		return
+	}
+	state = s.policy.OnUnconfirmed(state)
+	s.relays[relayURL] = state
+}
+
 func (s *RelaySet) ApplyRelayDiscoveryResponse(targetURL string, resp types.DiscoveryResponse, now time.Time) (relaySetChanged bool, err error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	} else {
 		now = now.UTC()
 	}
-
-	if resp.ProtocolVersion != types.DiscoveryVersion {
-		return false, fmt.Errorf("relay discovery protocol version mismatch: relay=%q client=%q", resp.ProtocolVersion, types.DiscoveryVersion)
-	}
+	protocolMismatch := resp.ProtocolVersion != types.DiscoveryVersion
 	authoritative := targetURL != ""
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	discoveredByURL := make(map[string]RelayState, len(resp.Relays))
-	discoveredOrder := make([]string, 0, len(resp.Relays))
+	discoveredOrder := make([]string, 0, len(resp.Relays)+1)
 	targetFound := false
-	for _, descriptor := range resp.Relays {
+	add := func(descriptor types.RelayDescriptor) {
 		relayState, err := newRelayState(descriptor, now)
 		if err != nil {
-			continue
+			return
 		}
 		relayURL := relayState.Descriptor.APIHTTPSAddr
 		if relayURL == "" {
-			continue
+			return
 		}
 		if authoritative && relayURL == targetURL {
 			targetFound = true
@@ -226,30 +265,29 @@ func (s *RelaySet) ApplyRelayDiscoveryResponse(targetURL string, resp types.Disc
 		}
 		discoveredByURL[relayURL] = relayState
 	}
-
-	if authoritative && !targetFound {
-		return false, errors.New("target relay descriptor missing from relays")
+	for _, descriptor := range resp.Relays {
+		add(descriptor)
 	}
+	missingTarget := authoritative && !targetFound
 
 	for _, relayURL := range discoveredOrder {
 		record := discoveredByURL[relayURL]
 		existingAtURL, hasExistingAtURL := s.relays[relayURL]
 		record.Bootstrap = record.Bootstrap || existingAtURL.Bootstrap
-		record.Reachable = record.Reachable || existingAtURL.Reachable
 		record.Confirmed = record.Confirmed || existingAtURL.Confirmed
 		record.Banned = record.Banned || existingAtURL.Banned
 		if record.consecutiveFailures < existingAtURL.consecutiveFailures {
 			record.consecutiveFailures = existingAtURL.consecutiveFailures
 		}
+		record.nextDirectRefreshAt = existingAtURL.nextDirectRefreshAt
 		if record.DiscoveryRTTAt.IsZero() || (!existingAtURL.DiscoveryRTTAt.IsZero() && existingAtURL.DiscoveryRTTAt.After(record.DiscoveryRTTAt)) {
 			record.DiscoveryRTT = existingAtURL.DiscoveryRTT
 			record.DiscoveryRTTAt = existingAtURL.DiscoveryRTTAt
 		}
 
-		if authoritative && relayURL == targetURL {
-			record = s.policy.OnConfirmed(record)
-		} else {
-			record = s.policy.OnHinted(record)
+		if !protocolMismatch && !missingTarget && authoritative && relayURL == targetURL {
+			record.consecutiveFailures = 0
+			record.nextDirectRefreshAt = time.Time{}
 		}
 
 		s.relays[relayURL] = record
@@ -257,6 +295,12 @@ func (s *RelaySet) ApplyRelayDiscoveryResponse(targetURL string, resp types.Disc
 		if !hasExistingAtURL || !reflect.DeepEqual(existingAtURL, record) {
 			relaySetChanged = true
 		}
+	}
+	if missingTarget {
+		return relaySetChanged, errors.New("target relay descriptor missing from relays")
+	}
+	if protocolMismatch && authoritative {
+		return relaySetChanged, fmt.Errorf("relay discovery protocol version mismatch: relay=%q client=%q", resp.ProtocolVersion, types.DiscoveryVersion)
 	}
 	return relaySetChanged, nil
 }
@@ -275,7 +319,7 @@ func (s *RelaySet) RecordDiscoveryRTT(relayURL string, rtt time.Duration, measur
 	s.relays[relayURL] = state
 }
 
-func (s *RelaySet) RecordRelayFailure(relayURL string, err error, recoveryFailures int) (expired bool, expireReason string, consecutiveFailures int) {
+func (s *RelaySet) RecordRelayFailure(relayURL string, err error, recoveryFailures int) (backedOff bool, backoffReason string, consecutiveFailures int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -283,7 +327,7 @@ func (s *RelaySet) RecordRelayFailure(relayURL string, err error, recoveryFailur
 	if !ok {
 		return false, "", 0
 	}
-	state, expired, expireReason = s.policy.OnFailure(state, err, recoveryFailures)
+	state, backedOff, backoffReason = s.policy.OnFailure(state, err, recoveryFailures)
 	s.relays[relayURL] = state
-	return expired, expireReason, state.consecutiveFailures
+	return backedOff, backoffReason, state.consecutiveFailures
 }
