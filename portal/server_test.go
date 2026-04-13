@@ -205,8 +205,8 @@ func TestServerStartDomainReportsCompatibilityInfo(t *testing.T) {
 	if !envelope.OK {
 		t.Fatalf("GET /sdk/domain response = %+v, want ok=true", envelope)
 	}
-	if envelope.Data.ProtocolVersion != types.ProtocolVersion {
-		t.Fatalf("DomainResponse.ProtocolVersion = %q, want %q", envelope.Data.ProtocolVersion, types.ProtocolVersion)
+	if envelope.Data.ProtocolVersion != types.SDKVersion {
+		t.Fatalf("DomainResponse.ProtocolVersion = %q, want %q", envelope.Data.ProtocolVersion, types.SDKVersion)
 	}
 	if envelope.Data.ReleaseVersion != types.ReleaseVersion {
 		t.Fatalf("DomainResponse.ReleaseVersion = %q, want %q", envelope.Data.ReleaseVersion, types.ReleaseVersion)

@@ -15,7 +15,7 @@ func TestApplyRelayDiscoveryResponsePreservesBootstrapFlag(t *testing.T) {
 
 	desc := mustPolicyRelayDescriptor(t, "relay-a", "https://relay-a.example")
 	if _, err := set.ApplyRelayDiscoveryResponse(desc.APIHTTPSAddr, types.DiscoveryResponse{
-		ProtocolVersion: types.ProtocolVersion,
+		ProtocolVersion: types.DiscoveryVersion,
 		Relays:          []types.RelayDescriptor{desc},
 	}, time.Now().UTC()); err != nil {
 		t.Fatalf("ApplyRelayDiscoveryResponse() error = %v", err)

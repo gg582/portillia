@@ -159,7 +159,7 @@ func (s *RelaySet) ServeDiscovery(w http.ResponseWriter, r *http.Request, local 
 	}
 
 	utils.WriteAPIData(w, http.StatusOK, types.DiscoveryResponse{
-		ProtocolVersion: types.ProtocolVersion,
+		ProtocolVersion: types.DiscoveryVersion,
 		GeneratedAt:     time.Now().UTC(),
 		Relays:          relays,
 	})
@@ -198,8 +198,8 @@ func (s *RelaySet) ApplyRelayDiscoveryResponse(targetURL string, resp types.Disc
 		now = now.UTC()
 	}
 
-	if resp.ProtocolVersion != types.ProtocolVersion {
-		return false, fmt.Errorf("relay protocol version mismatch: relay=%q client=%q", resp.ProtocolVersion, types.ProtocolVersion)
+	if resp.ProtocolVersion != types.DiscoveryVersion {
+		return false, fmt.Errorf("relay discovery protocol version mismatch: relay=%q client=%q", resp.ProtocolVersion, types.DiscoveryVersion)
 	}
 	authoritative := targetURL != ""
 
