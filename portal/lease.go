@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -340,33 +338,6 @@ func (r *leaseRegistry) AdminLeaseSnapshots(now time.Time) []types.AdminLease {
 		snapshots = append(snapshots, r.AdminSnapshot(record))
 	}
 	return snapshots
-}
-
-func (r *leaseRegistry) DiscoverySourceURLs(portalURL string) []string {
-	baseURL, err := url.Parse(portalURL)
-	if err != nil {
-		return nil
-	}
-
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	sources := make([]string, 0, len(r.leasesByKey))
-	for _, record := range r.leasesByKey {
-		snapshot, ok := r.snapshot(record, time.Now())
-		if !ok {
-			continue
-		}
-
-		sourceURL := *baseURL
-		sourceURL.Host = snapshot.Hostname
-		if port := baseURL.Port(); port != "" {
-			sourceURL.Host = net.JoinHostPort(snapshot.Hostname, port)
-		}
-
-		sources = append(sources, sourceURL.String())
-	}
-	return sources
 }
 
 func (r *leaseRegistry) Snapshot(record *leaseRecord) types.Lease {

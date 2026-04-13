@@ -596,7 +596,7 @@ func (s *Server) runRelayDiscoveryLoop(ctx context.Context) error {
 		<-ctx.Done()
 		return nil
 	}
-	refresher, err := discovery.NewRefresher(s.relaySet, nil, s.overlay)
+	refresher, err := discovery.NewRefresher(s.relaySet, nil, s.overlay, s.PortalURL())
 	if err != nil {
 		return err
 	}
@@ -604,7 +604,12 @@ func (s *Server) runRelayDiscoveryLoop(ctx context.Context) error {
 	defer ticker.Stop()
 
 	for {
-		if err := refresher.Refresh(ctx, s.registry.DiscoverySourceURLs(s.PortalURL())...); err != nil {
+		snapshots := s.registry.LeaseSnapshots(time.Now())
+		sourceHosts := make([]string, 0, len(snapshots))
+		for _, snapshot := range snapshots {
+			sourceHosts = append(sourceHosts, snapshot.Hostname)
+		}
+		if err := refresher.Refresh(ctx, sourceHosts...); err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}

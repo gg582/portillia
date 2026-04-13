@@ -150,7 +150,7 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 }
 
 func (e *Exposure) runDiscoveryLoop(ctx context.Context) {
-	refresher, err := discovery.NewRefresher(e.relaySet, e.rootCAPEM, nil)
+	refresher, err := discovery.NewRefresher(e.relaySet, e.rootCAPEM, nil, "")
 	if err != nil {
 		return
 	}

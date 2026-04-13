@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -30,10 +31,11 @@ type Refresher struct {
 	relaySet               *RelaySet
 	httpClient             *http.Client
 	overlay                OverlayRuntime
+	sourceBaseURL          *url.URL
 	directRecoveryFailures int
 }
 
-func NewRefresher(relaySet *RelaySet, rootCAPEM []byte, overlay OverlayRuntime) (*Refresher, error) {
+func NewRefresher(relaySet *RelaySet, rootCAPEM []byte, overlay OverlayRuntime, sourceBaseURL string) (*Refresher, error) {
 	if relaySet == nil {
 		return nil, errors.New("relay set is required")
 	}
@@ -43,6 +45,18 @@ func NewRefresher(relaySet *RelaySet, rootCAPEM []byte, overlay OverlayRuntime) 
 		if !rootCAs.AppendCertsFromPEM(rootCAPEM) {
 			return nil, errors.New("failed to parse relay root ca")
 		}
+	}
+	var parsedSourceBaseURL *url.URL
+	if sourceBaseURL != "" {
+		normalizedSourceBaseURL, err := utils.NormalizeRelayURL(sourceBaseURL)
+		if err != nil {
+			return nil, err
+		}
+		parsed, err := url.Parse(normalizedSourceBaseURL)
+		if err != nil {
+			return nil, err
+		}
+		parsedSourceBaseURL = parsed
 	}
 	return &Refresher{
 		relaySet: relaySet,
@@ -58,11 +72,12 @@ func NewRefresher(relaySet *RelaySet, rootCAPEM []byte, overlay OverlayRuntime) 
 			Timeout: defaultRequestTimeout,
 		},
 		overlay:                overlay,
+		sourceBaseURL:          parsedSourceBaseURL,
 		directRecoveryFailures: defaultRecoveryFailures,
 	}, nil
 }
 
-func (r *Refresher) Refresh(ctx context.Context, extraSourceURLs ...string) error {
+func (r *Refresher) Refresh(ctx context.Context, extraSourceHosts ...string) error {
 	if r.overlay != nil {
 		if err := r.refreshOverlay(ctx); err != nil && ctx.Err() == nil {
 			log.Warn().
@@ -73,10 +88,10 @@ func (r *Refresher) Refresh(ctx context.Context, extraSourceURLs ...string) erro
 			return ctx.Err()
 		}
 	}
-	return r.refreshHTTPS(ctx, extraSourceURLs)
+	return r.refreshHTTPS(ctx, extraSourceHosts)
 }
 
-func (r *Refresher) refreshHTTPS(ctx context.Context, extraSourceURLs []string) error {
+func (r *Refresher) refreshHTTPS(ctx context.Context, extraSourceHosts []string) error {
 	r.relaySet.mu.RLock()
 	states := r.relaySet.relayStatesLocked()
 	r.relaySet.mu.RUnlock()
@@ -133,14 +148,22 @@ func (r *Refresher) refreshHTTPS(ctx context.Context, extraSourceURLs []string) 
 		r.relaySet.RecordDiscoveryRTT(relayURL, time.Since(startedAt), measuredAt)
 	}
 
-	for _, sourceURL := range extraSourceURLs {
-		baseURL, err := url.Parse(sourceURL)
-		if err != nil {
+	for _, sourceHost := range extraSourceHosts {
+		if r.sourceBaseURL == nil {
+			break
+		}
+		sourceHost = utils.NormalizeHostname(sourceHost)
+		if sourceHost == "" {
 			continue
+		}
+		baseURL := *r.sourceBaseURL
+		baseURL.Host = sourceHost
+		if port := r.sourceBaseURL.Port(); port != "" {
+			baseURL.Host = net.JoinHostPort(sourceHost, port)
 		}
 
 		var resp types.DiscoveryResponse
-		if err := utils.HTTPDoAPIPath(ctx, r.httpClient, baseURL, http.MethodGet, types.PathDiscovery, nil, nil, &resp); err != nil {
+		if err := utils.HTTPDoAPIPath(ctx, r.httpClient, &baseURL, http.MethodGet, types.PathDiscovery, nil, nil, &resp); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
