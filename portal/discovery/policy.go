@@ -2,8 +2,9 @@ package discovery
 
 import (
 	"errors"
+	"math/rand"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 type RelayPolicy interface {
 	SelectActive([]RelayState) []RelayState
 	SelectConfirmed([]RelayState) []RelayState
-	SelectPriority([]RelayState, ClientState) []RelayState
+	SelectPriority([]RelayState, ClientState) []string
 	OnConfirmed(RelayState) RelayState
 	OnHinted(RelayState) RelayState
 	OnFailure(RelayState, error, int) (RelayState, bool, string)
@@ -21,6 +22,8 @@ type RelayPolicy interface {
 }
 
 type DefaultRelayPolicy struct{}
+
+const highDiscoveryRTTThreshold = 1 * time.Second
 
 func (p DefaultRelayPolicy) selectStates(states []RelayState, keep func(RelayState) bool) []RelayState {
 	now := time.Now().UTC()
@@ -52,106 +55,82 @@ func (p DefaultRelayPolicy) SelectConfirmed(states []RelayState) []RelayState {
 	})
 }
 
-func (p DefaultRelayPolicy) SelectPriority(states []RelayState, clientState ClientState) []RelayState {
+func (p DefaultRelayPolicy) SelectPriority(states []RelayState, clientState ClientState) []string {
 	selected := p.SelectActive(states)
 	if len(selected) == 0 {
 		return nil
 	}
 
-	currentRelayURLs := make([]string, 0, len(clientState.ActiveRelayURLs))
-	activeRelayURLSet := make(map[string]struct{}, len(clientState.ActiveRelayURLs))
-	for _, relayURL := range clientState.ActiveRelayURLs {
-		relayURL = strings.TrimSpace(relayURL)
-		if relayURL == "" {
-			continue
-		}
-		currentRelayURLs = append(currentRelayURLs, relayURL)
-		activeRelayURLSet[relayURL] = struct{}{}
-	}
-
-	out := selected[:0]
+	explicit := make([]string, 0, len(clientState.ExplicitRelayURLs))
+	autoPool := make([]RelayState, 0, len(selected))
 	for _, state := range selected {
-		if state.consecutiveFailures > 0 && !state.Reachable {
-			continue
-		}
 		if clientState.RequireUDP && state.hasDescriptor() && !state.Descriptor.SupportsUDP {
 			continue
 		}
 		if clientState.RequireTCP && state.hasDescriptor() && !state.Descriptor.SupportsTCP {
 			continue
 		}
-		out = append(out, state)
+		relayURL := strings.TrimSpace(state.Descriptor.APIHTTPSAddr)
+		if slices.Contains(clientState.ExplicitRelayURLs, relayURL) {
+			explicit = append(explicit, relayURL)
+			continue
+		}
+		autoPool = append(autoPool, state)
 	}
-	if len(out) == 0 {
+	if len(explicit) == 0 && len(autoPool) == 0 {
 		return nil
 	}
 
-	currentRelays := make([]RelayState, 0, len(currentRelayURLs))
-	eligibleByURL := make(map[string]RelayState, len(out))
-	for _, state := range out {
-		eligibleByURL[strings.TrimSpace(state.Descriptor.APIHTTPSAddr)] = state
+	currentAuto := make([]string, 0, len(autoPool))
+	remainingAuto := make([]string, 0, len(autoPool))
+	highRTTAuto := make([]string, 0, len(autoPool))
+	penalizedAuto := make([]string, 0, len(autoPool))
+	for _, state := range autoPool {
+		relayURL := strings.TrimSpace(state.Descriptor.APIHTTPSAddr)
+		statePenalized := state.consecutiveFailures > 0 && !state.Reachable
+		switch {
+		case slices.Contains(clientState.ActiveRelayURLs, relayURL) && !statePenalized:
+			currentAuto = append(currentAuto, relayURL)
+		case statePenalized:
+			penalizedAuto = append(penalizedAuto, relayURL)
+		case !state.DiscoveryRTTAt.IsZero() && state.DiscoveryRTT > highDiscoveryRTTThreshold:
+			highRTTAuto = append(highRTTAuto, relayURL)
+		default:
+			remainingAuto = append(remainingAuto, relayURL)
+		}
 	}
 
-	currentHealthy := len(currentRelayURLs) > 0
-	for _, relayURL := range currentRelayURLs {
-		state, ok := eligibleByURL[relayURL]
-		if !ok {
-			currentHealthy = false
-			break
-		}
-		currentRelays = append(currentRelays, state)
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	if len(remainingAuto) > 1 {
+		rng.Shuffle(len(remainingAuto), func(i, j int) {
+			remainingAuto[i], remainingAuto[j] = remainingAuto[j], remainingAuto[i]
+		})
 	}
-	if currentHealthy && (clientState.MaxActiveRelays <= 0 || len(currentRelays) >= clientState.MaxActiveRelays) {
-		return currentRelays
+	if len(penalizedAuto) > 1 {
+		rng.Shuffle(len(penalizedAuto), func(i, j int) {
+			penalizedAuto[i], penalizedAuto[j] = penalizedAuto[j], penalizedAuto[i]
+		})
+	}
+	if len(highRTTAuto) > 1 {
+		rng.Shuffle(len(highRTTAuto), func(i, j int) {
+			highRTTAuto[i], highRTTAuto[j] = highRTTAuto[j], highRTTAuto[i]
+		})
 	}
 
-	sort.SliceStable(out, func(i, j int) bool {
-		left := out[i]
-		right := out[j]
+	autoURLs := make([]string, 0, len(currentAuto)+len(remainingAuto)+len(highRTTAuto)+len(penalizedAuto))
+	autoURLs = append(autoURLs, currentAuto...)
+	autoURLs = append(autoURLs, remainingAuto...)
+	autoURLs = append(autoURLs, highRTTAuto...)
+	autoURLs = append(autoURLs, penalizedAuto...)
+	if clientState.MaxActiveRelays > 0 && len(autoURLs) > clientState.MaxActiveRelays {
+		autoURLs = autoURLs[:clientState.MaxActiveRelays]
+	}
 
-		// 1. Prefer confirmed relays over candidates that are only known through bootstrap discovery.
-		if left.Confirmed != right.Confirmed {
-			return left.Confirmed
-		}
-
-		// 2. Prefer relays the client is already using so a healthy pool stays stable instead of churning.
-		_, leftActive := activeRelayURLSet[strings.TrimSpace(left.Descriptor.APIHTTPSAddr)]
-		_, rightActive := activeRelayURLSet[strings.TrimSpace(right.Descriptor.APIHTTPSAddr)]
-		if leftActive != rightActive {
-			return leftActive
-		}
-
-		// 3. Prefer bootstrap relays when the stronger signals above are equal.
-		if left.Bootstrap != right.Bootstrap {
-			return left.Bootstrap
-		}
-
-		// 4. Prefer relays reporting lower concurrent load.
-		if left.Descriptor.Load != right.Descriptor.Load {
-			return left.Descriptor.Load < right.Descriptor.Load
-		}
-
-		// 5. Prefer relays reporting lower traffic score after the more stable load signal ties.
-		if left.Descriptor.LoadScore != right.Descriptor.LoadScore {
-			return left.Descriptor.LoadScore < right.Descriptor.LoadScore
-		}
-
-		// 6. Prefer relays with measured discovery RTT, then prefer the lower RTT when both have measurements.
-		leftHasRTT := !left.DiscoveryRTTAt.IsZero()
-		rightHasRTT := !right.DiscoveryRTTAt.IsZero()
-		if leftHasRTT != rightHasRTT {
-			return leftHasRTT
-		}
-		if left.DiscoveryRTT != right.DiscoveryRTT {
-			return left.DiscoveryRTT < right.DiscoveryRTT
-		}
-
-		// 7. Fall back to URL ordering so selection remains deterministic when all policy signals tie.
-		return left.Descriptor.APIHTTPSAddr < right.Descriptor.APIHTTPSAddr
-	})
-
-	if clientState.MaxActiveRelays > 0 && len(out) > clientState.MaxActiveRelays {
-		out = out[:clientState.MaxActiveRelays]
+	out := make([]string, 0, len(explicit)+len(autoURLs))
+	out = append(out, explicit...)
+	out = append(out, autoURLs...)
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

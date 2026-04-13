@@ -17,7 +17,7 @@ import (
 
 const (
 	defaultRequestTimeout   = 15 * time.Second
-	DiscoveryPollInterval   = 1 * time.Minute
+	DiscoveryPollInterval   = 30 * time.Second
 	defaultRecoveryFailures = 3
 )
 

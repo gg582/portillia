@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +26,8 @@ type Exposure struct {
 	done   <-chan struct{}
 
 	identity        types.Identity
+	explicitRelays  []string
+	activeRelayURLs []string
 	TargetAddr      string
 	UDPAddr         string
 	udpEnabled      bool
@@ -65,9 +67,16 @@ type ExposeConfig struct {
 // Expose creates relay listeners for the selected relay pool and exposes a
 // dynamic listener hub for accepting traffic from all of them.
 func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
-	relayURLs, err := utils.ResolvePortalRelayURLs(ctx, cfg.RelayURLs, cfg.Discovery)
+	explicitRelayURLs, err := utils.NormalizeRelayURLs(cfg.RelayURLs...)
 	if err != nil {
 		return nil, err
+	}
+	relayURLs := explicitRelayURLs
+	if cfg.Discovery {
+		relayURLs, err = utils.ResolvePortalRelayURLs(ctx, explicitRelayURLs, true)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	identity, createdIdentity, err := utils.ResolveListenerIdentity(
@@ -106,6 +115,7 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 		cancel:          cancel,
 		done:            exposureCtx.Done(),
 		identity:        identity,
+		explicitRelays:  append([]string(nil), explicitRelayURLs...),
 		TargetAddr:      targetAddr,
 		UDPAddr:         udpAddr,
 		udpEnabled:      cfg.UDPEnabled,
@@ -163,24 +173,22 @@ func (e *Exposure) runDiscoveryLoop(ctx context.Context) {
 }
 
 func (e *Exposure) ActiveRelayURLs() []string {
-	return append([]string(nil), e.clientState().ActiveRelayURLs...)
+	e.listenerMu.RLock()
+	defer e.listenerMu.RUnlock()
+	return append([]string(nil), e.activeRelayURLs...)
 }
 
 func (e *Exposure) clientState() discovery.ClientState {
-	state := discovery.ClientState{
-		MaxActiveRelays: e.maxActiveRelays,
-		RequireUDP:      e.udpEnabled,
-		RequireTCP:      e.tcpEnabled,
-	}
-
 	e.listenerMu.RLock()
-	state.ActiveRelayURLs = make([]string, 0, len(e.relayListeners))
-	for relayURL := range e.relayListeners {
-		state.ActiveRelayURLs = append(state.ActiveRelayURLs, relayURL)
+	defer e.listenerMu.RUnlock()
+
+	return discovery.ClientState{
+		ActiveRelayURLs:   append([]string(nil), e.activeRelayURLs...),
+		ExplicitRelayURLs: append([]string(nil), e.explicitRelays...),
+		MaxActiveRelays:   e.maxActiveRelays,
+		RequireUDP:        e.udpEnabled,
+		RequireTCP:        e.tcpEnabled,
 	}
-	e.listenerMu.RUnlock()
-	sort.Strings(state.ActiveRelayURLs)
-	return state
 }
 
 func (e *Exposure) Addr() net.Addr {
@@ -346,6 +354,7 @@ func (e *Exposure) Close() error {
 		e.listenerMu.Lock()
 		relayListeners := e.relayListeners
 		e.relayListeners = make(map[string]*Listener)
+		e.activeRelayURLs = nil
 		e.listenerMu.Unlock()
 
 		relayURLs := make([]string, 0, len(relayListeners))
@@ -371,32 +380,33 @@ func (e *Exposure) Close() error {
 }
 
 func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
-	selectedRelays := e.relaySet.PriorityRelays(e.clientState())
-	desiredRelayURLs := make(map[string]struct{}, len(selectedRelays))
-	for _, state := range selectedRelays {
-		desiredRelayURLs[state.Descriptor.APIHTTPSAddr] = struct{}{}
-	}
+	desiredRelayURLs := e.relaySet.PriorityRelays(e.clientState())
 
 	e.listenerMu.Lock()
 	staleRelayListeners := make(map[string]*Listener)
+	removedRelayURLs := make([]string, 0)
 	for relayURL, listener := range e.relayListeners {
-		if _, ok := desiredRelayURLs[relayURL]; ok {
+		if slices.Contains(desiredRelayURLs, relayURL) {
 			continue
 		}
 		staleRelayListeners[relayURL] = listener
+		removedRelayURLs = append(removedRelayURLs, relayURL)
 		delete(e.relayListeners, relayURL)
 	}
 
-	missingRelayURLs := make([]string, 0, len(selectedRelays))
-	for _, state := range selectedRelays {
-		relayURL := state.Descriptor.APIHTTPSAddr
+	missingRelayURLs := make([]string, 0, len(desiredRelayURLs))
+	for _, relayURL := range desiredRelayURLs {
 		if _, ok := e.relayListeners[relayURL]; ok {
 			continue
 		}
 		missingRelayURLs = append(missingRelayURLs, relayURL)
 	}
 	e.listenerMu.Unlock()
+	if len(removedRelayURLs) > 1 {
+		slices.Sort(removedRelayURLs)
+	}
 
+	addedRelayURLs := make([]string, 0, len(missingRelayURLs))
 	for relayURL, listener := range staleRelayListeners {
 		if listener == nil {
 			continue
@@ -406,11 +416,16 @@ func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
 		}
 	}
 	for _, relayURL := range missingRelayURLs {
+		retryCount := 10
+		if slices.Contains(e.explicitRelays, relayURL) {
+			retryCount = 0
+		}
 		listener, err := NewListener(context.Background(), relayURL, ListenerConfig{
 			Identity:   e.identity.Copy(),
 			UDPEnabled: e.udpEnabled,
 			TCPEnabled: e.tcpEnabled,
 			BanMITM:    e.banMITM,
+			RetryCount: retryCount,
 			Metadata:   e.metadata.Copy(),
 			RootCAPEM:  append([]byte(nil), e.rootCAPEM...),
 			relaySet:   e.relaySet,
@@ -438,8 +453,26 @@ func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
 		}
 		e.relayListeners[relayURL] = listener
 		e.listenerMu.Unlock()
+		addedRelayURLs = append(addedRelayURLs, relayURL)
 
 		go e.runListenerAcceptLoop(listener)
+	}
+
+	e.listenerMu.Lock()
+	e.activeRelayURLs = e.activeRelayURLs[:0]
+	for _, relayURL := range desiredRelayURLs {
+		if _, ok := e.relayListeners[relayURL]; !ok {
+			continue
+		}
+		e.activeRelayURLs = append(e.activeRelayURLs, relayURL)
+	}
+	e.listenerMu.Unlock()
+	if len(removedRelayURLs) > 0 || len(addedRelayURLs) > 0 {
+		log.Info().
+			Strs("added_relays", addedRelayURLs).
+			Strs("removed_relays", removedRelayURLs).
+			Strs("desired_relays", desiredRelayURLs).
+			Msg("reconciled relay listeners")
 	}
 	return nil
 }
@@ -483,6 +516,9 @@ func (e *Exposure) runListenerAcceptLoop(listener *Listener) {
 		e.listenerMu.Lock()
 		if current, ok := e.relayListeners[relayURL]; ok && current == listener {
 			delete(e.relayListeners, relayURL)
+		}
+		if index := slices.Index(e.activeRelayURLs, relayURL); index >= 0 {
+			e.activeRelayURLs = slices.Delete(e.activeRelayURLs, index, index+1)
 		}
 		e.listenerMu.Unlock()
 	}()

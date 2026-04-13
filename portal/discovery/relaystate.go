@@ -23,10 +23,11 @@ type RelayState struct {
 }
 
 type ClientState struct {
-	ActiveRelayURLs []string
-	MaxActiveRelays int
-	RequireUDP      bool
-	RequireTCP      bool
+	ActiveRelayURLs   []string
+	ExplicitRelayURLs []string
+	MaxActiveRelays   int
+	RequireUDP        bool
+	RequireTCP        bool
 }
 
 func newRelayState(desc types.RelayDescriptor, seenAt time.Time) (RelayState, error) {

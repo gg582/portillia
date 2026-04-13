@@ -102,7 +102,7 @@ func (s *RelaySet) ActiveRelays() []RelayState {
 	return s.policy.SelectActive(s.relayStatesLocked())
 }
 
-func (s *RelaySet) PriorityRelays(clientState ClientState) []RelayState {
+func (s *RelaySet) PriorityRelays(clientState ClientState) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

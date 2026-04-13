@@ -71,7 +71,7 @@ portal expose --name myapp \
 - Route matching is longest-prefix-first. `/api=http://127.0.0.1:3001` matches `/api/*` and strips the `/api` prefix before proxying to the upstream.
 - Routed HTTP mode automatically forwards `X-Forwarded-*`, rewrites upstream `Location` redirects back to the public route path, and strips loopback cookie domains while remapping cookie paths to the mounted route prefix.
 - `--name` is optional. When omitted, the CLI generates a name for that run.
-- `--relays` adds explicit relay API URLs for that run.
+- `--relays` adds explicit relay API URLs for that run. Explicit relays are always kept connected and are not counted against `--max-active-relays`.
 - `--discovery=false` disables the public registry seed list and the runtime relay discovery expansion loop for that run. With `--discovery=false`, only the explicit `--relays` values are used.
 - `--ban-mitm` enables strict rejection when the TLS self-probe detects termination in the path.
 - `--tcp` requests a dedicated TCP port on the relay for raw TCP services that do not use TLS (e.g., Minecraft, game servers).
@@ -81,6 +81,7 @@ Flags:
 ```text
 --relays          Portal relay API URLs (comma-separated, https only)
 --discovery       Include public registry relays and discover additional relay bootstraps
+--max-active-relays  Maximum number of auto-selected relays; explicit --relays are always included
 --ban-mitm        Ban relay when the MITM self-probe detects TLS termination
 --identity-path   Identity JSON file path; created automatically when missing
 --name            Public hostname prefix (single DNS label); auto-generated when omitted
@@ -122,8 +123,9 @@ Legacy execution compatibility has been removed:
 - The tunnel consumes one aggregate SDK listener, so the CLI no longer manages per-relay listener loops itself.
 - Relay startup and reconnect failures are retried independently in the background. A relay that is down does not stop healthy relays from continuing to serve traffic.
 - The tunnel starts once relay URLs pass local validation. Remote compatibility checks, lease registration, and reconnects continue in the background until each relay becomes ready.
-- With discovery enabled, the configured relay list starts with `public registry + --relays values` and can expand through relay discovery. With `--discovery=false`, only the explicit relay URLs are used. Published public URLs appear only for relays that have registered successfully.
-- SDK callers that do not set `ListenerConfig.RetryCount` use infinite retry semantics for each relay.
+- With discovery enabled, the tunnel uses the public registry as discovery seed input and can expand through relay discovery. Explicit `--relays` values are always included separately from the auto-selected relay pool. With `--discovery=false`, only the explicit relay URLs are used. Published public URLs appear only for relays that have registered successfully.
+- Explicit `--relays` listeners retry indefinitely with `RetryCount=0`. Auto-selected discovery relays are created with `RetryCount=10` and are dropped from the active set after that budget is exhausted.
+- `ListenerConfig.RetryCount` limits retries when positive. `RetryCount=0` retries indefinitely.
 - Tenant TLS is provisioned automatically through the relay keyless signer. The SDK fetches the relay certificate chain and uses `/v1/sign` for remote signing.
 - `portal expose` enables MITM strict enforcement by default. Use `--ban-mitm=false` to keep warning-only behavior when the TLS self-probe suspects relay termination.
 - When the local service is unreachable, the tunnel returns an HTTP 503 page.
