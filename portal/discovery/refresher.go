@@ -184,23 +184,43 @@ func (r *Refresher) refreshOverlay(ctx context.Context) error {
 	if err := r.overlay.Sync(states); err != nil {
 		return err
 	}
+	relaySetChanged := false
 	for _, state := range states {
 		relay := state.Descriptor
+		recoveryFailures := r.directRecoveryFailures
+		if state.Bootstrap {
+			recoveryFailures = 0
+		}
+		startedAt := time.Now()
 		resp, err := r.overlay.DiscoverRelay(ctx, relay)
 		if err != nil {
-			return err
-		}
-
-		relaySetChanged, err := r.relaySet.ApplyRelayDiscoveryResponse(relay.APIHTTPSAddr, resp, time.Now().UTC())
-		if err != nil {
-			return err
-		}
-		if !relaySetChanged {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if recoveryFailures > 0 {
+				r.logDiscoveryFailure(relay.APIHTTPSAddr, relay.APIHTTPSAddr, recoveryFailures, err)
+			}
 			continue
 		}
-		if err := r.overlay.Sync(r.relaySet.OverlayPeerStates()); err != nil {
-			return err
+
+		measuredAt := time.Now().UTC()
+		changed, err := r.relaySet.ApplyRelayDiscoveryResponse(relay.APIHTTPSAddr, resp, measuredAt)
+		if err != nil {
+			if recoveryFailures > 0 {
+				r.logDiscoveryFailure(relay.APIHTTPSAddr, relay.APIHTTPSAddr, recoveryFailures, err)
+			}
+			continue
 		}
+		r.relaySet.RecordDiscoveryRTT(relay.APIHTTPSAddr, time.Since(startedAt), measuredAt)
+		if changed {
+			relaySetChanged = true
+		}
+	}
+	if !relaySetChanged {
+		return nil
+	}
+	if err := r.overlay.Sync(r.relaySet.OverlayPeerStates()); err != nil {
+		return err
 	}
 	return nil
 }
