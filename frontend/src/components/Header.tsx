@@ -59,26 +59,26 @@ export function Header({
           </div>
         </div>
         {!isAdmin && (
-          <nav className="hidden items-center gap-6 pl-2 text-base font-semibold text-text-muted xl:flex xl:pl-3">
+          <nav className="hidden items-center gap-4 pl-2 text-sm font-semibold text-text-muted xl:flex xl:pl-3 2xl:gap-6 2xl:text-base">
             {showQuickStartLink && (
               <a
                 href="#quick-start"
-                className="transition-colors hover:text-foreground"
+                className="whitespace-nowrap transition-colors hover:text-foreground"
               >
                 Quick Start
               </a>
             )}
             <a
               href="#live-servers"
-              className="transition-colors hover:text-foreground"
+              className="whitespace-nowrap transition-colors hover:text-foreground"
             >
               Live apps
             </a>
             <a
-              href="#official-registry"
-              className="transition-colors hover:text-foreground"
+              href="#public-relays"
+              className="whitespace-nowrap transition-colors hover:text-foreground"
             >
-              Official registry
+              Public relays
             </a>
           </nav>
         )}
