@@ -184,6 +184,7 @@ func (s *RelaySet) applyDiscoveredStateLocked(state RelayState, confirmed bool) 
 
 	previousState, hadPrevious := s.relays[relayURL]
 	record := previousState
+	bootstrap := record.Bootstrap
 
 	if hadPrevious && record.hasDescriptor() && record.Descriptor.Key() != relayKey {
 		return false, errors.New("descriptor identity does not match known relay url")
@@ -195,6 +196,7 @@ func (s *RelaySet) applyDiscoveredStateLocked(state RelayState, confirmed bool) 
 			continue
 		}
 		previousURL = url
+		bootstrap = bootstrap || existing.Bootstrap
 		if !record.hasDescriptor() &&
 			!record.Banned &&
 			record.consecutiveFailures == 0 {
@@ -216,6 +218,7 @@ func (s *RelaySet) applyDiscoveredStateLocked(state RelayState, confirmed bool) 
 		record.Descriptor = state.Descriptor
 		record.LastSeenAt = state.LastSeenAt
 	}
+	record.Bootstrap = bootstrap
 
 	if confirmed {
 		record = s.policy.OnConfirmed(record)
