@@ -114,6 +114,7 @@ type RelayDescriptor struct {
 	WireGuardEndpoint   string    `json:"wireguard_endpoint,omitempty"`
 	OverlayIPv4         string    `json:"overlay_ipv4,omitempty"`
 	OverlayCIDRs        []string  `json:"overlay_cidrs,omitempty"`
+	Discovery           bool      `json:"discovery,omitempty"`
 	SupportsUDP         bool      `json:"supports_udp,omitempty"`
 	SupportsTCP         bool      `json:"supports_tcp,omitempty"`
 	SupportsOverlayPeer bool      `json:"supports_overlay_peer,omitempty"`

@@ -139,7 +139,12 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 	var relaySet *discovery.RelaySet
 	if cfg.DiscoveryEnabled {
-		relaySet, err = discovery.NewRelaySet(identity.Base(), cfg.PortalURL, cfg.Bootstraps)
+		cfg.Bootstraps, err = utils.ResolvePortalRelayURLs(context.Background(), cfg.Bootstraps, true)
+		if err != nil {
+			return nil, fmt.Errorf("resolve discovery bootstraps: %w", err)
+		}
+		cfg.Bootstraps = utils.RemoveRelayURL(cfg.Bootstraps, cfg.PortalURL)
+		relaySet, err = discovery.NewRelaySet(cfg.Bootstraps)
 		if err != nil {
 			return nil, err
 		}
@@ -360,52 +365,17 @@ func (s *Server) PortalURL() string {
 }
 
 func (s *Server) LeaseSnapshots() []types.Lease {
-	s.registry.mu.RLock()
-	defer s.registry.mu.RUnlock()
-
-	now := time.Now()
-	records := make([]*leaseRecord, 0, len(s.registry.leasesByKey))
-	for _, record := range s.registry.leasesByKey {
-		records = append(records, record)
+	if s == nil || s.registry == nil {
+		return nil
 	}
-	snapshots := make([]types.Lease, 0, len(records))
-	for _, record := range records {
-		if now.After(record.ExpiresAt) {
-			continue
-		}
-		adminSnapshot := s.registry.AdminSnapshot(record)
-		since := time.Duration(0)
-		if !adminSnapshot.LastSeenAt.IsZero() {
-			since = max(now.Sub(adminSnapshot.LastSeenAt), 0)
-		}
-		if adminSnapshot.IsBanned || adminSnapshot.IsDenied || !adminSnapshot.IsApproved || adminSnapshot.Metadata.Hide {
-			continue
-		}
-		if adminSnapshot.Ready == 0 && since >= 3*time.Minute {
-			continue
-		}
-		snapshots = append(snapshots, adminSnapshot.Lease)
-	}
-	return snapshots
+	return s.registry.LeaseSnapshots(time.Now())
 }
 
 func (s *Server) AdminLeaseSnapshots() []types.AdminLease {
-	s.registry.mu.RLock()
-	defer s.registry.mu.RUnlock()
-
-	now := time.Now()
-	records := make([]*leaseRecord, 0, len(s.registry.leasesByKey))
-	for _, record := range s.registry.leasesByKey {
-		records = append(records, record)
+	if s == nil || s.registry == nil {
+		return nil
 	}
-	snapshots := make([]types.AdminLease, 0, len(records))
-	for _, record := range records {
-		if now.After(record.ExpiresAt) {
-			continue
-		}
-		snapshots = append(snapshots, s.registry.AdminSnapshot(record))
-	}
-	return snapshots
+	return s.registry.AdminLeaseSnapshots(time.Now())
 }
 
 func (s *Server) LeaseSnapshotByHostname(hostname string) (types.Lease, bool) {
@@ -626,7 +596,7 @@ func (s *Server) runRelayDiscoveryLoop(ctx context.Context) error {
 		<-ctx.Done()
 		return nil
 	}
-	refresher, err := discovery.NewRefresher(s.relaySet, nil, s.overlay)
+	refresher, err := discovery.NewRefresher(s.relaySet, nil, s.overlay, s.PortalURL())
 	if err != nil {
 		return err
 	}
@@ -634,7 +604,12 @@ func (s *Server) runRelayDiscoveryLoop(ctx context.Context) error {
 	defer ticker.Stop()
 
 	for {
-		if err := refresher.Refresh(ctx); err != nil {
+		snapshots := s.registry.LeaseSnapshots(time.Now())
+		sourceHosts := make([]string, 0, len(snapshots))
+		for _, snapshot := range snapshots {
+			sourceHosts = append(sourceHosts, snapshot.Hostname)
+		}
+		if err := refresher.Refresh(ctx, sourceHosts...); err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}

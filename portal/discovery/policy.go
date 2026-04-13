@@ -5,7 +5,6 @@ import (
 	"math/rand"
 	"net/http"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/gosuda/portal-tunnel/v2/types"
@@ -13,7 +12,6 @@ import (
 
 type RelayPolicy interface {
 	SelectActive([]RelayState) []RelayState
-	SelectConfirmed([]RelayState) []RelayState
 	SelectPriority([]RelayState, ClientState) []string
 	OnConfirmed(RelayState) RelayState
 	OnHinted(RelayState) RelayState
@@ -49,12 +47,6 @@ func (p DefaultRelayPolicy) SelectActive(states []RelayState) []RelayState {
 	})
 }
 
-func (p DefaultRelayPolicy) SelectConfirmed(states []RelayState) []RelayState {
-	return p.selectStates(states, func(state RelayState) bool {
-		return state.Confirmed
-	})
-}
-
 func (p DefaultRelayPolicy) SelectPriority(states []RelayState, clientState ClientState) []string {
 	selected := p.SelectActive(states)
 	if len(selected) == 0 {
@@ -70,7 +62,7 @@ func (p DefaultRelayPolicy) SelectPriority(states []RelayState, clientState Clie
 		if clientState.RequireTCP && state.hasDescriptor() && !state.Descriptor.SupportsTCP {
 			continue
 		}
-		relayURL := strings.TrimSpace(state.Descriptor.APIHTTPSAddr)
+		relayURL := state.Descriptor.APIHTTPSAddr
 		if slices.Contains(clientState.ExplicitRelayURLs, relayURL) {
 			explicit = append(explicit, relayURL)
 			continue
@@ -86,7 +78,7 @@ func (p DefaultRelayPolicy) SelectPriority(states []RelayState, clientState Clie
 	highRTTAuto := make([]string, 0, len(autoPool))
 	penalizedAuto := make([]string, 0, len(autoPool))
 	for _, state := range autoPool {
-		relayURL := strings.TrimSpace(state.Descriptor.APIHTTPSAddr)
+		relayURL := state.Descriptor.APIHTTPSAddr
 		statePenalized := state.consecutiveFailures > 0 && !state.Reachable
 		switch {
 		case slices.Contains(clientState.ActiveRelayURLs, relayURL) && !statePenalized:

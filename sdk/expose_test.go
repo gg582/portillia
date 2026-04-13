@@ -5,13 +5,12 @@ import (
 	"testing"
 
 	"github.com/gosuda/portal-tunnel/v2/portal/discovery"
-	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
 func mustRelaySet(t *testing.T, relayURLs ...string) *discovery.RelaySet {
 	t.Helper()
 
-	set, err := discovery.NewRelaySet(types.Identity{}, "", relayURLs)
+	set, err := discovery.NewRelaySet(relayURLs)
 	if err != nil {
 		t.Fatalf("NewRelaySet() error = %v", err)
 	}
@@ -34,9 +33,8 @@ func TestExposureReconcileRemovesBannedRelayFromActiveSet(t *testing.T) {
 	}
 
 	exposure := &Exposure{
-		relaySet:        mustRelaySet(t, relayA, relayB),
-		relayListeners:  make(map[string]*Listener, 2),
-		activeRelayURLs: []string{relayA, relayB},
+		relaySet:       mustRelaySet(t, relayA, relayB),
+		relayListeners: make(map[string]*Listener, 2),
 	}
 	relayAClosed := make(chan struct{})
 	exposure.relayListeners = map[string]*Listener{

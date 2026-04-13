@@ -152,10 +152,6 @@ func (s *Server) extractAllowedClientIP(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
-	if !utils.RequireMethod(w, r, http.MethodGet) {
-		return
-	}
-
 	now := time.Now().UTC()
 	activeConns := float64(s.proxy.ActiveConns())
 	tcpTrafficBPS := s.proxy.CurrentTCPBPS(now)
@@ -182,6 +178,7 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 		IssuedAt:            now,
 		ExpiresAt:           now.Add(2 * discovery.DiscoveryPollInterval),
 		APIHTTPSAddr:        s.cfg.PortalURL,
+		Discovery:           s.cfg.DiscoveryEnabled,
 		IngressTLSAddr:      ingressAddr,
 		WireGuardPublicKey:  wireGuardPublicKey,
 		WireGuardEndpoint:   wireGuardEndpoint,
@@ -198,17 +195,7 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 		utils.WriteAPIError(w, http.StatusInternalServerError, types.APIErrorCodeInternal, err.Error())
 		return
 	}
-
-	resp := types.DiscoveryResponse{
-		ProtocolVersion: types.ProtocolVersion,
-		GeneratedAt:     now,
-		Self:            self,
-		Relays:          nil,
-	}
-	if s.relaySet != nil {
-		resp.Relays = s.relaySet.ConfirmedDescriptors()
-	}
-	utils.WriteAPIData(w, http.StatusOK, resp)
+	s.relaySet.ServeDiscovery(w, r, self)
 }
 
 func (s *Server) handleDomain(w http.ResponseWriter, r *http.Request) {
@@ -219,7 +206,7 @@ func (s *Server) handleDomain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.WriteAPIData(w, http.StatusOK, types.DomainResponse{
-		ProtocolVersion: types.ProtocolVersion,
+		ProtocolVersion: types.SDKVersion,
 		ReleaseVersion:  types.ReleaseVersion,
 	})
 }

@@ -91,8 +91,7 @@ type RegisterResponse struct {
 type DiscoveryResponse struct {
 	ProtocolVersion string            `json:"protocol_version"`
 	GeneratedAt     time.Time         `json:"generated_at"`
-	Self            RelayDescriptor   `json:"self"`
-	Relays          []RelayDescriptor `json:"relays,omitempty"`
+	Relays          []RelayDescriptor `json:"relays"`
 }
 
 type QUICControlMessage struct {

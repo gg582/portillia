@@ -2,7 +2,6 @@ package discovery
 
 import (
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/gosuda/portal-tunnel/v2/types"
@@ -82,16 +81,4 @@ func (state RelayState) discoverable(now time.Time) bool {
 		return false
 	}
 	return true
-}
-
-func (state RelayState) Equal(other RelayState) bool {
-	stateKey := state.Descriptor.Key()
-	otherKey := other.Descriptor.Key()
-	if stateKey != "" && otherKey != "" && stateKey == otherKey {
-		return true
-	}
-
-	stateURL := strings.TrimSpace(state.Descriptor.APIHTTPSAddr)
-	otherURL := strings.TrimSpace(other.Descriptor.APIHTTPSAddr)
-	return stateURL != "" && otherURL != "" && stateURL == otherURL
 }
