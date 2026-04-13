@@ -8,17 +8,25 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
+const (
+	DiscoveryDescriptorTTL       = 5 * time.Minute
+	DiscoveryHintRetentionTTL    = 30 * 24 * time.Hour
+	defaultDirectRecoveryBackoff = 1 * time.Minute
+	maxDirectRecoveryBackoff     = 5 * time.Minute
+)
+
 type RelayState struct {
-	Descriptor     types.RelayDescriptor
-	Bootstrap      bool
-	Reachable      bool
-	Confirmed      bool
-	Banned         bool
-	LastSeenAt     time.Time
+	Descriptor types.RelayDescriptor
+	Bootstrap  bool
+	Confirmed  bool
+	Banned     bool
+	LastSeenAt time.Time
+
 	DiscoveryRTT   time.Duration
 	DiscoveryRTTAt time.Time
 
 	consecutiveFailures int
+	nextDirectRefreshAt time.Time
 }
 
 type ClientState struct {
@@ -65,20 +73,4 @@ func newRelayStateFromURL(relayURL string) RelayState {
 
 func (state RelayState) hasDescriptor() bool {
 	return !state.LastSeenAt.IsZero()
-}
-
-func (state RelayState) discoverable(now time.Time) bool {
-	if state.Banned {
-		return false
-	}
-	if !state.hasDescriptor() {
-		return state.Bootstrap
-	}
-	if !state.Bootstrap && !state.Reachable {
-		return false
-	}
-	if !state.Descriptor.ExpiresAt.After(now) {
-		return false
-	}
-	return true
 }

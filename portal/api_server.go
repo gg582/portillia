@@ -176,7 +176,7 @@ func (s *Server) handleRelayDiscovery(w http.ResponseWriter, r *http.Request) {
 		OwnerAddress:        s.identity.Address,
 		Version:             1,
 		IssuedAt:            now,
-		ExpiresAt:           now.Add(2 * discovery.DiscoveryPollInterval),
+		ExpiresAt:           now.Add(discovery.DiscoveryDescriptorTTL),
 		APIHTTPSAddr:        s.cfg.PortalURL,
 		Discovery:           s.cfg.DiscoveryEnabled,
 		IngressTLSAddr:      ingressAddr,

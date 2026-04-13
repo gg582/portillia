@@ -19,7 +19,7 @@ import (
 const (
 	defaultRequestTimeout   = 15 * time.Second
 	DiscoveryPollInterval   = 30 * time.Second
-	defaultRecoveryFailures = 3
+	defaultRecoveryFailures = 5
 )
 
 type OverlayRuntime interface {
@@ -98,7 +98,19 @@ func (r *Refresher) refreshHTTPS(ctx context.Context, extraSourceHosts []string)
 
 	now := time.Now().UTC()
 	for _, state := range states {
-		if !state.discoverable(now) || (state.hasDescriptor() && !state.Descriptor.Discovery) {
+		if state.Banned {
+			continue
+		}
+		if !state.hasDescriptor() {
+			if !state.Bootstrap {
+				continue
+			}
+		} else if !state.Bootstrap {
+			if !state.nextDirectRefreshAt.IsZero() && state.nextDirectRefreshAt.After(now) {
+				continue
+			}
+		}
+		if state.hasDescriptor() && !state.Descriptor.Discovery {
 			continue
 		}
 
@@ -226,18 +238,18 @@ func (r *Refresher) refreshOverlay(ctx context.Context) error {
 }
 
 func (r *Refresher) logDiscoveryFailure(targetRelayURL, sourceURL string, recoveryFailures int, err error) {
-	expired, expireReason, consecutiveFailures := r.relaySet.RecordRelayFailure(targetRelayURL, err, recoveryFailures)
-	if !expired {
+	backedOff, backoffReason, consecutiveFailures := r.relaySet.RecordRelayFailure(targetRelayURL, err, recoveryFailures)
+	if !backedOff {
 		return
 	}
 
 	event := log.Warn().
 		Err(err).
 		Str("relay", sourceURL).
-		Bool("expired", true).
-		Str("reason", expireReason)
+		Bool("backed_off", true).
+		Str("reason", backoffReason)
 	if consecutiveFailures > 0 {
 		event = event.Int("consecutive_failures", consecutiveFailures)
 	}
-	event.Msg("discovery source expired")
+	event.Msg("discovery source retry delayed")
 }

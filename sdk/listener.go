@@ -148,6 +148,7 @@ func (l *Listener) runStartup(ctx context.Context) {
 				errors.Is(err, &types.APIRequestError{Code: types.APIErrorCodeHostnameConflict}) ||
 				errors.Is(err, &types.APIRequestError{Code: types.APIErrorCodeIPBanned}) {
 				if l.relaySet != nil && l.api != nil && l.api.baseURL != nil {
+					l.relaySet.UnconfirmRelayURL(l.api.baseURL.String())
 					l.relaySet.RecordRelayFailure(l.api.baseURL.String(), err, 1)
 				}
 				log.Error().
@@ -656,6 +657,9 @@ func (l *Listener) registerAndConfigure(ctx context.Context) error {
 	if datagram != nil {
 		datagram.Clear("lease updated")
 	}
+	if l.relaySet != nil && l.api != nil && l.api.baseURL != nil {
+		l.relaySet.ConfirmRelayURL(l.api.baseURL.String())
+	}
 	l.registerOnce.Do(func() { close(l.registered) })
 	return nil
 }
@@ -673,6 +677,7 @@ func (l *Listener) retryOrClose(ctx context.Context, operation string, err error
 
 	if l.retryCount > 0 && retries > l.retryCount {
 		if l.relaySet != nil && l.api != nil && l.api.baseURL != nil {
+			l.relaySet.UnconfirmRelayURL(l.api.baseURL.String())
 			l.relaySet.RecordRelayFailure(l.api.baseURL.String(), err, 1)
 		}
 		if operation != "lease renewal" {
@@ -729,6 +734,7 @@ func (l *Listener) closed() bool {
 
 func (l *Listener) ban() {
 	if l.relaySet != nil && l.api != nil && l.api.baseURL != nil {
+		l.relaySet.UnconfirmRelayURL(l.api.baseURL.String())
 		l.relaySet.BanRelayURL(l.api.baseURL.String())
 	}
 	_ = l.Close()
