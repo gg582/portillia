@@ -26,8 +26,8 @@ type Exposure struct {
 	done   <-chan struct{}
 
 	identity        types.Identity
+	discovery       bool
 	explicitRelays  []string
-	activeRelayURLs []string
 	TargetAddr      string
 	UDPAddr         string
 	udpEnabled      bool
@@ -115,6 +115,7 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 		cancel:          cancel,
 		done:            exposureCtx.Done(),
 		identity:        identity,
+		discovery:       cfg.Discovery,
 		explicitRelays:  append([]string(nil), explicitRelayURLs...),
 		TargetAddr:      targetAddr,
 		UDPAddr:         udpAddr,
@@ -175,20 +176,12 @@ func (e *Exposure) runDiscoveryLoop(ctx context.Context) {
 func (e *Exposure) ActiveRelayURLs() []string {
 	e.listenerMu.RLock()
 	defer e.listenerMu.RUnlock()
-	return append([]string(nil), e.activeRelayURLs...)
-}
-
-func (e *Exposure) clientState() discovery.ClientState {
-	e.listenerMu.RLock()
-	defer e.listenerMu.RUnlock()
-
-	return discovery.ClientState{
-		ActiveRelayURLs:   append([]string(nil), e.activeRelayURLs...),
-		ExplicitRelayURLs: append([]string(nil), e.explicitRelays...),
-		MaxActiveRelays:   e.maxActiveRelays,
-		RequireUDP:        e.udpEnabled,
-		RequireTCP:        e.tcpEnabled,
+	relayURLs := make([]string, 0, len(e.relayListeners))
+	for relayURL := range e.relayListeners {
+		relayURLs = append(relayURLs, relayURL)
 	}
+	slices.Sort(relayURLs)
+	return relayURLs
 }
 
 func (e *Exposure) Addr() net.Addr {
@@ -277,6 +270,20 @@ func (e *Exposure) WaitDatagramReady(ctx context.Context) ([]string, error) {
 }
 
 func (e *Exposure) RunHTTP(ctx context.Context, handler http.Handler, localAddr string) error {
+	if handler == nil {
+		handler = http.NotFoundHandler()
+	}
+	if e.discovery {
+		tmp := handler
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.TrimSpace(r.URL.Path) == types.PathDiscovery {
+				e.relaySet.ServeDiscovery(w, r)
+				return
+			}
+			tmp.ServeHTTP(w, r)
+		})
+	}
+
 	e.listenerMu.RLock()
 	hasRelayListeners := len(e.relayListeners) > 0
 	e.listenerMu.RUnlock()
@@ -354,7 +361,6 @@ func (e *Exposure) Close() error {
 		e.listenerMu.Lock()
 		relayListeners := e.relayListeners
 		e.relayListeners = make(map[string]*Listener)
-		e.activeRelayURLs = nil
 		e.listenerMu.Unlock()
 
 		relayURLs := make([]string, 0, len(relayListeners))
@@ -380,7 +386,15 @@ func (e *Exposure) Close() error {
 }
 
 func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
-	desiredRelayURLs := e.relaySet.PriorityRelays(e.clientState())
+	clientState := discovery.ClientState{
+		ActiveRelayURLs:   e.ActiveRelayURLs(),
+		ExplicitRelayURLs: append([]string(nil), e.explicitRelays...),
+		MaxActiveRelays:   e.maxActiveRelays,
+		RequireUDP:        e.udpEnabled,
+		RequireTCP:        e.tcpEnabled,
+	}
+
+	desiredRelayURLs := e.relaySet.PriorityRelays(clientState)
 
 	e.listenerMu.Lock()
 	staleRelayListeners := make(map[string]*Listener)
@@ -458,15 +472,6 @@ func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
 		go e.runListenerAcceptLoop(listener)
 	}
 
-	e.listenerMu.Lock()
-	e.activeRelayURLs = e.activeRelayURLs[:0]
-	for _, relayURL := range desiredRelayURLs {
-		if _, ok := e.relayListeners[relayURL]; !ok {
-			continue
-		}
-		e.activeRelayURLs = append(e.activeRelayURLs, relayURL)
-	}
-	e.listenerMu.Unlock()
 	if len(removedRelayURLs) > 0 || len(addedRelayURLs) > 0 {
 		log.Info().
 			Strs("added_relays", addedRelayURLs).
@@ -516,9 +521,6 @@ func (e *Exposure) runListenerAcceptLoop(listener *Listener) {
 		e.listenerMu.Lock()
 		if current, ok := e.relayListeners[relayURL]; ok && current == listener {
 			delete(e.relayListeners, relayURL)
-		}
-		if index := slices.Index(e.activeRelayURLs, relayURL); index >= 0 {
-			e.activeRelayURLs = slices.Delete(e.activeRelayURLs, index, index+1)
 		}
 		e.listenerMu.Unlock()
 	}()

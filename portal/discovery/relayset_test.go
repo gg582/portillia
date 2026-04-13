@@ -14,9 +14,9 @@ func TestApplyRelayDiscoveryResponsePreservesBootstrapFlag(t *testing.T) {
 	}
 
 	desc := mustPolicyRelayDescriptor(t, "relay-a", "https://relay-a.example")
-	if _, err := set.ApplyRelayDiscoveryResponse(desc.Identity, desc.APIHTTPSAddr, types.DiscoveryResponse{
+	if _, err := set.ApplyRelayDiscoveryResponse(desc.APIHTTPSAddr, types.DiscoveryResponse{
 		ProtocolVersion: types.ProtocolVersion,
-		Self:            desc,
+		Relays:          []types.RelayDescriptor{desc},
 	}, time.Now().UTC()); err != nil {
 		t.Fatalf("ApplyRelayDiscoveryResponse() error = %v", err)
 	}
@@ -27,28 +27,5 @@ func TestApplyRelayDiscoveryResponsePreservesBootstrapFlag(t *testing.T) {
 	}
 	if !states[0].Bootstrap {
 		t.Fatal("bootstrap relay lost bootstrap flag after discovery update")
-	}
-}
-
-func TestApplyRelayDiscoveryResponseAllowsURLChangeForSameIdentity(t *testing.T) {
-	set, err := NewRelaySet(nil)
-	if err != nil {
-		t.Fatalf("NewRelaySet() error = %v", err)
-	}
-
-	desc := mustPolicyRelayDescriptor(t, "relay-a", "https://relay-a.example")
-	if _, err := set.ApplyRelayDiscoveryResponse(desc.Identity, desc.APIHTTPSAddr, types.DiscoveryResponse{
-		ProtocolVersion: types.ProtocolVersion,
-		Self:            desc,
-	}, time.Now().UTC()); err != nil {
-		t.Fatalf("ApplyRelayDiscoveryResponse() error = %v", err)
-	}
-
-	changedURL := mustPolicyRelayDescriptor(t, desc.Name, "https://relay-b.example")
-	if _, err := set.ApplyRelayDiscoveryResponse(desc.Identity, "", types.DiscoveryResponse{
-		ProtocolVersion: types.ProtocolVersion,
-		Self:            changedURL,
-	}, time.Now().UTC()); err != nil {
-		t.Fatalf("ApplyRelayDiscoveryResponse() error = %v, want nil for same relay identity", err)
 	}
 }

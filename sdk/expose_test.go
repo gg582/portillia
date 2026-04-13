@@ -33,9 +33,8 @@ func TestExposureReconcileRemovesBannedRelayFromActiveSet(t *testing.T) {
 	}
 
 	exposure := &Exposure{
-		relaySet:        mustRelaySet(t, relayA, relayB),
-		relayListeners:  make(map[string]*Listener, 2),
-		activeRelayURLs: []string{relayA, relayB},
+		relaySet:       mustRelaySet(t, relayA, relayB),
+		relayListeners: make(map[string]*Listener, 2),
 	}
 	relayAClosed := make(chan struct{})
 	exposure.relayListeners = map[string]*Listener{

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -290,6 +292,81 @@ func (r *leaseRegistry) countTCPPortLeases() int {
 		}
 	}
 	return count
+}
+
+func (r *leaseRegistry) snapshot(record *leaseRecord, now time.Time) (types.Lease, bool) {
+	if record == nil || now.After(record.ExpiresAt) {
+		return types.Lease{}, false
+	}
+
+	adminSnapshot := r.AdminSnapshot(record)
+	since := time.Duration(0)
+	if !adminSnapshot.LastSeenAt.IsZero() {
+		since = max(now.Sub(adminSnapshot.LastSeenAt), 0)
+	}
+	if adminSnapshot.IsBanned || adminSnapshot.IsDenied || !adminSnapshot.IsApproved || adminSnapshot.Metadata.Hide {
+		return types.Lease{}, false
+	}
+	if adminSnapshot.Ready == 0 && since >= 3*time.Minute {
+		return types.Lease{}, false
+	}
+	return adminSnapshot.Lease, true
+}
+
+func (r *leaseRegistry) LeaseSnapshots(now time.Time) []types.Lease {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	snapshots := make([]types.Lease, 0, len(r.leasesByKey))
+	for _, record := range r.leasesByKey {
+		snapshot, ok := r.snapshot(record, now)
+		if !ok {
+			continue
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+	return snapshots
+}
+
+func (r *leaseRegistry) AdminLeaseSnapshots(now time.Time) []types.AdminLease {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	snapshots := make([]types.AdminLease, 0, len(r.leasesByKey))
+	for _, record := range r.leasesByKey {
+		if now.After(record.ExpiresAt) {
+			continue
+		}
+		snapshots = append(snapshots, r.AdminSnapshot(record))
+	}
+	return snapshots
+}
+
+func (r *leaseRegistry) DiscoverySourceURLs(portalURL string) []string {
+	baseURL, err := url.Parse(portalURL)
+	if err != nil {
+		return nil
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	sources := make([]string, 0, len(r.leasesByKey))
+	for _, record := range r.leasesByKey {
+		snapshot, ok := r.snapshot(record, time.Now())
+		if !ok {
+			continue
+		}
+
+		sourceURL := *baseURL
+		sourceURL.Host = snapshot.Hostname
+		if port := baseURL.Port(); port != "" {
+			sourceURL.Host = net.JoinHostPort(snapshot.Hostname, port)
+		}
+
+		sources = append(sources, sourceURL.String())
+	}
+	return sources
 }
 
 func (r *leaseRegistry) Snapshot(record *leaseRecord) types.Lease {

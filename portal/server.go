@@ -365,52 +365,17 @@ func (s *Server) PortalURL() string {
 }
 
 func (s *Server) LeaseSnapshots() []types.Lease {
-	s.registry.mu.RLock()
-	defer s.registry.mu.RUnlock()
-
-	now := time.Now()
-	records := make([]*leaseRecord, 0, len(s.registry.leasesByKey))
-	for _, record := range s.registry.leasesByKey {
-		records = append(records, record)
+	if s == nil || s.registry == nil {
+		return nil
 	}
-	snapshots := make([]types.Lease, 0, len(records))
-	for _, record := range records {
-		if now.After(record.ExpiresAt) {
-			continue
-		}
-		adminSnapshot := s.registry.AdminSnapshot(record)
-		since := time.Duration(0)
-		if !adminSnapshot.LastSeenAt.IsZero() {
-			since = max(now.Sub(adminSnapshot.LastSeenAt), 0)
-		}
-		if adminSnapshot.IsBanned || adminSnapshot.IsDenied || !adminSnapshot.IsApproved || adminSnapshot.Metadata.Hide {
-			continue
-		}
-		if adminSnapshot.Ready == 0 && since >= 3*time.Minute {
-			continue
-		}
-		snapshots = append(snapshots, adminSnapshot.Lease)
-	}
-	return snapshots
+	return s.registry.LeaseSnapshots(time.Now())
 }
 
 func (s *Server) AdminLeaseSnapshots() []types.AdminLease {
-	s.registry.mu.RLock()
-	defer s.registry.mu.RUnlock()
-
-	now := time.Now()
-	records := make([]*leaseRecord, 0, len(s.registry.leasesByKey))
-	for _, record := range s.registry.leasesByKey {
-		records = append(records, record)
+	if s == nil || s.registry == nil {
+		return nil
 	}
-	snapshots := make([]types.AdminLease, 0, len(records))
-	for _, record := range records {
-		if now.After(record.ExpiresAt) {
-			continue
-		}
-		snapshots = append(snapshots, s.registry.AdminSnapshot(record))
-	}
-	return snapshots
+	return s.registry.AdminLeaseSnapshots(time.Now())
 }
 
 func (s *Server) LeaseSnapshotByHostname(hostname string) (types.Lease, bool) {
@@ -639,7 +604,7 @@ func (s *Server) runRelayDiscoveryLoop(ctx context.Context) error {
 	defer ticker.Stop()
 
 	for {
-		if err := refresher.Refresh(ctx); err != nil {
+		if err := refresher.Refresh(ctx, s.registry.DiscoverySourceURLs(s.PortalURL())...); err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
