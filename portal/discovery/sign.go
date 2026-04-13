@@ -90,7 +90,7 @@ func VerifyDescriptor(desc types.RelayDescriptor) (publicKeyHex string, err erro
 
 	signature, err := base64.StdEncoding.DecodeString(rawSignature)
 	if err != nil {
-		return "", fmt.Errorf("%w: base64 decode: %v", ErrDescriptorInvalidSignature, err)
+		return "", fmt.Errorf("%w: base64 decode: %w", ErrDescriptorInvalidSignature, err)
 	}
 	if len(signature) != descriptorSignatureSize {
 		return "", fmt.Errorf("%w: unexpected signature length %d", ErrDescriptorInvalidSignature, len(signature))
@@ -104,7 +104,7 @@ func VerifyDescriptor(desc types.RelayDescriptor) (publicKeyHex string, err erro
 	unsignedCopy.Signature = ""
 	normalized, err := utils.NormalizeDescriptor(unsignedCopy)
 	if err != nil {
-		return "", fmt.Errorf("%w: normalize: %v", ErrDescriptorInvalidSignature, err)
+		return "", fmt.Errorf("%w: normalize: %w", ErrDescriptorInvalidSignature, err)
 	}
 	if strings.TrimSpace(normalized.Address) == "" {
 		return "", ErrDescriptorMissingAddress
@@ -117,7 +117,7 @@ func VerifyDescriptor(desc types.RelayDescriptor) (publicKeyHex string, err erro
 
 	publicKey, _, err := ecdsa.RecoverCompact(signature, digest[:])
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrDescriptorInvalidSignature, err)
+		return "", fmt.Errorf("%w: %w", ErrDescriptorInvalidSignature, err)
 	}
 	if publicKey == nil {
 		return "", ErrDescriptorInvalidSignature
