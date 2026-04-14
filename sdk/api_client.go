@@ -42,7 +42,6 @@ type apiClient struct {
 	rawTLSConfig     *tls.Config
 	dialTimeout      time.Duration
 	requestTimeout   time.Duration
-	rootCAPEM        []byte
 	identity         types.Identity
 	accessToken      string
 	expiresAt        time.Time
@@ -69,7 +68,6 @@ func newApiClient(relayURL string, cfg ListenerConfig) (*apiClient, error) {
 		baseURL:        baseURL,
 		dialTimeout:    dialTimeout,
 		requestTimeout: requestTimeout,
-		rootCAPEM:      append([]byte(nil), cfg.RootCAPEM...),
 		identity:       cfg.Identity.Copy(),
 		metadata:       cfg.Metadata.Copy(),
 	}, nil
@@ -186,7 +184,7 @@ func (a *apiClient) ensureHTTPClient(ctx context.Context) error {
 	bootstrapCtx, cancel := context.WithTimeout(ctx, defaultDialTimeout+defaultHandshakeTimeout)
 	defer cancel()
 
-	rawTLSConfig, httpClient, err := utils.NewHTTPTLSClient(bootstrapCtx, a.baseURL, a.rootCAPEM, a.requestTimeout)
+	rawTLSConfig, httpClient, err := utils.NewHTTPTLSClient(bootstrapCtx, a.baseURL, a.requestTimeout)
 	if err != nil {
 		return err
 	}

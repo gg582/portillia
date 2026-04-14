@@ -49,7 +49,7 @@ func NewRefresher(relaySet *RelaySet, overlay OverlayRuntime) *Refresher {
 	}
 }
 
-func (r *Refresher) Refresh(ctx context.Context, self types.RelayDescriptor) error {
+func (r *Refresher) Refresh(ctx context.Context, self *types.RelayDescriptor) error {
 	if r.overlay != nil {
 		if err := r.refreshOverlay(ctx); err != nil && ctx.Err() == nil {
 			log.Warn().
@@ -63,7 +63,12 @@ func (r *Refresher) Refresh(ctx context.Context, self types.RelayDescriptor) err
 	if err := r.refreshHTTPS(ctx); err != nil {
 		return err
 	}
-	return r.announceSelf(ctx, self)
+	if self != nil {
+		if err := r.announceSelf(ctx, *self); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Refresher) announceSelf(ctx context.Context, descriptor types.RelayDescriptor) error {
@@ -71,6 +76,18 @@ func (r *Refresher) announceSelf(ctx context.Context, descriptor types.RelayDesc
 		ProtocolVersion: types.DiscoveryVersion,
 		Descriptor:      descriptor,
 	}
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+				NextProtos: []string{"http/1.1"},
+			},
+			ForceAttemptHTTP2: false,
+		},
+		Timeout: defaultRequestTimeout,
+	}
+	defer httpClient.CloseIdleConnections()
+
 	for _, relayURL := range r.relaySet.BootstrapRelayURLs() {
 		if relayURL == descriptor.APIHTTPSAddr {
 			continue
@@ -83,11 +100,8 @@ func (r *Refresher) announceSelf(ctx context.Context, descriptor types.RelayDesc
 				Msg("relay discovery announce target skipped")
 			continue
 		}
-		if utils.IsLocalRelayHost(baseURL.Hostname()) {
-			continue
-		}
 
-		if err := utils.HTTPDoAPIPath(ctx, r.httpClient, baseURL, http.MethodPost, types.PathDiscoveryAnnounce, req, nil, nil); err != nil {
+		if err := utils.HTTPDoAPIPath(ctx, httpClient, baseURL, http.MethodPost, types.PathDiscoveryAnnounce, req, nil, nil); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -141,12 +155,6 @@ func (r *Refresher) refreshHTTPS(ctx context.Context) error {
 			if recoveryFailures > 0 {
 				r.logDiscoveryFailure(relayURL, relayURL, recoveryFailures, err)
 			}
-			continue
-		}
-		if utils.IsLocalRelayHost(baseURL.Hostname()) {
-			log.Info().
-				Str("relay", relayURL).
-				Msg("skip loopback relay as discovery source")
 			continue
 		}
 

@@ -100,13 +100,9 @@ func runExposeCommand(args []string) error {
 	ctx, stop := utils.SignalContext()
 	defer stop()
 
-	relayURLs, err := utils.ResolvePortalRelayURLs(ctx, utils.SplitCSV(flags.relayCSV), flags.discovery)
-	if err != nil {
-		return fmt.Errorf("resolve relay urls: %w", err)
-	}
-
 	exposure, err := sdk.Expose(ctx, sdk.ExposeConfig{
-		RelayURLs:       relayURLs,
+		RelayURLs:       utils.SplitCSV(flags.relayCSV),
+		Discovery:       flags.discovery,
 		IdentityPath:    flags.identityPath,
 		IdentityJSON:    flags.identityJSON,
 		Name:            flags.name,

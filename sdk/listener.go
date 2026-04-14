@@ -26,7 +26,6 @@ type ListenerConfig struct {
 	TCPEnabled       bool
 	BanMITM          bool
 	Metadata         types.LeaseMetadata
-	RootCAPEM        []byte
 	DialTimeout      time.Duration
 	RequestTimeout   time.Duration
 	HandshakeTimeout time.Duration

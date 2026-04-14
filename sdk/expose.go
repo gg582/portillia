@@ -20,12 +20,11 @@ import (
 )
 
 // Exposure owns the lifecycle of one or more relay listeners and accepts
-// traffic from all of them through one net.Listener. The SDK is a pure
-// relay client: it uses only the explicit relay URLs passed in by the
-// caller, never gossips its own descriptor into the discovery mesh, and
-// never serves the /discovery endpoint. Relay bootstrap expansion (e.g.
-// loading a public registry) is the caller's responsibility — resolve the
-// final URL list before invoking Expose.
+// traffic from all of them through one net.Listener. The SDK is a pure relay
+// client: it never gossips its own descriptor into the discovery mesh and
+// never serves the /discovery endpoint. When SDK discovery is enabled, the
+// exposure resolves registry seed relays and consumes discovery results from
+// attached relays.
 type Exposure struct {
 	cancel context.CancelFunc
 	done   <-chan struct{}
@@ -39,7 +38,6 @@ type Exposure struct {
 	banMITM         bool
 	maxActiveRelays int
 	metadata        types.LeaseMetadata
-	rootCAPEM       []byte
 
 	accepted  chan net.Conn
 	datagrams chan types.DatagramFrame
@@ -54,6 +52,7 @@ type Exposure struct {
 
 type ExposeConfig struct {
 	RelayURLs       []string
+	Discovery       bool
 	IdentityPath    string
 	IdentityJSON    string
 	Name            string
@@ -64,7 +63,6 @@ type ExposeConfig struct {
 	BanMITM         bool
 	MaxActiveRelays int
 	Metadata        types.LeaseMetadata
-	RootCAPEM       []byte
 }
 
 // Expose creates relay listeners for the selected relay pool and exposes a
@@ -74,7 +72,10 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 	if err != nil {
 		return nil, err
 	}
-	relayURLs := explicitRelayURLs
+	relayURLs, err := utils.ResolvePortalRelayURLs(ctx, explicitRelayURLs, cfg.Discovery)
+	if err != nil {
+		return nil, err
+	}
 
 	identity, createdIdentity, err := utils.ResolveListenerIdentity(
 		types.Identity{Name: cfg.Name},
@@ -115,7 +116,6 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 		banMITM:         cfg.BanMITM,
 		maxActiveRelays: cfg.MaxActiveRelays,
 		metadata:        cfg.Metadata.Copy(),
-		rootCAPEM:       append([]byte(nil), cfg.RootCAPEM...),
 		accepted:        make(chan net.Conn, max(len(relayURLs)*defaultReadyTarget*2, 1)),
 		datagrams:       make(chan types.DatagramFrame, max(len(relayURLs)*32, 1)),
 		relaySet:        discovery.NewRelaySet(relayURLs),
@@ -127,6 +127,10 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 			_ = exposure.Close()
 			return nil, err
 		}
+	}
+
+	if cfg.Discovery {
+		go exposure.runDiscoveryLoop(exposureCtx)
 	}
 
 	go func() {
@@ -339,6 +343,27 @@ func (e *Exposure) Close() error {
 	return closeErr
 }
 
+func (e *Exposure) runDiscoveryLoop(ctx context.Context) {
+	refresher := discovery.NewRefresher(e.relaySet, nil)
+	ticker := time.NewTicker(discovery.DiscoveryPollInterval)
+	defer ticker.Stop()
+
+	for {
+		if err := refresher.Refresh(ctx, nil); err != nil {
+			return
+		}
+		if err := e.reconcileRelayListeners(false); err != nil {
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
 	clientState := discovery.ClientState{
 		ActiveRelayURLs:   e.ActiveRelayURLs(),
@@ -395,7 +420,6 @@ func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
 			BanMITM:    e.banMITM,
 			RetryCount: retryCount,
 			Metadata:   e.metadata.Copy(),
-			RootCAPEM:  append([]byte(nil), e.rootCAPEM...),
 			relaySet:   e.relaySet,
 		})
 		if err != nil {

@@ -129,12 +129,9 @@ func runUDPCommand(args []string) error {
 }
 
 func runTCPDemo(ctx context.Context, cfg demoConfig) error {
-	relayURLs, err := utils.ResolvePortalRelayURLs(ctx, utils.SplitCSV(cfg.relayURLs), cfg.discovery)
-	if err != nil {
-		return fmt.Errorf("resolve relay urls: %w", err)
-	}
 	exposure, err := sdk.Expose(ctx, sdk.ExposeConfig{
-		RelayURLs:       relayURLs,
+		RelayURLs:       utils.SplitCSV(cfg.relayURLs),
+		Discovery:       cfg.discovery,
 		IdentityPath:    cfg.identityPath,
 		IdentityJSON:    cfg.identityJSON,
 		Name:            cfg.name,
@@ -175,12 +172,9 @@ func runTCPDemo(ctx context.Context, cfg demoConfig) error {
 }
 
 func runUDPDemo(ctx context.Context, cfg demoConfig) error {
-	relayURLs, err := utils.ResolvePortalRelayURLs(ctx, utils.SplitCSV(cfg.relayURLs), cfg.discovery)
-	if err != nil {
-		return fmt.Errorf("resolve relay urls: %w", err)
-	}
 	exposure, err := sdk.Expose(ctx, sdk.ExposeConfig{
-		RelayURLs:       relayURLs,
+		RelayURLs:       utils.SplitCSV(cfg.relayURLs),
+		Discovery:       cfg.discovery,
 		IdentityPath:    cfg.identityPath,
 		IdentityJSON:    cfg.identityJSON,
 		Name:            cfg.name,

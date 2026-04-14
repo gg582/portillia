@@ -605,7 +605,7 @@ func (s *Server) runRelayDiscoveryLoop(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("build relay discovery descriptor: %w", err)
 		}
-		if err := refresher.Refresh(ctx, self); err != nil {
+		if err := refresher.Refresh(ctx, &self); err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
