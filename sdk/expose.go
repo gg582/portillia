@@ -44,7 +44,7 @@ type Exposure struct {
 
 	relaySet       *discovery.RelaySet
 	listenerMu     sync.RWMutex
-	relayListeners map[string]*Listener
+	relayListeners map[string]*listener
 
 	closeOnce sync.Once
 	connSeq   atomic.Uint64
@@ -119,7 +119,7 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 		accepted:        make(chan net.Conn, max(len(relayURLs)*defaultReadyTarget*2, 1)),
 		datagrams:       make(chan types.DatagramFrame, max(len(relayURLs)*32, 1)),
 		relaySet:        discovery.NewRelaySet(relayURLs),
-		relayListeners:  make(map[string]*Listener, len(relayURLs)),
+		relayListeners:  make(map[string]*listener, len(relayURLs)),
 	}
 
 	if len(relayURLs) > 0 {
@@ -187,7 +187,7 @@ func (e *Exposure) SendDatagram(frame types.DatagramFrame) error {
 	if listener == nil {
 		return net.ErrClosed
 	}
-	return listener.SendDatagram(frame)
+	return listener.sendDatagram(frame)
 }
 
 func (e *Exposure) WaitDatagramReady(ctx context.Context) ([]string, error) {
@@ -208,7 +208,7 @@ func (e *Exposure) WaitDatagramReady(ctx context.Context) ([]string, error) {
 				continue
 			}
 
-			udpAddr, ready, pending := listener.DatagramReady()
+			udpAddr, ready, pending := listener.datagramReady()
 			if ready {
 				if _, ok := seen[udpAddr]; !ok {
 					seen[udpAddr] = struct{}{}
@@ -318,7 +318,7 @@ func (e *Exposure) Close() error {
 
 		e.listenerMu.Lock()
 		relayListeners := e.relayListeners
-		e.relayListeners = make(map[string]*Listener)
+		e.relayListeners = make(map[string]*listener)
 		e.listenerMu.Unlock()
 
 		relayURLs := make([]string, 0, len(relayListeners))
@@ -376,7 +376,7 @@ func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
 	desiredRelayURLs := e.relaySet.PriorityRelays(clientState)
 
 	e.listenerMu.Lock()
-	staleRelayListeners := make(map[string]*Listener)
+	staleRelayListeners := make(map[string]*listener)
 	removedRelayURLs := make([]string, 0)
 	for relayURL, listener := range e.relayListeners {
 		if slices.Contains(desiredRelayURLs, relayURL) {
@@ -413,7 +413,7 @@ func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
 		if slices.Contains(e.explicitRelays, relayURL) {
 			retryCount = 0
 		}
-		listener, err := NewListener(context.Background(), relayURL, ListenerConfig{
+		listener, err := newListener(context.Background(), relayURL, listenerConfig{
 			Identity:   e.identity.Copy(),
 			UDPEnabled: e.udpEnabled,
 			TCPEnabled: e.tcpEnabled,
@@ -460,16 +460,19 @@ func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
 	return nil
 }
 
-func (e *Exposure) runListenerAcceptLoop(listener *Listener) {
+func (e *Exposure) runListenerAcceptLoop(listener *listener) {
 	if listener == nil {
 		return
 	}
 
-	relayURL := listener.api.baseURL.String()
+	relayURL := ""
+	if listener.relayURL != nil {
+		relayURL = listener.relayURL.String()
+	}
 	if e.udpEnabled {
 		go func() {
 			for {
-				frame, err := listener.AcceptDatagram()
+				frame, err := listener.acceptDatagram()
 				if err != nil {
 					select {
 					case <-e.done:
@@ -482,7 +485,7 @@ func (e *Exposure) runListenerAcceptLoop(listener *Listener) {
 					log.Warn().
 						Err(err).
 						Str("relay_url", relayURL).
-						Str("address", listener.Address()).
+						Str("address", listener.address()).
 						Msg("datagram accept failed")
 					return
 				}

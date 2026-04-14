@@ -125,7 +125,7 @@ Legacy execution compatibility has been removed:
 - The tunnel starts once relay URLs pass local validation. Remote compatibility checks, lease registration, and reconnects continue in the background until each relay becomes ready.
 - With discovery enabled, the tunnel uses the public registry as discovery seed input and can expand through relay discovery. Explicit `--relays` values are always included separately from the auto-selected relay pool. With `--discovery=false`, only the explicit relay URLs are used. Published public URLs appear only for relays that have registered successfully.
 - Explicit `--relays` listeners retry indefinitely with `RetryCount=0`. Auto-selected discovery relays are created with `RetryCount=10` and are dropped from the active set after that budget is exhausted.
-- `ListenerConfig.RetryCount` limits retries when positive. `RetryCount=0` retries indefinitely.
+- Retry count limits retries when positive. `RetryCount=0` retries indefinitely.
 - Tenant TLS is provisioned automatically through the relay keyless signer. The SDK fetches the relay certificate chain and uses `/v1/sign` for remote signing.
 - `portal expose` enables MITM strict enforcement by default. Use `--ban-mitm=false` to keep warning-only behavior when the TLS self-probe suspects relay termination.
 - When the local service is unreachable, the tunnel returns an HTTP 503 page.

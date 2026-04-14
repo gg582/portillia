@@ -29,17 +29,17 @@ func TestExposureReconcileRemovesBannedRelayFromActiveSet(t *testing.T) {
 
 	exposure := &Exposure{
 		relaySet:       mustRelaySet(t, relayA, relayB),
-		relayListeners: make(map[string]*Listener, 2),
+		relayListeners: make(map[string]*listener, 2),
 	}
 	relayAClosed := make(chan struct{})
-	exposure.relayListeners = map[string]*Listener{
+	exposure.relayListeners = map[string]*listener{
 		relayA: {
-			api:    &apiClient{baseURL: relayURL},
-			cancel: func() { close(relayAClosed) },
-			doneCh: relayAClosed,
+			relayURL: relayURL,
+			cancel:   func() { close(relayAClosed) },
+			doneCh:   relayAClosed,
 		},
 		relayB: {
-			api: &apiClient{baseURL: relayBURL},
+			relayURL: relayBURL,
 		},
 	}
 
@@ -84,16 +84,16 @@ func TestExposureReconcileRemovesStaleListener(t *testing.T) {
 	relayAClosed := make(chan struct{})
 	exposure := &Exposure{
 		relaySet:       mustRelaySet(t, relayA, relayB),
-		relayListeners: make(map[string]*Listener, 2),
+		relayListeners: make(map[string]*listener, 2),
 	}
-	exposure.relayListeners = map[string]*Listener{
+	exposure.relayListeners = map[string]*listener{
 		relayA: {
-			api:    &apiClient{baseURL: relayAURL},
-			cancel: func() { close(relayAClosed) },
-			doneCh: relayAClosed,
+			relayURL: relayAURL,
+			cancel:   func() { close(relayAClosed) },
+			doneCh:   relayAClosed,
 		},
 		relayB: {
-			api: &apiClient{baseURL: relayBURL},
+			relayURL: relayBURL,
 		},
 	}
 

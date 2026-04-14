@@ -26,7 +26,7 @@ func TestMITMProbeConnMatchesExporter(t *testing.T) {
 	defer closeMITMProbeTLSConn(clientConn)
 	defer closeMITMProbeTLSConn(serverConn)
 
-	listener := &Listener{}
+	listener := &listener{}
 	listener.mitmManager = newMITMManager(context.Background(), listener)
 
 	nonce := make([]byte, 16)
@@ -86,7 +86,7 @@ func TestMITMProbeConnDetectsExporterMismatch(t *testing.T) {
 	defer closeMITMProbeTLSConn(clientConn)
 	defer closeMITMProbeTLSConn(serverConn)
 
-	listener := &Listener{}
+	listener := &listener{}
 	listener.mitmManager = newMITMManager(context.Background(), listener)
 
 	nonce := make([]byte, 16)
@@ -144,7 +144,7 @@ func TestMITMProbeConnPassesThroughNormalTraffic(t *testing.T) {
 	defer closeMITMProbeTLSConn(clientConn)
 	defer closeMITMProbeTLSConn(serverConn)
 
-	listener := &Listener{}
+	listener := &listener{}
 	listener.mitmManager = newMITMManager(context.Background(), listener)
 
 	type handleResult struct {
@@ -206,8 +206,8 @@ func TestMITMProbeDetectionBansListener(t *testing.T) {
 		t.Fatalf("url.Parse() error = %v", err)
 	}
 
-	listener := &Listener{
-		api:      &apiClient{baseURL: relayURL},
+	listener := &listener{
+		relayURL: relayURL,
 		relaySet: mustRelaySet(t, relayURL.String()),
 		cancel: func() {
 			select {
@@ -216,9 +216,8 @@ func TestMITMProbeDetectionBansListener(t *testing.T) {
 				close(doneCh)
 			}
 		},
-		doneCh:     doneCh,
-		registered: make(chan struct{}),
-		banMITM:    true,
+		doneCh:  doneCh,
+		banMITM: true,
 	}
 	listener.mitmManager = newMITMManager(context.Background(), listener)
 
@@ -245,12 +244,11 @@ func TestMITMProbeDetectionWarnsWithoutBanningListener(t *testing.T) {
 		t.Fatalf("url.Parse() error = %v", err)
 	}
 
-	listener := &Listener{
-		api:        &apiClient{baseURL: relayURL},
-		relaySet:   mustRelaySet(t, relayURL.String()),
-		doneCh:     doneCh,
-		registered: make(chan struct{}),
-		banMITM:    false,
+	listener := &listener{
+		relayURL: relayURL,
+		relaySet: mustRelaySet(t, relayURL.String()),
+		doneCh:   doneCh,
+		banMITM:  false,
 	}
 	listener.mitmManager = newMITMManager(context.Background(), listener)
 
@@ -278,8 +276,8 @@ func TestMITMProbeDialAddressUsesRelayHostForLocalRelay(t *testing.T) {
 		t.Fatalf("url.Parse() error = %v", err)
 	}
 
-	listener := &Listener{
-		api: &apiClient{baseURL: relayURL},
+	listener := &listener{
+		relayURL: relayURL,
 	}
 	listener.mitmManager = newMITMManager(context.Background(), listener)
 
@@ -298,8 +296,8 @@ func TestMITMProbeDialAddressUsesPublicURLForRemoteRelay(t *testing.T) {
 		t.Fatalf("url.Parse() error = %v", err)
 	}
 
-	listener := &Listener{
-		api: &apiClient{baseURL: relayURL},
+	listener := &listener{
+		relayURL: relayURL,
 	}
 	listener.mitmManager = newMITMManager(context.Background(), listener)
 

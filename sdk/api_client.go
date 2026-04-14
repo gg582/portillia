@@ -11,9 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -35,189 +33,145 @@ const (
 
 var errRelayIncompatible = errors.New("relay is incompatible")
 
-type apiClient struct {
-	mu               sync.RWMutex
-	baseURL          *url.URL
-	httpClient       *http.Client
-	rawTLSConfig     *tls.Config
-	dialTimeout      time.Duration
-	requestTimeout   time.Duration
-	identity         types.Identity
-	accessToken      string
-	expiresAt        time.Time
-	metadata         types.LeaseMetadata
-	resolvedPublicIP string
-	sniPort          int
-}
-
-func newApiClient(relayURL string, cfg ListenerConfig) (*apiClient, error) {
-	normalizedRelayURL, err := utils.NormalizeRelayURL(relayURL)
-	if err != nil {
-		return nil, err
-	}
-
-	baseURL, err := url.Parse(normalizedRelayURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse relay url: %w", err)
-	}
-
-	dialTimeout := utils.DurationOrDefault(cfg.DialTimeout, defaultDialTimeout)
-	requestTimeout := utils.DurationOrDefault(cfg.RequestTimeout, defaultRequestTimeout)
-
-	return &apiClient{
-		baseURL:        baseURL,
-		dialTimeout:    dialTimeout,
-		requestTimeout: requestTimeout,
-		identity:       cfg.Identity.Copy(),
-		metadata:       cfg.Metadata.Copy(),
-	}, nil
-}
-
-func closeIdleHTTPClient(httpClient *http.Client) {
-	if httpClient == nil {
+func closeIdleHTTPClient(controlHTTPClient *http.Client) {
+	if controlHTTPClient == nil {
 		return
 	}
-	if transport, ok := httpClient.Transport.(*http.Transport); ok {
+	if transport, ok := controlHTTPClient.Transport.(*http.Transport); ok {
 		transport.CloseIdleConnections()
 	}
-}
-
-func (a *apiClient) close() {
-	if a == nil {
-		return
-	}
-	a.mu.RLock()
-	httpClient := a.httpClient
-	a.mu.RUnlock()
-	closeIdleHTTPClient(httpClient)
 }
 
 // resetTransport tears down the cached HTTP client and TLS config so the next
 // API call creates fresh TCP connections. Call this after detecting a system
 // sleep/wake cycle where pooled connections are almost certainly dead.
-func (a *apiClient) resetTransport() {
-	if a == nil {
+func (l *listener) resetTransport() {
+	if l == nil {
 		return
 	}
-	a.mu.Lock()
-	httpClient := a.httpClient
-	a.httpClient = nil
-	a.rawTLSConfig = nil
-	a.mu.Unlock()
-	closeIdleHTTPClient(httpClient)
+	l.mu.Lock()
+	controlHTTPClient := l.controlHTTPClient
+	l.controlHTTPClient = nil
+	l.controlTLSConfig = nil
+	l.mu.Unlock()
+	closeIdleHTTPClient(controlHTTPClient)
 }
 
-func (a *apiClient) registerLease(ctx context.Context, ttl time.Duration, udpEnabled, tcpEnabled bool) (types.RegisterResponse, error) {
-	if err := a.ensureHTTPClient(ctx); err != nil {
+func (l *listener) registerLease(ctx context.Context, ttl time.Duration, udpEnabled, tcpEnabled bool) (types.RegisterResponse, error) {
+	if err := l.ensureControlHTTPClient(ctx); err != nil {
 		return types.RegisterResponse{}, err
 	}
-	a.mu.RLock()
-	httpClient := a.httpClient
-	a.mu.RUnlock()
-	if httpClient == nil {
+	l.mu.Lock()
+	controlHTTPClient := l.controlHTTPClient
+	relayURL := l.relayURL
+	identity := l.identity.Copy()
+	metadata := l.metadata.Copy()
+	l.mu.Unlock()
+	if controlHTTPClient == nil {
 		return types.RegisterResponse{}, errors.New("relay http client is unavailable")
 	}
 
 	var challenge types.RegisterChallengeResponse
 	challengeReq := types.RegisterChallengeRequest{
-		Identity:   a.identity.Copy(),
-		Metadata:   a.metadata.Copy(),
+		Identity:   identity,
+		Metadata:   metadata,
 		TTL:        int(ttl / time.Second),
 		UDPEnabled: udpEnabled,
 		TCPEnabled: tcpEnabled,
 	}
-	if err := utils.HTTPDoAPIPath(ctx, httpClient, a.baseURL, http.MethodPost, types.PathSDKRegisterChallenge, challengeReq, nil, &challenge); err != nil {
+	if err := utils.HTTPDoAPIPath(ctx, controlHTTPClient, relayURL, http.MethodPost, types.PathSDKRegisterChallenge, challengeReq, nil, &challenge); err != nil {
 		return types.RegisterResponse{}, err
 	}
 
-	signature, err := utils.SignEthereumPersonalMessage(challenge.SIWEMessage, a.identity.PrivateKey)
+	signature, err := utils.SignEthereumPersonalMessage(challenge.SIWEMessage, identity.PrivateKey)
 	if err != nil {
 		return types.RegisterResponse{}, err
 	}
 
 	var resp types.RegisterResponse
-	if err := utils.HTTPDoAPIPath(ctx, httpClient, a.baseURL, http.MethodPost, types.PathSDKRegister, types.RegisterRequest{
+	if err := utils.HTTPDoAPIPath(ctx, controlHTTPClient, relayURL, http.MethodPost, types.PathSDKRegister, types.RegisterRequest{
 		ChallengeID:   challenge.ChallengeID,
 		SIWEMessage:   challenge.SIWEMessage,
 		SIWESignature: signature,
-		ReportedIP:    a.reportedIP(ctx),
+		ReportedIP:    l.reportedIP(ctx),
 	}, nil, &resp); err != nil {
 		return types.RegisterResponse{}, err
 	}
-	resp.AccessToken = strings.TrimSpace(resp.AccessToken)
-	if resp.AccessToken == "" {
-		return types.RegisterResponse{}, errors.New("relay did not return access token")
-	}
-	registeredIdentity, err := utils.NormalizeIdentity(resp.Identity)
-	if err != nil {
-		return types.RegisterResponse{}, err
-	}
-	if registeredIdentity.Key() != a.identity.Key() {
-		return types.RegisterResponse{}, errors.New("relay returned mismatched lease identity")
-	}
-	resp.Identity = registeredIdentity
-
-	sniPort := 0
-	if udpEnabled {
-		if resp.SNIPort <= 0 {
-			return types.RegisterResponse{}, errors.New("relay did not return sni port for udp transport")
-		}
-		sniPort = resp.SNIPort
-	}
-
-	a.mu.Lock()
-	a.accessToken = resp.AccessToken
-	a.expiresAt = resp.ExpiresAt
-	a.sniPort = sniPort
-	a.mu.Unlock()
 	return resp, nil
 }
 
-func (a *apiClient) ensureHTTPClient(ctx context.Context) error {
-	a.mu.RLock()
-	if a.httpClient != nil && a.rawTLSConfig != nil {
-		a.mu.RUnlock()
+func (l *listener) ensureControlHTTPClient(ctx context.Context) error {
+	if l == nil {
+		return errors.New("listener is unavailable")
+	}
+	l.mu.Lock()
+	if l.controlHTTPClient != nil && l.controlTLSConfig != nil {
+		l.mu.Unlock()
 		return nil
 	}
-	a.mu.RUnlock()
+	relayURL := l.relayURL
+	requestTimeout := l.requestTimeout
+	l.mu.Unlock()
+	if relayURL == nil {
+		return errors.New("relay url is unavailable")
+	}
 
 	bootstrapCtx, cancel := context.WithTimeout(ctx, defaultDialTimeout+defaultHandshakeTimeout)
 	defer cancel()
 
-	rawTLSConfig, httpClient, err := utils.NewHTTPTLSClient(bootstrapCtx, a.baseURL, a.requestTimeout)
+	controlTLSConfig, controlHTTPClient, err := utils.NewHTTPTLSClient(bootstrapCtx, relayURL, requestTimeout)
 	if err != nil {
 		return err
 	}
-	if err := a.ensureCompatible(ctx, httpClient); err != nil {
-		closeIdleHTTPClient(httpClient)
+	if err := l.ensureCompatible(ctx, controlHTTPClient); err != nil {
+		closeIdleHTTPClient(controlHTTPClient)
 		return err
 	}
 
-	a.mu.Lock()
-	if a.httpClient != nil && a.rawTLSConfig != nil {
-		a.mu.Unlock()
-		closeIdleHTTPClient(httpClient)
+	l.mu.Lock()
+	if l.controlHTTPClient != nil && l.controlTLSConfig != nil {
+		l.mu.Unlock()
+		closeIdleHTTPClient(controlHTTPClient)
 		return nil
 	}
-	oldHTTPClient := a.httpClient
-	a.httpClient = httpClient
-	a.rawTLSConfig = rawTLSConfig
-	a.mu.Unlock()
-	closeIdleHTTPClient(oldHTTPClient)
+	oldControlHTTPClient := l.controlHTTPClient
+	l.controlHTTPClient = controlHTTPClient
+	l.controlTLSConfig = controlTLSConfig
+	l.mu.Unlock()
+	closeIdleHTTPClient(oldControlHTTPClient)
 
 	return nil
 }
 
-func (a *apiClient) reportedIP(ctx context.Context) string {
-	if a.resolvedPublicIP == "" {
-		a.resolvedPublicIP = utils.ResolvePublicIP(ctx)
+func (l *listener) reportedIP(ctx context.Context) string {
+	l.mu.Lock()
+	if l.resolvedPublicIP != "" {
+		ip := l.resolvedPublicIP
+		l.mu.Unlock()
+		return ip
 	}
-	return a.resolvedPublicIP
+	l.mu.Unlock()
+
+	ip := utils.ResolvePublicIP(ctx)
+	l.mu.Lock()
+	if l.resolvedPublicIP == "" {
+		l.resolvedPublicIP = ip
+	}
+	ip = l.resolvedPublicIP
+	l.mu.Unlock()
+	return ip
 }
 
-func (a *apiClient) ensureCompatible(ctx context.Context, httpClient *http.Client) error {
+func (l *listener) ensureCompatible(ctx context.Context, controlHTTPClient *http.Client) error {
+	l.mu.Lock()
+	relayURL := l.relayURL
+	l.mu.Unlock()
+	if relayURL == nil {
+		return errors.New("relay url is unavailable")
+	}
+
 	var resp types.DomainResponse
-	if err := utils.HTTPDoAPIPath(ctx, httpClient, a.baseURL, http.MethodGet, types.PathSDKDomain, nil, nil, &resp); err != nil {
+	if err := utils.HTTPDoAPIPath(ctx, controlHTTPClient, relayURL, http.MethodGet, types.PathSDKDomain, nil, nil, &resp); err != nil {
 		err = fmt.Errorf("check relay compatibility: %w", err)
 		var netErr net.Error
 		var apiErr *types.APIRequestError
@@ -236,86 +190,73 @@ func (a *apiClient) ensureCompatible(ctx context.Context, httpClient *http.Clien
 	return nil
 }
 
-func (a *apiClient) renewLease(ctx context.Context, ttl time.Duration) error {
-	if err := a.ensureHTTPClient(ctx); err != nil {
-		return err
+func (l *listener) renewRegisteredLease(ctx context.Context, ttl time.Duration, accessToken string) (types.RenewResponse, error) {
+	if err := l.ensureControlHTTPClient(ctx); err != nil {
+		return types.RenewResponse{}, err
 	}
 
-	a.mu.RLock()
-	httpClient := a.httpClient
-	accessToken := a.accessToken
-	a.mu.RUnlock()
-	if httpClient == nil {
-		return errors.New("relay http client is unavailable")
-	}
-	if strings.TrimSpace(accessToken) == "" {
-		return errors.New("access token is not available")
+	l.mu.Lock()
+	controlHTTPClient := l.controlHTTPClient
+	relayURL := l.relayURL
+	l.mu.Unlock()
+	if controlHTTPClient == nil {
+		return types.RenewResponse{}, errors.New("relay http client is unavailable")
 	}
 
 	var resp types.RenewResponse
-	if err := utils.HTTPDoAPIPath(ctx, httpClient, a.baseURL, http.MethodPost, types.PathSDKRenew, types.RenewRequest{
+	if err := utils.HTTPDoAPIPath(ctx, controlHTTPClient, relayURL, http.MethodPost, types.PathSDKRenew, types.RenewRequest{
 		AccessToken: accessToken,
 		TTL:         int(ttl / time.Second),
-		ReportedIP:  a.reportedIP(ctx),
+		ReportedIP:  l.reportedIP(ctx),
 	}, nil, &resp); err != nil {
-		return err
+		return types.RenewResponse{}, err
 	}
-	resp.AccessToken = strings.TrimSpace(resp.AccessToken)
-	if resp.AccessToken == "" {
-		return errors.New("relay did not return renewed access token")
-	}
-
-	a.mu.Lock()
-	if a.accessToken == accessToken {
-		a.accessToken = resp.AccessToken
-		a.expiresAt = resp.ExpiresAt
-	}
-	a.mu.Unlock()
-	return nil
+	return resp, nil
 }
 
-func (a *apiClient) unregisterLease(ctx context.Context) error {
-	if err := a.ensureHTTPClient(ctx); err != nil {
+func (l *listener) unregisterLease(ctx context.Context, accessToken string) error {
+	if err := l.ensureControlHTTPClient(ctx); err != nil {
 		return err
 	}
-	a.mu.RLock()
-	httpClient := a.httpClient
-	accessToken := a.accessToken
-	a.mu.RUnlock()
-	if httpClient == nil {
+	l.mu.Lock()
+	controlHTTPClient := l.controlHTTPClient
+	relayURL := l.relayURL
+	l.mu.Unlock()
+	if controlHTTPClient == nil {
 		return errors.New("relay http client is unavailable")
 	}
-	return utils.HTTPDoAPIPath(ctx, httpClient, a.baseURL, http.MethodPost, types.PathSDKUnregister, types.UnregisterRequest{
+	return utils.HTTPDoAPIPath(ctx, controlHTTPClient, relayURL, http.MethodPost, types.PathSDKUnregister, types.UnregisterRequest{
 		AccessToken: accessToken,
 	}, nil, nil)
 }
 
-func (a *apiClient) openReverseSession(ctx context.Context) (net.Conn, error) {
-	if err := a.ensureHTTPClient(ctx); err != nil {
+func (l *listener) openReverseSession(ctx context.Context, accessToken string) (net.Conn, error) {
+	if err := l.ensureControlHTTPClient(ctx); err != nil {
 		return nil, err
 	}
-	a.mu.RLock()
-	rawTLSConfig := a.rawTLSConfig
-	accessToken := a.accessToken
-	a.mu.RUnlock()
-	if rawTLSConfig == nil {
+	l.mu.Lock()
+	controlTLSConfig := l.controlTLSConfig
+	relayURL := l.relayURL
+	dialTimeout := l.dialTimeout
+	l.mu.Unlock()
+	if controlTLSConfig == nil {
 		return nil, errors.New("relay tls config is unavailable")
 	}
 
 	dialer := &tls.Dialer{
-		NetDialer: &net.Dialer{Timeout: a.dialTimeout},
-		Config:    rawTLSConfig.Clone(),
+		NetDialer: &net.Dialer{Timeout: dialTimeout},
+		Config:    controlTLSConfig.Clone(),
 	}
 
-	conn, err := dialer.DialContext(ctx, "tcp", utils.EnsurePort(a.baseURL.Host))
+	conn, err := dialer.DialContext(ctx, "tcp", utils.EnsurePort(relayURL.Host))
 	if err != nil {
 		return nil, err
 	}
 
 	req := &http.Request{
 		Method: http.MethodGet,
-		URL:    utils.ResolveAPIURL(a.baseURL, types.PathSDKConnect),
-		Host:   a.baseURL.Host,
+		URL:    utils.ResolveAPIURL(relayURL, types.PathSDKConnect),
+		Host:   relayURL.Host,
 		Header: make(http.Header),
 	}
 	req.Header.Set(types.HeaderAccessToken, accessToken)
@@ -367,20 +308,20 @@ func (c *bufferedConn) Read(p []byte) (int, error) {
 }
 
 // openQUICSession opens a QUIC connection to the relay for datagram transport.
-func (a *apiClient) openQUICSession(ctx context.Context, accessToken string) (*quic.Conn, error) {
-	if err := a.ensureHTTPClient(ctx); err != nil {
+func (l *listener) openQUICSession(ctx context.Context, accessToken string, sniPort int) (*quic.Conn, error) {
+	if err := l.ensureControlHTTPClient(ctx); err != nil {
 		return nil, err
 	}
 
-	a.mu.RLock()
-	rawTLSConfig := a.rawTLSConfig
-	sniPort := a.sniPort
-	a.mu.RUnlock()
-	if rawTLSConfig == nil {
+	l.mu.Lock()
+	controlTLSConfig := l.controlTLSConfig
+	relayURL := l.relayURL
+	l.mu.Unlock()
+	if controlTLSConfig == nil {
 		return nil, errors.New("relay tls config is unavailable")
 	}
 
-	tlsConf := rawTLSConfig.Clone()
+	tlsConf := controlTLSConfig.Clone()
 	tlsConf.NextProtos = []string{"portal-tunnel"}
 
 	quicConf := &quic.Config{
@@ -389,12 +330,9 @@ func (a *apiClient) openQUICSession(ctx context.Context, accessToken string) (*q
 		MaxIdleTimeout:  60 * time.Second,
 	}
 
-	if sniPort <= 0 {
-		return nil, errors.New("sni port is not available")
-	}
-	host := strings.TrimSpace(a.baseURL.Hostname())
+	host := strings.TrimSpace(relayURL.Hostname())
 	if host == "" {
-		host = strings.TrimSpace(a.baseURL.Host)
+		host = strings.TrimSpace(relayURL.Host)
 	}
 	dialAddr := net.JoinHostPort(host, fmt.Sprintf("%d", sniPort))
 	conn, err := quic.DialAddr(ctx, dialAddr, tlsConf, quicConf)
