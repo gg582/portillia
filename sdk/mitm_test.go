@@ -27,7 +27,7 @@ func TestMITMProbeConnMatchesExporter(t *testing.T) {
 	defer closeMITMProbeTLSConn(serverConn)
 
 	listener := &listener{}
-	listener.mitmManager = newMITMManager(context.Background(), listener)
+	listener.mitmManager = newMITMManager(context.Background(), listener, false)
 
 	nonce := make([]byte, 16)
 	if _, err := rand.Read(nonce); err != nil {
@@ -87,7 +87,7 @@ func TestMITMProbeConnDetectsExporterMismatch(t *testing.T) {
 	defer closeMITMProbeTLSConn(serverConn)
 
 	listener := &listener{}
-	listener.mitmManager = newMITMManager(context.Background(), listener)
+	listener.mitmManager = newMITMManager(context.Background(), listener, false)
 
 	nonce := make([]byte, 16)
 	if _, err := rand.Read(nonce); err != nil {
@@ -145,7 +145,7 @@ func TestMITMProbeConnPassesThroughNormalTraffic(t *testing.T) {
 	defer closeMITMProbeTLSConn(serverConn)
 
 	listener := &listener{}
-	listener.mitmManager = newMITMManager(context.Background(), listener)
+	listener.mitmManager = newMITMManager(context.Background(), listener, false)
 
 	type handleResult struct {
 		conn    net.Conn
@@ -216,10 +216,9 @@ func TestMITMProbeDetectionBansListener(t *testing.T) {
 				close(doneCh)
 			}
 		},
-		doneCh:  doneCh,
-		banMITM: true,
+		doneCh: doneCh,
 	}
-	listener.mitmManager = newMITMManager(context.Background(), listener)
+	listener.mitmManager = newMITMManager(context.Background(), listener, true)
 
 	listener.mitmManager.logResult(MITMProbeReport{
 		RelayURL: relayURL.String(),
@@ -232,8 +231,10 @@ func TestMITMProbeDetectionBansListener(t *testing.T) {
 			t.Fatal("relay still active after mitm detection")
 		}
 	}
-	if !listener.closed() {
-		t.Fatal("listener.closed() = false, want true")
+	select {
+	case <-listener.doneCh:
+	default:
+		t.Fatal("listener.doneCh is open, want closed")
 	}
 }
 
@@ -248,9 +249,8 @@ func TestMITMProbeDetectionWarnsWithoutBanningListener(t *testing.T) {
 		relayURL: relayURL,
 		relaySet: mustRelaySet(t, relayURL.String()),
 		doneCh:   doneCh,
-		banMITM:  false,
 	}
-	listener.mitmManager = newMITMManager(context.Background(), listener)
+	listener.mitmManager = newMITMManager(context.Background(), listener, false)
 
 	listener.mitmManager.logResult(MITMProbeReport{
 		RelayURL: relayURL.String(),
@@ -265,8 +265,10 @@ func TestMITMProbeDetectionWarnsWithoutBanningListener(t *testing.T) {
 	if len(activeRelayURLs) != 1 || activeRelayURLs[0] != relayURL.String() {
 		t.Fatalf("ActiveRelayURLs() = %v, want [%q]", activeRelayURLs, relayURL.String())
 	}
-	if listener.closed() {
-		t.Fatal("listener.closed() = true, want false")
+	select {
+	case <-listener.doneCh:
+		t.Fatal("listener.doneCh is closed, want open")
+	default:
 	}
 }
 
@@ -279,7 +281,7 @@ func TestMITMProbeDialAddressUsesRelayHostForLocalRelay(t *testing.T) {
 	listener := &listener{
 		relayURL: relayURL,
 	}
-	listener.mitmManager = newMITMManager(context.Background(), listener)
+	listener.mitmManager = newMITMManager(context.Background(), listener, false)
 
 	got, err := listener.mitmManager.probeDialAddress("https://bravo-gecko-disco.localhost:4017")
 	if err != nil {
@@ -299,7 +301,7 @@ func TestMITMProbeDialAddressUsesPublicURLForRemoteRelay(t *testing.T) {
 	listener := &listener{
 		relayURL: relayURL,
 	}
-	listener.mitmManager = newMITMManager(context.Background(), listener)
+	listener.mitmManager = newMITMManager(context.Background(), listener, false)
 
 	got, err := listener.mitmManager.probeDialAddress("https://bravo-gecko-disco.example")
 	if err != nil {

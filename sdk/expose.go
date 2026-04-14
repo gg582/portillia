@@ -115,7 +115,7 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 		tcpEnabled:      cfg.TCPEnabled,
 		banMITM:         cfg.BanMITM,
 		maxActiveRelays: cfg.MaxActiveRelays,
-		metadata:        cfg.Metadata.Copy(),
+		metadata:        cfg.Metadata,
 		accepted:        make(chan net.Conn, max(len(relayURLs)*defaultReadyTarget*2, 1)),
 		datagrams:       make(chan types.DatagramFrame, max(len(relayURLs)*32, 1)),
 		relaySet:        discovery.NewRelaySet(relayURLs),
@@ -160,7 +160,7 @@ func (e *Exposure) Addr() net.Addr {
 }
 
 func (e *Exposure) Identity() types.Identity {
-	return e.identity.Copy()
+	return e.identity
 }
 
 func (e *Exposure) AcceptDatagram() (types.DatagramFrame, error) {
@@ -414,12 +414,12 @@ func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
 			retryCount = 0
 		}
 		listener, err := newListener(context.Background(), relayURL, listenerConfig{
-			Identity:   e.identity.Copy(),
+			Identity:   e.identity,
 			UDPEnabled: e.udpEnabled,
 			TCPEnabled: e.tcpEnabled,
 			BanMITM:    e.banMITM,
 			RetryCount: retryCount,
-			Metadata:   e.metadata.Copy(),
+			Metadata:   e.metadata,
 			relaySet:   e.relaySet,
 		})
 		if err != nil {
@@ -485,7 +485,7 @@ func (e *Exposure) runListenerAcceptLoop(listener *listener) {
 					log.Warn().
 						Err(err).
 						Str("relay_url", relayURL).
-						Str("address", listener.address()).
+						Str("address", listener.identity.Address).
 						Msg("datagram accept failed")
 					return
 				}
@@ -509,7 +509,12 @@ func (e *Exposure) runListenerAcceptLoop(listener *listener) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			if listener.closed() || errors.Is(err, net.ErrClosed) {
+			select {
+			case <-listener.doneCh:
+				return
+			default:
+			}
+			if errors.Is(err, net.ErrClosed) {
 				return
 			}
 			log.Warn().Err(err).Str("relay_url", relayURL).Msg("exposure listener accept failed")
