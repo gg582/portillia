@@ -20,11 +20,7 @@ import (
 )
 
 // Exposure owns the lifecycle of one or more relay listeners and accepts
-// traffic from all of them through one net.Listener. The SDK is a pure relay
-// client: it never gossips its own descriptor into the discovery mesh and
-// never serves the /discovery endpoint. When SDK discovery is enabled, the
-// exposure resolves registry seed relays and consumes discovery results from
-// attached relays.
+// traffic from all of them through one net.Listener.
 type Exposure struct {
 	cancel context.CancelFunc
 	done   <-chan struct{}

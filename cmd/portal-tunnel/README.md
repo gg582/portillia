@@ -75,6 +75,7 @@ portal expose --name myapp \
 - `--discovery=false` disables the public registry seed list and the runtime relay discovery expansion loop for that run. With `--discovery=false`, only the explicit `--relays` values are used.
 - `--ban-mitm` enables strict rejection when the TLS self-probe detects termination in the path.
 - `--tcp` requests a dedicated TCP port on the relay for raw TCP services that do not use TLS (e.g., Minecraft, game servers).
+- `--udp` requests a public UDP port on the relay and forwards datagrams to `--udp-addr` or the primary target.
 
 Flags:
 
@@ -84,6 +85,7 @@ Flags:
 --max-active-relays  Maximum number of auto-selected relays; explicit --relays are always included
 --ban-mitm        Ban relay when the MITM self-probe detects TLS termination
 --identity-path   Identity JSON file path; created automatically when missing
+--identity-json   Identity JSON payload; overrides --identity-path contents and is persisted there when both are set
 --name            Public hostname prefix (single DNS label); auto-generated when omitted
 --description     Service description metadata
 --tags            Service tags metadata (comma-separated)
@@ -91,6 +93,8 @@ Flags:
 --owner           Service owner metadata
 --hide            Hide service from relay listing screens
 --tcp        Request a dedicated TCP port on the relay for raw TCP services (no TLS)
+--udp        Enable public UDP relay in addition to the default stream path
+--udp-addr   Local UDP target address; defaults to the primary target when --udp is enabled
 --http-route      HTTP route mapping in PATH=UPSTREAM form; repeat for multiple routes
 ```
 

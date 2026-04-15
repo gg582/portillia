@@ -1,6 +1,7 @@
 package portal
 
 import (
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -8,6 +9,8 @@ import (
 	"time"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/gosuda/portal-tunnel/v2/portal/policy"
 )
 
 type proxy struct {
@@ -18,32 +21,33 @@ type proxy struct {
 	tcpLoadBytes int64
 }
 
-func (p *proxy) Bridge(left, right net.Conn) {
+func (p *proxy) bridge(left, right net.Conn, identityKey string, bpsManager *policy.BPSManager) {
 	p.activeConns.Add(1)
 	defer p.activeConns.Add(-1)
 
 	defer left.Close()
 	defer right.Close()
 
+	throttled := bpsManager != nil && bpsManager.IdentityBPS(identityKey) > 0
 	var group errgroup.Group
 	group.Go(func() error {
-		_, err := io.Copy(&countingConn{Conn: right, bytes: &p.tcpBytes}, left)
+		err := p.copy(right, left, identityKey, bpsManager, throttled)
 		closeWrite(right)
 		return err
 	})
 	group.Go(func() error {
-		_, err := io.Copy(&countingConn{Conn: left, bytes: &p.tcpBytes}, right)
+		err := p.copy(left, right, identityKey, bpsManager, throttled)
 		closeWrite(left)
 		return err
 	})
 	_ = group.Wait()
 }
 
-func (p *proxy) ActiveConns() int64 {
+func (p *proxy) activeConnectionCount() int64 {
 	return p.activeConns.Load()
 }
 
-func (p *proxy) CurrentTCPBPS(now time.Time) float64 {
+func (p *proxy) currentTCPBPS(now time.Time) float64 {
 	totalTCPBytes := p.tcpBytes.Load()
 
 	p.tcpLoadMu.Lock()
@@ -63,6 +67,46 @@ func (p *proxy) CurrentTCPBPS(now time.Time) float64 {
 	}
 
 	return 0
+}
+
+func (p *proxy) copy(dst, src net.Conn, identityKey string, bpsManager *policy.BPSManager, throttled bool) error {
+	// fast path
+	if !throttled {
+		_, err := io.Copy(&countingConn{Conn: dst, bytes: &p.tcpBytes}, src)
+		return err
+	}
+
+	buf := make([]byte, 32*1024)
+	for {
+		nr, readErr := src.Read(buf)
+		if nr > 0 {
+			data := buf[:nr]
+			for len(data) > 0 {
+				chunkSize := len(data)
+				if bpsManager != nil {
+					chunkSize = bpsManager.ThrottleIdentityBPS(identityKey, chunkSize)
+				}
+
+				n, err := dst.Write(data[:chunkSize])
+				if n > 0 {
+					p.tcpBytes.Add(int64(n))
+					data = data[n:]
+				}
+				if err != nil {
+					return err
+				}
+				if n == 0 {
+					return io.ErrShortWrite
+				}
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return nil
+			}
+			return readErr
+		}
+	}
 }
 
 type countingConn struct {
