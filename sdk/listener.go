@@ -160,7 +160,7 @@ func (l *listener) run(ctx context.Context) {
 				return
 			}
 			retries++
-			if !l.waitRetry(ctx, "lease registration", err, retries) {
+			if !l.waitRetry(ctx, "lease registration", err, retries, 0) {
 				_ = l.Close()
 				return
 			}
@@ -187,6 +187,12 @@ func (l *listener) run(ctx context.Context) {
 				_ = lease.tlsCloser.Close()
 			}
 			l.resetTransport()
+			relayURL := l.relayURL.String()
+			log.Debug().
+				Err(err).
+				Str("relay_url", relayURL).
+				Str("address", l.identity.Address).
+				Msg("lease refresh required; re-registering")
 			continue
 		}
 
@@ -391,9 +397,10 @@ func (l *listener) runLease(ctx context.Context) error {
 
 	errCh := make(chan error, max(l.readyTarget, 1)+1)
 	if l.stream != nil && l.readyTarget > 0 {
-		for range l.readyTarget {
+		for sessionSlot := range l.readyTarget {
+			sessionSlot++
 			go func() {
-				if err := l.runReverseSessionLoop(leaseCtx, lease.tlsConfig); err != nil {
+				if err := l.runReverseSessionLoop(leaseCtx, lease.tlsConfig, sessionSlot); err != nil {
 					select {
 					case errCh <- err:
 					case <-leaseCtx.Done():
@@ -423,7 +430,7 @@ func (l *listener) runLease(ctx context.Context) error {
 	}
 }
 
-func (l *listener) runReverseSessionLoop(ctx context.Context, tlsConfig *tls.Config) error {
+func (l *listener) runReverseSessionLoop(ctx context.Context, tlsConfig *tls.Config, sessionSlot int) error {
 	if l.stream == nil {
 		return nil
 	}
@@ -436,7 +443,7 @@ func (l *listener) runReverseSessionLoop(ctx context.Context, tlsConfig *tls.Con
 				return nil
 			}
 			retries++
-			if !l.waitRetry(ctx, "reverse session connect", err, retries) {
+			if !l.waitRetry(ctx, "reverse session connect", err, retries, sessionSlot) {
 				return err
 			}
 			continue
@@ -452,7 +459,7 @@ func (l *listener) runReverseSessionLoop(ctx context.Context, tlsConfig *tls.Con
 			retries = 0
 		default:
 			retries++
-			if !l.waitRetry(ctx, "reverse session connect", err, retries) {
+			if !l.waitRetry(ctx, "reverse session connect", err, retries, sessionSlot) {
 				return err
 			}
 		}
@@ -679,7 +686,7 @@ func (l *listener) runRenewLoop(ctx context.Context) error {
 			}
 
 			retries++
-			if !l.waitRetry(ctx, "lease renewal", err, retries) {
+			if !l.waitRetry(ctx, "lease renewal", err, retries, 0) {
 				return err
 			}
 		}
@@ -793,7 +800,7 @@ func (l *listener) registerAndConfigure(ctx context.Context) error {
 	return nil
 }
 
-func (l *listener) waitRetry(ctx context.Context, operation string, err error, retries int) bool {
+func (l *listener) waitRetry(ctx context.Context, operation string, err error, retries, reverseSessionSlot int) bool {
 	if ctx.Err() != nil {
 		return false
 	}
@@ -807,29 +814,28 @@ func (l *listener) waitRetry(ctx context.Context, operation string, err error, r
 		Str("operation", operation).
 		Str("address", l.identity.Address).
 		Logger()
+	if reverseSessionSlot > 0 {
+		logger = logger.With().Int("reverse_session_slot", reverseSessionSlot).Logger()
+	}
 
 	if l.retryCount > 0 && retries > l.retryCount {
 		if l.relaySet != nil && relayURL != "" {
 			l.relaySet.UnconfirmRelayURL(relayURL)
 			l.relaySet.RecordRelayFailure(relayURL, err, 1)
 		}
-		if operation != "lease renewal" {
-			logger.Error().
-				Err(err).
-				Int("retry_count", l.retryCount).
-				Msg("retry budget exhausted")
-		}
+		logger.Error().
+			Err(err).
+			Int("retry_count", l.retryCount).
+			Msg("retry budget exhausted")
 		return false
 	}
 
-	if operation != "lease renewal" {
-		logger.Debug().
-			Err(err).
-			Int("retry_attempt", retries).
-			Int("retry_count", l.retryCount).
-			Dur("retry_wait", l.retryWait).
-			Msg("operation failed; retrying")
-	}
+	logger.Debug().
+		Err(err).
+		Int("retry_attempt", retries).
+		Int("retry_count", l.retryCount).
+		Dur("retry_wait", l.retryWait).
+		Msg("operation failed; retrying")
 
 	return utils.SleepOrDone(ctx, l.retryWait)
 }
