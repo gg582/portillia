@@ -9,7 +9,7 @@ import Mermaid from '$lib/components/Mermaid.svelte'
 
 # API Reference
 
-This page provides a complete reference for the Portal relay server HTTP API. All endpoints are served over HTTPS with keyless TLS.
+This page provides a complete reference for the Portal relay server HTTP API. Control-plane endpoints are served over the relay API HTTPS listener; tenant TLS is handled separately by the SDK using the relay's keyless signing endpoint.
 
 ## Response Envelope
 
@@ -106,7 +106,7 @@ Admin clients authenticate using a shared secret key:
 | `GET` | `/healthz` | Health check | None |
 | `GET` | `/discovery` | Relay discovery | None |
 | `POST` | `/discovery/announce` | Relay discovery self-announce | Signed Descriptor |
-| `GET` | `/v1/sign` | Keyless TLS signing | None |
+| `POST` | `/v1/sign` | Keyless TLS signing | None |
 | `GET` | `/thumbnail/{hostname}` | Cached thumbnail screenshot | None |
 | `GET` | `/tunnel/status` | Tunnel connection status | Access Token |
 
@@ -167,7 +167,7 @@ Submits this relay's signed descriptor to a bootstrap relay so registry-external
 | `protocol_version` | `string` | Discovery protocol version |
 | `accepted` | `boolean` | Whether the descriptor was accepted |
 
-### `GET /v1/sign`
+### `POST /v1/sign`
 
 Keyless TLS signing endpoint. Used by the relay's keyless TLS infrastructure. Only available when the API server is configured with a TLS private key.
 
