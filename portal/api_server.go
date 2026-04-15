@@ -163,8 +163,8 @@ func (s *Server) signedRelayDescriptor(now time.Time) (types.RelayDescriptor, er
 	} else {
 		now = now.UTC()
 	}
-	activeConns := float64(s.proxy.ActiveConns())
-	tcpTrafficBPS := s.proxy.CurrentTCPBPS(now)
+	activeConns := float64(s.proxy.activeConnectionCount())
+	tcpTrafficBPS := s.proxy.currentTCPBPS(now)
 	ingressAddr := s.identity.Name
 	if s.cfg.SNIPort != 0 && s.cfg.SNIPort != 443 {
 		ingressAddr = fmt.Sprintf("%s:%d", ingressAddr, s.cfg.SNIPort)
@@ -263,10 +263,24 @@ func (s *Server) handleRelayDiscoveryAnnounce(w http.ResponseWriter, r *http.Req
 	// Self-announce guard: the relay's own URL is established locally, not
 	// gossiped through the announce endpoint. Reject loopback / own-host
 	// announces to prevent self-amplification or misconfiguration loops.
-	announceURL, parseErr := url.Parse(desc.APIHTTPSAddr)
-	if parseErr == nil && announceURL != nil {
-		if utils.IsLocalRelayHost(announceURL.Hostname()) {
-			utils.WriteAPIError(w, http.StatusBadRequest, types.APIErrorCodeInvalidRequest, "self-announce rejected")
+	announceURL, err := url.Parse(strings.TrimSpace(desc.APIHTTPSAddr))
+	if err == nil && announceURL != nil {
+		host := utils.NormalizeHostname(announceURL.Hostname())
+		if utils.IsLocalRelayHost(host) {
+			utils.WriteAPIError(w, http.StatusBadRequest, types.APIErrorCodeInvalidRequest,
+				fmt.Sprintf("self-announce rejected: host %q is local-only", host))
+			return
+		}
+		if selfURL, err := utils.NormalizeRelayURL(s.cfg.PortalURL); err == nil {
+			if announceRelayURL, err := utils.NormalizeRelayURL(desc.APIHTTPSAddr); err == nil && announceRelayURL == selfURL {
+				utils.WriteAPIError(w, http.StatusBadRequest, types.APIErrorCodeInvalidRequest,
+					fmt.Sprintf("self-announce rejected: %q matches receiving relay url", announceRelayURL))
+				return
+			}
+		}
+		if host != "" && host == utils.NormalizeHostname(s.identity.Name) {
+			utils.WriteAPIError(w, http.StatusBadRequest, types.APIErrorCodeInvalidRequest,
+				fmt.Sprintf("self-announce rejected: host %q matches receiving relay host", host))
 			return
 		}
 	}
@@ -684,7 +698,9 @@ func (s *Server) registerLease(req types.RegisterChallengeRequest, clientIP, rep
 			}
 			return types.RegisterResponse{}, err
 		}
-		record.tcpPort = transport.NewRelayTCPPort(identityKey, port, stream)
+		record.tcpPort = transport.NewRelayTCPPort(identityKey, port, stream, func(left, right net.Conn) {
+			s.proxy.bridge(left, right, identityKey, s.registry.policy.BPSManager())
+		})
 		record.tcpPorts = s.tcpPorts
 	}
 

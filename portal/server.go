@@ -459,12 +459,12 @@ func (s *Server) runSNIListener(ctx context.Context) error {
 						_ = wrappedConn.Close()
 						return
 					}
-					s.proxy.Bridge(wrappedConn, upstream)
+					s.proxy.bridge(wrappedConn, upstream, "", nil)
 					return
 				}
 
 				record, ok := s.registry.Lookup(serverName)
-				if !ok || record == nil || time.Now().After(record.ExpiresAt) || !s.registry.policy.IsIdentityRoutable(record.Key()) || record.stream == nil {
+				if !ok || record == nil || time.Now().After(record.ExpiresAt) || record.stream == nil || !s.registry.policy.IsIdentityRoutable(record.Key()) {
 					_ = wrappedConn.Close()
 					return
 				}
@@ -478,7 +478,7 @@ func (s *Server) runSNIListener(ctx context.Context) error {
 					return
 				}
 
-				s.proxy.Bridge(wrappedConn, session)
+				s.proxy.bridge(wrappedConn, session, record.Key(), s.registry.policy.BPSManager())
 			}(conn)
 		case errors.Is(err, net.ErrClosed):
 			return nil
