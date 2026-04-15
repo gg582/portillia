@@ -59,6 +59,14 @@ type keyIndexEntry struct {
 	TombstoneUntil time.Time
 }
 
+type upsertResult int
+
+const (
+	upsertRejected upsertResult = iota
+	upsertAccepted
+	upsertIgnored
+)
+
 func NewRelaySet(bootstrapRelayURLs []string) *RelaySet {
 	set := &RelaySet{
 		relays:   make(map[string]RelayState),
@@ -72,7 +80,8 @@ func NewRelaySet(bootstrapRelayURLs []string) *RelaySet {
 // upsertDescriptorLocked applies a fully-merged RelayState to s.relays and
 // updates the keyIndex. The caller MUST already hold s.mu as a write lock.
 //
-// The returned bool indicates whether the descriptor was accepted. The
+// The returned status indicates whether the descriptor was accepted, ignored
+// as an already-superseded same-URL/same-identity announce, or rejected. The
 // upsert is rejected when:
 //
 //  1. The signing identity has previously published a strictly newer
@@ -90,10 +99,10 @@ func NewRelaySet(bootstrapRelayURLs []string) *RelaySet {
 // Equal IssuedAt values (idempotent re-broadcast) are accepted because the
 // only mutation is the merged local telemetry on the existing URL slot,
 // which never contradicts the cryptographic identity of the descriptor.
-func (s *RelaySet) upsertDescriptorLocked(record RelayState, now time.Time, allowCrossIdentityTakeover bool) bool {
+func (s *RelaySet) upsertDescriptorLocked(record RelayState, now time.Time, allowCrossIdentityTakeover bool) upsertResult {
 	relayURL := record.Descriptor.APIHTTPSAddr
 	if relayURL == "" {
-		return false
+		return upsertRejected
 	}
 	address := strings.ToLower(strings.TrimSpace(record.Descriptor.Address))
 	if address != "" {
@@ -104,7 +113,14 @@ func (s *RelaySet) upsertDescriptorLocked(record RelayState, now time.Time, allo
 			if !prev.TombstoneUntil.IsZero() && now.After(prev.TombstoneUntil) {
 				delete(s.keyIndex, address)
 			} else if record.Descriptor.IssuedAt.Before(prev.IssuedAt) {
-				return false
+				if existing, ok := s.relays[relayURL]; ok {
+					existingAddress := strings.ToLower(strings.TrimSpace(existing.Descriptor.Address))
+					if existingAddress == address && existing.Descriptor.ExpiresAt.After(now) &&
+						!existing.Descriptor.IssuedAt.Before(record.Descriptor.IssuedAt) {
+						return upsertIgnored
+					}
+				}
+				return upsertRejected
 			}
 		}
 	}
@@ -113,7 +129,7 @@ func (s *RelaySet) upsertDescriptorLocked(record RelayState, now time.Time, allo
 			existingAddress := strings.ToLower(strings.TrimSpace(existing.Descriptor.Address))
 			if existingAddress != "" && address != "" && existingAddress != address {
 				if !existing.Descriptor.ExpiresAt.IsZero() && existing.Descriptor.ExpiresAt.After(now) {
-					return false
+					return upsertRejected
 				}
 			}
 		}
@@ -135,7 +151,7 @@ func (s *RelaySet) upsertDescriptorLocked(record RelayState, now time.Time, allo
 			TombstoneUntil: tombstoneUntil,
 		}
 	}
-	return true
+	return upsertAccepted
 }
 
 func (s *RelaySet) SetRelayPolicy(policy RelayPolicy) {
@@ -403,11 +419,13 @@ func (s *RelaySet) ApplyRelayDiscoveryResponse(targetURL string, resp types.Disc
 			record.nextDirectRefreshAt = time.Time{}
 		}
 
-		if !s.upsertDescriptorLocked(record, now, isAuthoritativeTarget) {
+		if upsert := s.upsertDescriptorLocked(record, now, isAuthoritativeTarget); upsert != upsertAccepted {
 			// The monotonic-IssuedAt check rejected this descriptor as a
-			// rollback. The cryptographic identity in s.relays is unchanged,
-			// but if we successfully reached the authoritative target we
-			// should still credit it as alive on its existing URL slot.
+			// rollback, or ignored it because a newer same-identity descriptor
+			// for this URL is already present. The cryptographic identity in
+			// s.relays is unchanged, but if we successfully reached the
+			// authoritative target we should still credit it as alive on its
+			// existing URL slot.
 			if isAuthoritativeTarget && hasExistingAtURL {
 				if existingAtURL.consecutiveFailures != 0 || !existingAtURL.nextDirectRefreshAt.IsZero() {
 					existingAtURL.consecutiveFailures = 0
@@ -467,7 +485,8 @@ func (s *RelaySet) RecordDiscoveryRTT(relayURL string, rtt time.Duration, measur
 //  5. After a successful upsert, the LRU cap is enforced; bootstrap and
 //     listener-confirmed entries are pinned.
 //
-// Returns nil iff the descriptor was stored or idempotently refreshed.
+// Returns nil iff the descriptor was stored, idempotently refreshed, or is an
+// older same-URL/same-identity announce already superseded by local state.
 func (s *RelaySet) InsertAnnounced(desc types.RelayDescriptor, now time.Time) error {
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -506,11 +525,15 @@ func (s *RelaySet) InsertAnnounced(desc types.RelayDescriptor, now time.Time) er
 		}
 	}
 
-	if !s.upsertDescriptorLocked(record, now, false) {
+	switch s.upsertDescriptorLocked(record, now, false) {
+	case upsertAccepted:
+		s.enforceCapLocked()
+		return nil
+	case upsertIgnored:
+		return nil
+	case upsertRejected:
 		return errors.New("announced descriptor rejected by rollback or takeover guard")
 	}
-
-	s.enforceCapLocked()
 	return nil
 }
 
