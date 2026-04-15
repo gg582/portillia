@@ -1,6 +1,7 @@
 package portal
 
 import (
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -100,7 +101,7 @@ func (p *proxy) copy(dst, src net.Conn, identityKey string, bpsManager *policy.B
 			}
 		}
 		if readErr != nil {
-			if readErr == io.EOF {
+			if errors.Is(readErr, io.EOF) {
 				return nil
 			}
 			return readErr

@@ -109,7 +109,11 @@ func (r *Refresher) announceSelf(ctx context.Context, descriptor types.RelayDesc
 				Err(err).
 				Str("relay", relayURL).
 				Msg("relay discovery announce failed")
+			continue
 		}
+		log.Info().
+			Str("relay", relayURL).
+			Msg("relay discovery announce succeeded")
 	}
 	return nil
 }
