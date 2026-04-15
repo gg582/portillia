@@ -78,7 +78,7 @@ func TestInsertAnnouncedRejectsUnsigned(t *testing.T) {
 	}
 }
 
-func TestInsertAnnouncedRejectsRollback(t *testing.T) {
+func TestInsertAnnouncedIgnoresSupersededRollback(t *testing.T) {
 	set := NewRelaySet(nil)
 	signing := mustSigningIdentity(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -88,6 +88,28 @@ func TestInsertAnnouncedRejectsRollback(t *testing.T) {
 		t.Fatalf("seed insert error = %v", err)
 	}
 	older := mustSignedDescriptor(t, signing, "relay-roll", relayURL, now.Add(-time.Minute))
+	if err := set.InsertAnnounced(older, now); err != nil {
+		t.Fatalf("superseded insert error = %v", err)
+	}
+
+	states := set.AggregateRelays()
+	if len(states) != 1 {
+		t.Fatalf("len(AggregateRelays()) = %d, want 1", len(states))
+	}
+	if got := states[0].Descriptor.IssuedAt; !got.Equal(newer.IssuedAt) {
+		t.Fatalf("stored issued_at = %v, want %v", got, newer.IssuedAt)
+	}
+}
+
+func TestInsertAnnouncedRejectsRollbackAcrossRelayURL(t *testing.T) {
+	set := NewRelaySet(nil)
+	signing := mustSigningIdentity(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	newer := mustSignedDescriptor(t, signing, "relay-roll", "https://relay-roll-new.example", now)
+	if err := set.InsertAnnounced(newer, now); err != nil {
+		t.Fatalf("seed insert error = %v", err)
+	}
+	older := mustSignedDescriptor(t, signing, "relay-roll", "https://relay-roll-old.example", now.Add(-time.Minute))
 	if err := set.InsertAnnounced(older, now); err == nil {
 		t.Fatal("expected rollback reject")
 	}

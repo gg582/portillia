@@ -869,13 +869,11 @@ export function ServerListView({
                             >
                               {relay.relayURL}
                             </a>
-                            {relayReleaseVersions[relay.relayURL] ? (
-                              <div className="flex shrink-0 items-center gap-2">
-                                <span className="rounded-full bg-background px-2.5 py-1 font-mono text-[11px] font-medium text-text-muted ring-1 ring-border">
-                                  {relayReleaseVersions[relay.relayURL]}
-                                </span>
-                              </div>
-                            ) : null}
+                            <div className="flex shrink-0 items-center gap-2">
+                              <span className="rounded-full bg-background px-2.5 py-1 font-mono text-[11px] font-medium text-text-muted ring-1 ring-border">
+                                {relayReleaseVersions[relay.relayURL] || "offline"}
+                              </span>
+                            </div>
                           </div>
                         ))}
                       </div>
