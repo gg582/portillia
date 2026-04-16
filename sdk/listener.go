@@ -52,7 +52,6 @@ type listener struct {
 	closeOnce sync.Once
 
 	relayURL       *url.URL
-	leaseAPIURL    *url.URL
 	identity       types.Identity
 	metadata       types.LeaseMetadata
 	relaySet       *discovery.RelaySet
@@ -71,9 +70,8 @@ type listener struct {
 	datagram    *transport.ClientDatagram
 	mitmManager *mitmManager
 
-	httpClient      *http.Client
-	leaseHTTPClient *http.Client
-	tlsConfig       *tls.Config
+	httpClient *http.Client
+	tlsConfig  *tls.Config
 
 	leaseMu sync.RWMutex
 	lease   *listenerLease
@@ -101,25 +99,10 @@ func newListener(ctx context.Context, relayURL string, cfg listenerConfig) (*lis
 		cancel()
 		return nil, fmt.Errorf("parse relay url: %w", err)
 	}
-	leaseAPIURL := relayurl
-	if len(cfg.MultiHop) > 0 {
-		normalizedEntryURL, err := utils.NormalizeRelayURL(cfg.MultiHop[0])
-		if err != nil {
-			cancel()
-			return nil, fmt.Errorf("normalize multi-hop entry relay url: %w", err)
-		}
-		leaseAPIURL, err = url.Parse(normalizedEntryURL)
-		if err != nil {
-			cancel()
-			return nil, fmt.Errorf("parse multi-hop entry relay url: %w", err)
-		}
-	}
-
 	l := &listener{
 		cancel:         cancel,
 		doneCh:         listenerCtx.Done(),
 		relayURL:       relayurl,
-		leaseAPIURL:    leaseAPIURL,
 		identity:       cfg.Identity,
 		metadata:       cfg.Metadata,
 		relaySet:       cfg.relaySet,
@@ -247,7 +230,7 @@ func (l *listener) Close() error {
 
 		if lease != nil && lease.hostname != "" && l.identity.Key() != "" && lease.accessToken != "" {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			closeErr = errors.Join(closeErr, l.unregisterLease(ctx, lease.accessToken, lease.hop))
+			closeErr = errors.Join(closeErr, l.unregisterLease(ctx, lease.accessToken, lease.hopRoutes))
 			cancel()
 		}
 		if lease != nil && lease.tlsCloser != nil {
@@ -267,7 +250,7 @@ type listenerLease struct {
 	publicURLBase *url.URL
 	tlsConfig     *tls.Config
 	tlsCloser     io.Closer
-	hop           *types.HopRoute
+	hopRoutes     []types.HopRoute
 }
 
 func (l *listener) clearLease(reason string) *listenerLease {
@@ -720,7 +703,7 @@ func (l *listener) renewLease(ctx context.Context) error {
 	}
 
 	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	resp, err := l.renewRegisteredLease(requestCtx, l.leaseTTL, lease.accessToken, lease.hop)
+	resp, err := l.renewRegisteredLease(requestCtx, l.leaseTTL, lease.accessToken, lease.hopRoutes)
 	cancel()
 	if err != nil {
 		if errors.Is(err, &types.APIRequestError{Code: types.APIErrorCodeLeaseNotFound}) {
@@ -751,7 +734,7 @@ func (l *listener) registerAndConfigure(ctx context.Context) error {
 		return err
 	}
 
-	resp, hop, err := l.registerLease(ctx, l.leaseTTL, l.udpEnabled, l.tcpEnabled)
+	resp, hopRoutes, err := l.registerLease(ctx, l.leaseTTL, l.udpEnabled, l.tcpEnabled)
 	if err != nil {
 		return err
 	}
@@ -761,22 +744,22 @@ func (l *listener) registerAndConfigure(ctx context.Context) error {
 	}
 	registeredIdentity, err := utils.NormalizeIdentity(resp.Identity)
 	if err != nil {
-		_ = l.unregisterLease(context.Background(), resp.AccessToken, hop)
+		_ = l.unregisterLease(context.Background(), resp.AccessToken, hopRoutes)
 		return err
 	}
 	if registeredIdentity.Key() != l.identity.Key() {
-		_ = l.unregisterLease(context.Background(), resp.AccessToken, hop)
+		_ = l.unregisterLease(context.Background(), resp.AccessToken, hopRoutes)
 		return errors.New("relay returned mismatched lease identity")
 	}
 	if l.udpEnabled && !resp.UDPEnabled {
-		_ = l.unregisterLease(context.Background(), resp.AccessToken, hop)
+		_ = l.unregisterLease(context.Background(), resp.AccessToken, hopRoutes)
 		return &types.APIRequestError{
 			Code:    types.APIErrorCodeFeatureUnavailable,
 			Message: "relay did not enable required udp support",
 		}
 	}
 	if l.udpEnabled && resp.SNIPort <= 0 {
-		_ = l.unregisterLease(context.Background(), resp.AccessToken, hop)
+		_ = l.unregisterLease(context.Background(), resp.AccessToken, hopRoutes)
 		return errors.New("relay did not return sni port for udp transport")
 	}
 	keylessURL := strings.TrimSpace(resp.KeylessURL)
@@ -791,7 +774,7 @@ func (l *listener) registerAndConfigure(ctx context.Context) error {
 	}
 	tlsConf, tenantTLSCloser, err := keyless.BuildClientTLSConfig(keylessURL, []string{resp.Hostname})
 	if err != nil {
-		_ = l.unregisterLease(context.Background(), resp.AccessToken, hop)
+		_ = l.unregisterLease(context.Background(), resp.AccessToken, hopRoutes)
 		if tenantTLSCloser != nil {
 			_ = tenantTLSCloser.Close()
 		}
@@ -799,7 +782,7 @@ func (l *listener) registerAndConfigure(ctx context.Context) error {
 	}
 
 	if ctx.Err() != nil {
-		_ = l.unregisterLease(context.Background(), resp.AccessToken, hop)
+		_ = l.unregisterLease(context.Background(), resp.AccessToken, hopRoutes)
 		if tenantTLSCloser != nil {
 			_ = tenantTLSCloser.Close()
 		}
@@ -813,7 +796,7 @@ func (l *listener) registerAndConfigure(ctx context.Context) error {
 		publicURLBase: publicURLBase,
 		tlsConfig:     tlsConf,
 		tlsCloser:     tenantTLSCloser,
-		hop:           hop,
+		hopRoutes:     hopRoutes,
 	}
 	if l.udpEnabled {
 		next.sniPort = resp.SNIPort

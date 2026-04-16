@@ -19,6 +19,7 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/portal/auth"
 	"github.com/gosuda/portal-tunnel/v2/portal/discovery"
 	"github.com/gosuda/portal-tunnel/v2/portal/keyless"
+	"github.com/gosuda/portal-tunnel/v2/portal/overlay"
 	"github.com/gosuda/portal-tunnel/v2/portal/transport"
 	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/gosuda/portal-tunnel/v2/utils"
@@ -111,6 +112,8 @@ func (s *Server) apiHandler(base *http.ServeMux, keylessSignerHandler http.Handl
 			s.handleRenew(w, r)
 		case types.PathSDKUnregister:
 			s.handleUnregister(w, r)
+		case types.PathSDKHop:
+			s.handleHop(w, r)
 		case types.PathSDKConnect:
 			s.handleConnect(w, r)
 		case types.PathDiscovery:
@@ -133,18 +136,6 @@ func (s *Server) apiHandler(base *http.ServeMux, keylessSignerHandler http.Handl
 			keylessSignerHandler.ServeHTTP(w, r)
 		default:
 			base.ServeHTTP(w, r)
-		}
-	})
-}
-
-func (s *Server) hopRegistryHandler() http.Handler {
-	apiHandler := s.apiHandler(nil, nil)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch strings.TrimSpace(r.URL.Path) {
-		case types.PathSDKRegisterChallenge, types.PathSDKRegister, types.PathSDKRenew, types.PathSDKUnregister:
-			apiHandler.ServeHTTP(w, r)
-		default:
-			utils.WriteAPIError(w, http.StatusNotFound, types.APIErrorCodeInvalidRequest, "unsupported hop registry path")
 		}
 	})
 }
@@ -341,30 +332,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if req.Hop != nil {
-		hop := req.Hop
-		req.Hop = hop.Next
-		status, body, err := s.forwardHopRegistry(r.Context(), hop, types.PathSDKRegister, req)
-		if err != nil {
-			writeAPIErrorResponse(w, err)
-			return
-		}
-		if status >= http.StatusOK && status < http.StatusMultipleChoices {
-			var resp struct {
-				ExpiresAt time.Time `json:"expires_at"`
-			}
-			if err := utils.DecodeAPIData(body, &resp); err != nil {
-				utils.WriteAPIError(w, http.StatusBadGateway, types.APIErrorCodeInvalidRequest, err.Error())
-				return
-			}
-			if err := s.registry.RegisterHopRoute(hop, resp.ExpiresAt, time.Now()); err != nil {
-				writeAPIErrorResponse(w, err)
-				return
-			}
-		}
-		utils.WriteRawAPIResponse(w, status, body)
-		return
-	}
 
 	challenge, err := s.registry.consumeVerifiedRegisterChallenge(req)
 	if err != nil {
@@ -401,17 +368,6 @@ func (s *Server) handleRegisterChallenge(w http.ResponseWriter, r *http.Request)
 
 	req, ok := utils.DecodeJSONRequest[types.RegisterChallengeRequest](w, r, defaultControlBodyLimit)
 	if !ok {
-		return
-	}
-	if req.Hop != nil {
-		hop := req.Hop
-		req.Hop = hop.Next
-		status, body, err := s.forwardHopRegistry(r.Context(), hop, types.PathSDKRegisterChallenge, req)
-		if err != nil {
-			writeAPIErrorResponse(w, err)
-			return
-		}
-		utils.WriteRawAPIResponse(w, status, body)
 		return
 	}
 
@@ -466,30 +422,6 @@ func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if req.Hop != nil {
-		hop := req.Hop
-		req.Hop = hop.Next
-		status, body, err := s.forwardHopRegistry(r.Context(), hop, types.PathSDKRenew, req)
-		if err != nil {
-			writeAPIErrorResponse(w, err)
-			return
-		}
-		if status >= http.StatusOK && status < http.StatusMultipleChoices {
-			var resp struct {
-				ExpiresAt time.Time `json:"expires_at"`
-			}
-			if err := utils.DecodeAPIData(body, &resp); err != nil {
-				utils.WriteAPIError(w, http.StatusBadGateway, types.APIErrorCodeInvalidRequest, err.Error())
-				return
-			}
-			if err := s.registry.RegisterHopRoute(hop, resp.ExpiresAt, time.Now()); err != nil {
-				writeAPIErrorResponse(w, err)
-				return
-			}
-		}
-		utils.WriteRawAPIResponse(w, status, body)
-		return
-	}
 
 	claims, err := auth.VerifyLeaseAccessToken(req.AccessToken, s.identity.PublicKey, s.cfg.PortalURL, time.Now().UTC())
 	if err != nil {
@@ -527,20 +459,6 @@ func (s *Server) handleUnregister(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if req.Hop != nil {
-		hop := req.Hop
-		req.Hop = hop.Next
-		status, body, err := s.forwardHopRegistry(r.Context(), hop, types.PathSDKUnregister, req)
-		if err != nil {
-			writeAPIErrorResponse(w, err)
-			return
-		}
-		if status >= http.StatusOK && status < http.StatusMultipleChoices {
-			s.registry.DeleteHopRoute(hop)
-		}
-		utils.WriteRawAPIResponse(w, status, body)
-		return
-	}
 	claims, err := auth.VerifyLeaseAccessToken(req.AccessToken, s.identity.PublicKey, s.cfg.PortalURL, time.Now().UTC())
 	if err != nil {
 		utils.WriteAPIError(w, http.StatusForbidden, types.APIErrorCodeUnauthorized, errUnauthorized.Error())
@@ -568,35 +486,76 @@ func (s *Server) handleUnregister(w http.ResponseWriter, r *http.Request) {
 	utils.WriteAPIData(w, http.StatusOK, map[string]any{})
 }
 
-func (s *Server) forwardHopRegistry(ctx context.Context, route *types.HopRoute, path string, payload any) (int, []byte, error) {
-	if s.hopMux == nil || s.overlay == nil || s.relaySet == nil {
-		return 0, nil, errFeatureUnavailable
+func (s *Server) handleHop(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost, http.MethodDelete:
+	default:
+		utils.MethodNotAllowedError().Write(w)
+		return
 	}
-	if route == nil {
-		return 0, nil, errors.New("hop route is required")
+	if s.hopMux == nil || s.overlay == nil || s.relaySet == nil {
+		utils.WriteAPIError(w, http.StatusServiceUnavailable, types.APIErrorCodeFeatureUnavailable, errFeatureUnavailable.Error())
+		return
+	}
+	if _, ok := s.extractAllowedClientIP(w, r); !ok {
+		return
+	}
+
+	route, ok := utils.DecodeJSONRequest[types.HopRoute](w, r, defaultControlBodyLimit)
+	if !ok {
+		return
+	}
+	route, err := overlay.VerifyHopRoute(r.Method, route)
+	if errors.Is(err, overlay.ErrHopRouteSignatureInvalid) {
+		utils.WriteAPIError(w, http.StatusForbidden, types.APIErrorCodeUnauthorized, "hop route signature is invalid")
+		return
+	}
+	if err != nil {
+		utils.InvalidRequestError(err).Write(w)
+		return
+	}
+	if route.RelayURL != s.cfg.PortalURL {
+		utils.WriteAPIError(w, http.StatusForbidden, types.APIErrorCodeUnauthorized, "hop route relay url does not match receiving relay")
+		return
+	}
+
+	if r.Method == http.MethodDelete {
+		s.registry.DeleteHopRoute(&route)
+		utils.WriteAPIData(w, http.StatusOK, map[string]any{})
+		return
+	}
+
+	now := time.Now().UTC()
+	if !route.ExpiresAt.UTC().After(now) {
+		utils.InvalidRequestError(errors.New("route expiry must be in the future")).Write(w)
+		return
 	}
 	forwardRelay, err := auth.VerifyRelayDescriptor(route.ForwardRelay)
 	if err != nil {
-		return 0, nil, fmt.Errorf("forward relay: %w", err)
+		utils.InvalidRequestError(fmt.Errorf("forward relay: %w", err)).Write(w)
+		return
 	}
 	if !forwardRelay.SupportsOverlayPeer ||
 		strings.TrimSpace(forwardRelay.WireGuardPublicKey) == "" ||
 		strings.TrimSpace(forwardRelay.WireGuardEndpoint) == "" ||
 		strings.TrimSpace(forwardRelay.OverlayIPv4) == "" {
-		return 0, nil, errors.New("forward relay wireguard overlay metadata is required")
+		utils.InvalidRequestError(errors.New("forward relay wireguard overlay metadata is required")).Write(w)
+		return
 	}
-	if err := s.relaySet.InsertAnnounced(forwardRelay, time.Now().UTC()); err != nil {
-		return 0, nil, fmt.Errorf("forward relay: %w", err)
+	route.ForwardRelay = forwardRelay
+	if err := s.relaySet.InsertAnnounced(forwardRelay, now); err != nil {
+		utils.InvalidRequestError(fmt.Errorf("forward relay: %w", err)).Write(w)
+		return
 	}
 	if err := s.overlay.Sync(s.relaySet.OverlayPeerStates()); err != nil {
-		return 0, nil, err
+		utils.WriteAPIError(w, http.StatusInternalServerError, types.APIErrorCodeInternal, err.Error())
+		return
 	}
-
-	status, respBody, err := s.hopMux.OpenRegistry(ctx, forwardRelay.OverlayIPv4, path, payload)
-	if err != nil {
-		return 0, nil, &apiError{types.APIErrorCodeFeatureUnavailable, err.Error(), http.StatusBadGateway}
+	if err := s.registry.RegisterHopRoute(&route, now); err != nil {
+		writeAPIErrorResponse(w, err)
+		return
 	}
-	return status, respBody, nil
+	utils.WriteAPIData(w, http.StatusOK, map[string]any{})
 }
 
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {

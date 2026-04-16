@@ -511,8 +511,8 @@ func (s *Server) runHopMux(ctx context.Context) error {
 		for {
 			stream, err := s.hopMux.Accept(groupCtx)
 			if err != nil {
-				if groupCtx.Err() != nil {
-					return nil
+				if ctxErr := groupCtx.Err(); ctxErr != nil {
+					return ctxErr
 				}
 				return err
 			}
@@ -520,23 +520,6 @@ func (s *Server) runHopMux(ctx context.Context) error {
 				record, ok := s.registry.RecordByHopToken(stream.Token, time.Now())
 				if !ok || !s.bridgeLeaseConn(groupCtx, stream.Conn, record) {
 					_ = stream.Conn.Close()
-				}
-			}(stream)
-		}
-	})
-	group.Go(func() error {
-		registryHandler := s.hopRegistryHandler()
-		for {
-			stream, err := s.hopMux.AcceptRegistry(groupCtx)
-			if err != nil {
-				if groupCtx.Err() != nil {
-					return nil
-				}
-				return err
-			}
-			go func(stream overlay.HopRegistryStream) {
-				if err := stream.ServeRegistryHTTP(groupCtx, s.identity.Name, registryHandler); err != nil {
-					log.Warn().Err(err).Str("path", stream.Path).Msg("respond hop registry stream")
 				}
 			}(stream)
 		}

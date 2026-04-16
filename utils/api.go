@@ -39,15 +39,6 @@ func WriteAPIError(w http.ResponseWriter, status int, code, message string) {
 	})
 }
 
-func WriteRawAPIResponse(w http.ResponseWriter, status int, body []byte) {
-	if status <= 0 {
-		status = http.StatusBadGateway
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
-}
-
 func MethodNotAllowedError() APIErrorResponse {
 	return APIErrorResponse{
 		Status:  http.StatusMethodNotAllowed,

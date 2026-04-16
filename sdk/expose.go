@@ -72,9 +72,18 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 	if err != nil {
 		return nil, err
 	}
-	multiHop, err := utils.NormalizeRelayURLs(cfg.MultiHop...)
-	if err != nil {
-		return nil, fmt.Errorf("normalize multi-hop relay urls: %w", err)
+	var multiHop []string
+	for _, input := range cfg.MultiHop {
+		for _, part := range utils.SplitCSV(input) {
+			relayURL, err := utils.NormalizeRelayURL(part)
+			if err != nil {
+				return nil, fmt.Errorf("normalize multi-hop relay url: %w", err)
+			}
+			if slices.Contains(multiHop, relayURL) {
+				return nil, fmt.Errorf("multi-hop relay url repeated: %s", relayURL)
+			}
+			multiHop = append(multiHop, relayURL)
+		}
 	}
 	if len(multiHop) == 1 {
 		return nil, errors.New("multi-hop requires at least entry and exit relay urls")

@@ -207,15 +207,19 @@ func (r *leaseRegistry) RecordByHopToken(token string, now time.Time) (*leaseRec
 	return nil, false
 }
 
-func (r *leaseRegistry) RegisterHopRoute(route *types.HopRoute, expiresAt, now time.Time) error {
+func (r *leaseRegistry) RegisterHopRoute(route *types.HopRoute, now time.Time) error {
 	if route == nil {
 		return errors.New("hop route is required")
+	}
+	ownerKey, err := utils.AddressFromCompressedPublicKeyHex(route.OwnerPublicKey)
+	if err != nil {
+		return err
 	}
 	matchHostname := utils.NormalizeHostname(route.MatchHostname)
 	matchToken := strings.TrimSpace(route.MatchToken)
 	overlayIPv4 := strings.TrimSpace(route.ForwardRelay.OverlayIPv4)
 	forwardToken := strings.TrimSpace(route.ForwardToken)
-	expiresAt = expiresAt.UTC()
+	expiresAt := route.ExpiresAt.UTC()
 
 	switch {
 	case r == nil:
@@ -238,19 +242,24 @@ func (r *leaseRegistry) RegisterHopRoute(route *types.HopRoute, expiresAt, now t
 	record := &leaseRecord{
 		Hostname:           matchHostname,
 		ExpiresAt:          expiresAt,
+		hopOwnerKey:        ownerKey,
 		hopToken:           matchToken,
 		hopNextOverlayIPv4: overlayIPv4,
 		hopNextToken:       forwardToken,
 	}
 	if matchHostname != "" {
-		if existing := r.lookupLocked(matchHostname); existing != nil && !existing.isHopForward() && now.Before(existing.ExpiresAt) {
-			return errHostnameConflict
+		if existing := r.lookupLocked(matchHostname); existing != nil && now.Before(existing.ExpiresAt) {
+			if !existing.isHopForward() || existing.hopOwnerKey != ownerKey {
+				return errHostnameConflict
+			}
 		}
 		r.recordsByHostname[matchHostname] = record
 		return nil
 	}
-	if existing := r.recordsByHopToken[matchToken]; existing != nil && !existing.isHopForward() && now.Before(existing.ExpiresAt) {
-		return errors.New("hop token conflict")
+	if existing := r.recordsByHopToken[matchToken]; existing != nil && now.Before(existing.ExpiresAt) {
+		if !existing.isHopForward() || existing.hopOwnerKey != ownerKey {
+			return errors.New("hop token conflict")
+		}
 	}
 	r.recordsByHopToken[matchToken] = record
 	return nil
@@ -260,17 +269,21 @@ func (r *leaseRegistry) DeleteHopRoute(route *types.HopRoute) {
 	if r == nil || route == nil {
 		return
 	}
+	ownerKey, err := utils.AddressFromCompressedPublicKeyHex(route.OwnerPublicKey)
+	if err != nil {
+		return
+	}
 	hostname := utils.NormalizeHostname(route.MatchHostname)
 	token := strings.TrimSpace(route.MatchToken)
 
 	r.mu.Lock()
 	if hostname != "" {
-		if record := r.recordsByHostname[hostname]; record != nil && record.isHopForward() {
+		if record := r.recordsByHostname[hostname]; record != nil && record.isHopForward() && record.hopOwnerKey == ownerKey {
 			delete(r.recordsByHostname, hostname)
 		}
 	}
 	if token != "" {
-		if record := r.recordsByHopToken[token]; record != nil && record.isHopForward() {
+		if record := r.recordsByHopToken[token]; record != nil && record.isHopForward() && record.hopOwnerKey == ownerKey {
 			delete(r.recordsByHopToken, token)
 		}
 	}
@@ -487,6 +500,7 @@ type leaseRecord struct {
 	Metadata    types.LeaseMetadata
 
 	hopToken           string
+	hopOwnerKey        string
 	hopNextOverlayIPv4 string
 	hopNextToken       string
 

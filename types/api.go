@@ -1,6 +1,7 @@
 package types
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -56,11 +57,10 @@ func (e *APIRequestError) Is(target error) bool {
 }
 
 type RegisterRequest struct {
-	ChallengeID   string    `json:"challenge_id"`
-	SIWEMessage   string    `json:"siwe_message"`
-	SIWESignature string    `json:"siwe_signature"`
-	ReportedIP    string    `json:"reported_ip,omitempty"`
-	Hop           *HopRoute `json:"hop,omitempty"`
+	ChallengeID   string `json:"challenge_id"`
+	SIWEMessage   string `json:"siwe_message"`
+	SIWESignature string `json:"siwe_signature"`
+	ReportedIP    string `json:"reported_ip,omitempty"`
 }
 
 type RegisterChallengeRequest struct {
@@ -70,7 +70,6 @@ type RegisterChallengeRequest struct {
 	UDPEnabled bool          `json:"udp_enabled,omitempty"`
 	TCPEnabled bool          `json:"tcp_enabled,omitempty"`
 	HopToken   string        `json:"hop_token,omitempty"`
-	Hop        *HopRoute     `json:"hop,omitempty"`
 }
 
 type RegisterChallengeResponse struct {
@@ -118,10 +117,9 @@ type QUICControlResponse struct {
 }
 
 type RenewRequest struct {
-	AccessToken string    `json:"access_token"`
-	TTL         int       `json:"ttl,omitempty"`
-	ReportedIP  string    `json:"reported_ip,omitempty"`
-	Hop         *HopRoute `json:"hop,omitempty"`
+	AccessToken string `json:"access_token"`
+	TTL         int    `json:"ttl,omitempty"`
+	ReportedIP  string `json:"reported_ip,omitempty"`
 }
 
 type RenewResponse struct {
@@ -130,16 +128,47 @@ type RenewResponse struct {
 }
 
 type UnregisterRequest struct {
-	AccessToken string    `json:"access_token"`
-	Hop         *HopRoute `json:"hop,omitempty"`
+	AccessToken string `json:"access_token"`
 }
 
 type HopRoute struct {
-	MatchHostname string          `json:"match_hostname,omitempty"`
-	MatchToken    string          `json:"match_token,omitempty"`
-	ForwardRelay  RelayDescriptor `json:"forward_relay"`
-	ForwardToken  string          `json:"forward_token"`
-	Next          *HopRoute       `json:"next,omitempty"`
+	OwnerPublicKey string          `json:"owner_public_key,omitempty"`
+	RelayURL       string          `json:"relay_url"`
+	MatchHostname  string          `json:"match_hostname,omitempty"`
+	MatchToken     string          `json:"match_token,omitempty"`
+	ForwardRelay   RelayDescriptor `json:"forward_relay"`
+	ForwardToken   string          `json:"forward_token"`
+	ExpiresAt      time.Time       `json:"expires_at,omitempty"`
+	Signature      string          `json:"signature,omitempty"`
+}
+
+func HopRouteBytes(method string, route HopRoute) ([]byte, error) {
+	forwardRelay, err := CanonicalBytes(route.ForwardRelay)
+	if err != nil {
+		return nil, err
+	}
+	payload := struct {
+		Purpose           string          `json:"purpose"`
+		Method            string          `json:"method"`
+		OwnerPublicKey    string          `json:"owner_public_key"`
+		RelayURL          string          `json:"relay_url"`
+		MatchHostname     string          `json:"match_hostname"`
+		MatchToken        string          `json:"match_token"`
+		ForwardRelay      json.RawMessage `json:"forward_relay"`
+		ForwardToken      string          `json:"forward_token"`
+		ExpiresAtUnixNano int64           `json:"expires_at_unix_nano"`
+	}{
+		Purpose:           "portal hop route v1",
+		Method:            strings.ToUpper(strings.TrimSpace(method)),
+		OwnerPublicKey:    strings.TrimSpace(route.OwnerPublicKey),
+		RelayURL:          strings.TrimSpace(route.RelayURL),
+		MatchHostname:     strings.TrimSpace(route.MatchHostname),
+		MatchToken:        strings.TrimSpace(route.MatchToken),
+		ForwardRelay:      json.RawMessage(forwardRelay),
+		ForwardToken:      strings.TrimSpace(route.ForwardToken),
+		ExpiresAtUnixNano: route.ExpiresAt.UTC().UnixNano(),
+	}
+	return json.Marshal(payload)
 }
 
 type DomainResponse struct {

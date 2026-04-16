@@ -1,7 +1,6 @@
 package overlay
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -9,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -21,21 +19,18 @@ import (
 const (
 	hopProtocolVersion    = 1
 	hopPrefaceLimit       = 4 << 10
-	hopRegistryFrameLimit = 8 << 20
 	hopIncomingBuffer     = 128
 	defaultPrefaceTimeout = 2 * time.Second
 )
 
 const (
 	hopModeTLSStream = "tls-stream"
-	hopModeRegistry  = "registry"
 )
 
 type HopMux struct {
 	listener net.Listener
 	overlay  *Overlay
 	incoming chan HopStream
-	registry chan HopRegistryStream
 
 	mu       sync.Mutex
 	outbound map[string]*yamux.Session
@@ -53,28 +48,6 @@ type HopStream struct {
 	Token string
 }
 
-type HopRegistryStream struct {
-	Path string
-	Body []byte
-	conn net.Conn
-}
-
-type hopRegistryHTTPResponse struct {
-	header http.Header
-	status int
-	body   bytes.Buffer
-}
-
-type hopRegistryRequest struct {
-	Path string `json:"path"`
-	Body []byte `json:"body"`
-}
-
-type hopRegistryResponse struct {
-	Status int    `json:"status"`
-	Body   []byte `json:"body"`
-}
-
 func NewHopMux(overlay *Overlay) (*HopMux, error) {
 	if overlay == nil || overlay.stack == nil {
 		return nil, errors.New("overlay is required for multi-hop mux")
@@ -87,7 +60,6 @@ func NewHopMux(overlay *Overlay) (*HopMux, error) {
 		listener: listener,
 		overlay:  overlay,
 		incoming: make(chan HopStream, hopIncomingBuffer),
-		registry: make(chan HopRegistryStream, hopIncomingBuffer),
 		outbound: make(map[string]*yamux.Session),
 		done:     make(chan struct{}),
 	}, nil
@@ -111,8 +83,8 @@ func (m *HopMux) Serve(ctx context.Context) error {
 		case errors.Is(err, net.ErrClosed):
 			return nil
 		default:
-			if ctx.Err() != nil {
-				return nil
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
 			}
 			return fmt.Errorf("accept hop mux connection: %w", err)
 		}
@@ -129,19 +101,6 @@ func (m *HopMux) Accept(ctx context.Context) (HopStream, error) {
 		return stream, nil
 	case <-ctx.Done():
 		return HopStream{}, ctx.Err()
-	}
-}
-
-func (m *HopMux) AcceptRegistry(ctx context.Context) (HopRegistryStream, error) {
-	if m == nil {
-		<-ctx.Done()
-		return HopRegistryStream{}, ctx.Err()
-	}
-	select {
-	case stream := <-m.registry:
-		return stream, nil
-	case <-ctx.Done():
-		return HopRegistryStream{}, ctx.Err()
 	}
 }
 
@@ -202,40 +161,6 @@ func (m *HopMux) OpenStream(ctx context.Context, overlayIPv4, token string) (net
 		return nil, err
 	}
 	return stream, nil
-}
-
-func (m *HopMux) OpenRegistry(ctx context.Context, overlayIPv4, path string, payload any) (int, []byte, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return 0, nil, errors.New("registry path is required")
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return 0, nil, err
-	}
-
-	stream, err := m.openYamuxStream(ctx, overlayIPv4)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer stream.Close()
-
-	preface := hopPreface{
-		Version: hopProtocolVersion,
-		Mode:    hopModeRegistry,
-	}
-	if err := writeFramedJSON(stream, preface, hopPrefaceLimit); err != nil {
-		return 0, nil, err
-	}
-	if err := writeFramedJSON(stream, hopRegistryRequest{Path: path, Body: body}, hopRegistryFrameLimit); err != nil {
-		return 0, nil, err
-	}
-
-	var resp hopRegistryResponse
-	if err := readFramedJSON(stream, &resp, hopRegistryFrameLimit); err != nil {
-		return 0, nil, err
-	}
-	return resp.Status, resp.Body, nil
 }
 
 func (m *HopMux) openYamuxStream(ctx context.Context, overlayIPv4 string) (*yamux.Stream, error) {
@@ -379,21 +304,6 @@ func (m *HopMux) handleStream(ctx context.Context, stream *yamux.Stream) {
 			Conn:  stream,
 			Token: preface.Token,
 		})
-	case hopModeRegistry:
-		var req hopRegistryRequest
-		if err := readFramedJSON(stream, &req, hopRegistryFrameLimit); err != nil {
-			_ = stream.Close()
-			return
-		}
-		if strings.TrimSpace(req.Path) == "" {
-			_ = stream.Close()
-			return
-		}
-		m.deliverRegistry(ctx, HopRegistryStream{
-			Path: req.Path,
-			Body: req.Body,
-			conn: stream,
-		})
 	default:
 		_ = stream.Close()
 	}
@@ -405,68 +315,6 @@ func (m *HopMux) deliver(ctx context.Context, stream HopStream) {
 	case <-ctx.Done():
 		_ = stream.Conn.Close()
 	}
-}
-
-func (m *HopMux) deliverRegistry(ctx context.Context, stream HopRegistryStream) {
-	select {
-	case m.registry <- stream:
-	case <-ctx.Done():
-		_ = stream.conn.Close()
-	}
-}
-
-func (s HopRegistryStream) Respond(status int, body []byte) error {
-	if s.conn == nil {
-		return net.ErrClosed
-	}
-	defer s.conn.Close()
-	return writeFramedJSON(s.conn, hopRegistryResponse{Status: status, Body: body}, hopRegistryFrameLimit)
-}
-
-func (s HopRegistryStream) ServeRegistryHTTP(ctx context.Context, host string, handler http.Handler) error {
-	if handler == nil {
-		if s.conn != nil {
-			_ = s.conn.Close()
-		}
-		return errors.New("hop registry handler is required")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+strings.TrimSpace(host)+s.Path, bytes.NewReader(s.Body))
-	if err != nil {
-		if s.conn != nil {
-			_ = s.conn.Close()
-		}
-		return err
-	}
-	req.RemoteAddr = "127.0.0.1:0"
-	req.Header.Set("Content-Type", "application/json")
-
-	resp := &hopRegistryHTTPResponse{header: make(http.Header)}
-	handler.ServeHTTP(resp, req)
-	return s.Respond(resp.Status(), resp.body.Bytes())
-}
-
-func (r *hopRegistryHTTPResponse) Header() http.Header {
-	return r.header
-}
-
-func (r *hopRegistryHTTPResponse) Write(body []byte) (int, error) {
-	if r.status == 0 {
-		r.status = http.StatusOK
-	}
-	return r.body.Write(body)
-}
-
-func (r *hopRegistryHTTPResponse) WriteHeader(status int) {
-	if r.status == 0 {
-		r.status = status
-	}
-}
-
-func (r *hopRegistryHTTPResponse) Status() int {
-	if r.status == 0 {
-		return http.StatusOK
-	}
-	return r.status
 }
 
 func hopYamuxConfig() *yamux.Config {
