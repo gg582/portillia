@@ -30,7 +30,7 @@ If your relay publishes its own installer:
 curl -sSL https://portal.example.com/install.sh | bash
 ```
 
-The installer downloads the `portal` binary and adds it to your PATH. No configuration file is written.
+The installer downloads the `portal` binary and adds it to your PATH. No configuration file is written. Already installed? Run `portal update` to get the latest version.
 
 ## Commands
 
@@ -135,6 +135,46 @@ portal list [flags]
 | `--default-relays` | bool | `true` | Include public registry relays |
 
 Unlike `portal expose`, `portal list` does not run the relay discovery expansion loop. It only resolves the registry seed list plus explicit `--relays` values.
+
+### `portal update`
+
+Update the CLI binary to the latest release.
+
+```bash
+portal update
+```
+
+The update flow:
+
+1. Checks the latest version by resolving the GitHub releases redirect URL
+2. Compares with the currently installed version
+3. If a newer version exists: downloads the binary, verifies its SHA256 checksum, and replaces the current executable
+4. If already up to date: prints a message and exits
+
+No flags. Works on macOS, Linux, and Windows. Requires write access to the directory containing the `portal` binary.
+
+**Examples:**
+
+```bash
+# Update to the latest version
+portal update
+# Already up to date (v2.1.5).
+
+# Or when a new version is available:
+portal update
+# Updating v2.1.5 → v2.2.0 ...
+# Updated v2.1.5 → v2.2.0
+```
+
+### `portal version`
+
+Print the currently installed version.
+
+```bash
+portal version
+```
+
+No flags. Outputs the version string (e.g., `v2.1.5`) and exits.
 
 ## Behavior Notes
 
