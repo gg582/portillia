@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -55,17 +56,17 @@ func runUpdateCommand(args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	if err := downloadBinary(binURL, tmpFile); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return fmt.Errorf("failed to download binary: %w", err)
 	}
 	if err := tmpFile.Sync(); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return fmt.Errorf("failed to sync downloaded binary: %w", err)
 	}
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	checksumURL, _ := installer.OfficialAssetURL(slug, true)
 	if err := verifyChecksum(tmpFile.Name(), checksumURL); err != nil {
@@ -90,11 +91,16 @@ func detectLatestVersion(latestURL string) (string, error) {
 		},
 	}
 
-	resp, err := client.Head(latestURL)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodHead, latestURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("HEAD request failed: %w", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	location := resp.Header.Get("Location")
 	if location == "" {
@@ -124,11 +130,16 @@ func detectLatestVersion(latestURL string) (string, error) {
 func downloadBinary(binURL string, dst *os.File) error {
 	client := &http.Client{Timeout: 120 * time.Second}
 
-	resp, err := client.Get(binURL)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, binURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected status %d", resp.StatusCode)
@@ -141,11 +152,16 @@ func downloadBinary(binURL string, dst *os.File) error {
 func verifyChecksum(filePath, checksumURL string) error {
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	resp, err := client.Get(checksumURL)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, checksumURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to download checksum: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("checksum download returned status %d", resp.StatusCode)
@@ -165,7 +181,7 @@ func verifyChecksum(filePath, checksumURL string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open downloaded file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
@@ -186,8 +202,8 @@ func checkWritable(dir string) error {
 		return fmt.Errorf("directory %s is not writable: %w", dir, err)
 	}
 	name := f.Name()
-	f.Close()
-	os.Remove(name)
+	_ = f.Close()
+	_ = os.Remove(name)
 	return nil
 }
 
@@ -213,13 +229,13 @@ func replaceBinaryUnix(srcPath, dstPath string) error {
 	if err != nil {
 		return err
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
 	if err != nil {
 		return fmt.Errorf("failed to open destination: %w", err)
 	}
-	defer dst.Close()
+	defer func() { _ = dst.Close() }()
 
 	if _, err := io.Copy(dst, src); err != nil {
 		return fmt.Errorf("failed to copy binary: %w", err)
@@ -231,7 +247,7 @@ func replaceBinaryWindows(srcPath, dstPath string) error {
 	oldPath := dstPath + ".old"
 
 	// Remove leftover .old file from a previous update.
-	os.Remove(oldPath)
+	_ = os.Remove(oldPath)
 
 	// Rename the running binary out of the way, then move the new one in.
 	if err := os.Rename(dstPath, oldPath); err != nil {
@@ -240,11 +256,11 @@ func replaceBinaryWindows(srcPath, dstPath string) error {
 
 	if err := os.Rename(srcPath, dstPath); err != nil {
 		// Attempt to restore the old binary on failure.
-		os.Rename(oldPath, dstPath)
+		_ = os.Rename(oldPath, dstPath)
 		return fmt.Errorf("failed to place new binary: %w", err)
 	}
 
 	// Best-effort cleanup of the old binary.
-	os.Remove(oldPath)
+	_ = os.Remove(oldPath)
 	return nil
 }

@@ -129,11 +129,11 @@ func writeUpdateCache(path string, c updateCache) {
 	tmpName := tmp.Name()
 
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return
 	}
-	tmp.Close()
+	_ = tmp.Close()
 
-	os.Rename(tmpName, path)
+	_ = os.Rename(tmpName, path)
 }
