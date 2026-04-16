@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -175,8 +176,23 @@ func runListCommand(args []string) error {
 		return errors.New("no relay URLs configured")
 	}
 
-	for _, relayURL := range relayURLs {
-		fmt.Println(relayURL)
+	versions := make([]string, len(relayURLs))
+	var wg sync.WaitGroup
+	wg.Add(len(relayURLs))
+	for i, u := range relayURLs {
+		go func(idx int, url string) {
+			defer wg.Done()
+			versions[idx] = utils.FetchRelayVersion(ctx, url)
+		}(i, u)
+	}
+	wg.Wait()
+
+	for i, relayURL := range relayURLs {
+		ver := versions[i]
+		if ver == "" {
+			ver = "unknown"
+		}
+		fmt.Printf("%s\t%s\n", relayURL, ver)
 	}
 	return nil
 }
