@@ -178,6 +178,7 @@ No flags. Outputs the version string (e.g., `v2.1.5`) and exits.
 
 ## Behavior Notes
 
+- **Update notifications** - `portal expose` and `portal list` check for new releases in the background. The check runs at most once every 24 hours (cached locally) and never blocks command execution. When a newer version is found, a hint is printed to stderr after the command output.
 - **Identity persistence** - `portal expose` loads or creates a signing identity at `identity.json` (or `--identity-path`). Reusing the same path keeps the same address across runs.
 - **Multiple relays** - Multiple relay URLs are registered independently. Each relay gets its own lease. A relay going down does not stop healthy relays from serving.
 - **Retry semantics** - Relay startup and reconnect failures are retried in the background. The tunnel starts as soon as relay URLs pass local validation.

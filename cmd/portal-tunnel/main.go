@@ -58,6 +58,8 @@ type exposeFlags struct {
 }
 
 func runExposeCommand(args []string) error {
+	updateCh := startUpdateCheck()
+
 	flags := exposeFlags{}
 	fs := utils.NewFlagSet("expose", printExposeUsage)
 
@@ -128,6 +130,7 @@ func runExposeCommand(args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to start relays: %w", err)
 	}
+	printUpdateHint(updateCh)
 	if len(flags.httpRoutes) > 0 {
 		handler, err := newHTTPRouteHandler(flags.httpRoutes)
 		if err != nil {
@@ -146,6 +149,9 @@ type listFlags struct {
 }
 
 func runListCommand(args []string) error {
+	updateCh := startUpdateCheck()
+	defer printUpdateHint(updateCh)
+
 	flags := listFlags{}
 	fs := utils.NewFlagSet("list", printListUsage)
 
