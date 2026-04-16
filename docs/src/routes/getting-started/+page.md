@@ -30,6 +30,22 @@ irm https://github.com/gosuda/portal-tunnel/releases/latest/download/install.ps1
 
 The installer downloads the `portal` binary and places it in your PATH. No configuration file is created — Portal works out of the box.
 
+## Updating the CLI
+
+Already have Portal installed? Update to the latest version with a single command:
+
+```bash
+portal update
+```
+
+Portal checks for the latest GitHub release, downloads the new binary, verifies its SHA256 checksum, and replaces the current executable in place. If you're already on the latest version, it simply reports that no update is needed.
+
+You can check the currently installed version at any time:
+
+```bash
+portal version
+```
+
 ## Expose Your First App
 
 Start a local application (or use any existing one), then run:

@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/gosuda/portal-tunnel/v2/cmd/portal-tunnel/installer"
 	"github.com/gosuda/portal-tunnel/v2/sdk"
 	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/gosuda/portal-tunnel/v2/utils"
@@ -23,6 +26,7 @@ func main() {
 	if err := utils.RunCommands(os.Args[1:], os.Stdout, os.Stderr, printRootUsage, map[string]utils.CommandFunc{
 		"expose": runExposeCommand,
 		"list":   runListCommand,
+		"update": runUpdateCommand,
 		"version": func(args []string) error {
 			fmt.Fprintln(os.Stdout, types.ReleaseVersion)
 			return nil
@@ -58,6 +62,8 @@ type exposeFlags struct {
 }
 
 func runExposeCommand(args []string) error {
+	updateCh := startUpdateCheck()
+
 	flags := exposeFlags{}
 	fs := utils.NewFlagSet("expose", printExposeUsage)
 
@@ -128,6 +134,7 @@ func runExposeCommand(args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to start relays: %w", err)
 	}
+	printUpdateHint(updateCh)
 	if len(flags.httpRoutes) > 0 {
 		handler, err := newHTTPRouteHandler(flags.httpRoutes)
 		if err != nil {
@@ -145,7 +152,73 @@ type listFlags struct {
 	defaultRelays bool
 }
 
+func runUpdateCommand(args []string) error {
+	slug := runtime.GOOS + "-" + runtime.GOARCH
+	if _, ok := installer.AssetFilename(slug); !ok {
+		return fmt.Errorf("unsupported platform: %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to determine executable path: %w", err)
+	}
+	execPath, err = filepath.EvalSymlinks(execPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve executable path: %w", err)
+	}
+
+	// Pre-check: verify that the binary's directory is writable before downloading.
+	if err := checkWritable(filepath.Dir(execPath)); err != nil {
+		return fmt.Errorf("cannot update %s: %w", execPath, err)
+	}
+
+	binURL, _ := installer.OfficialAssetURL(slug, false)
+
+	latestVersion, err := detectLatestVersion(binURL)
+	if err != nil {
+		return fmt.Errorf("failed to detect latest version: %w", err)
+	}
+
+	if latestVersion == types.ReleaseVersion {
+		fmt.Fprintf(os.Stderr, "Already up to date (%s).\n", types.ReleaseVersion)
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "Updating %s → %s ...\n", types.ReleaseVersion, latestVersion)
+
+	tmpFile, err := os.CreateTemp("", "portal-update-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+
+	if err := downloadBinary(binURL, tmpFile); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to download binary: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to sync downloaded binary: %w", err)
+	}
+	_ = tmpFile.Close()
+
+	checksumURL, _ := installer.OfficialAssetURL(slug, true)
+	if err := verifyChecksum(tmpFile.Name(), checksumURL); err != nil {
+		return fmt.Errorf("checksum verification failed: %w", err)
+	}
+
+	if err := replaceBinary(tmpFile.Name(), execPath); err != nil {
+		return fmt.Errorf("failed to replace binary: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Updated %s → %s\n", types.ReleaseVersion, latestVersion)
+	return nil
+}
+
 func runListCommand(args []string) error {
+	updateCh := startUpdateCheck()
+	defer printUpdateHint(updateCh)
+
 	flags := listFlags{}
 	fs := utils.NewFlagSet("list", printListUsage)
 
@@ -203,6 +276,7 @@ func printRootUsage(w io.Writer) {
 			"portal expose [flags] <target>",
 			"portal expose [flags] --http-route PATH=UPSTREAM [--http-route PATH=UPSTREAM]",
 			"portal list [flags]",
+			"portal update",
 			"portal version",
 		},
 		[]string{
@@ -211,6 +285,7 @@ func printRootUsage(w io.Writer) {
 			"portal expose --http-route /api=http://127.0.0.1:3001 --http-route /=http://127.0.0.1:5173 --name my-app",
 			"portal expose 3000 --udp --udp-addr 127.0.0.1:5353",
 			"portal list",
+			"portal update",
 			"portal version",
 		},
 	)

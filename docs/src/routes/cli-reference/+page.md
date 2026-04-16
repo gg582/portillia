@@ -30,7 +30,7 @@ If your relay publishes its own installer:
 curl -sSL https://portal.example.com/install.sh | bash
 ```
 
-The installer downloads the `portal` binary and adds it to your PATH. No configuration file is written.
+The installer downloads the `portal` binary and adds it to your PATH. No configuration file is written. Already installed? Run `portal update` to get the latest version.
 
 ## Commands
 
@@ -136,8 +136,49 @@ portal list [flags]
 
 Unlike `portal expose`, `portal list` does not run the relay discovery expansion loop. It only resolves the registry seed list plus explicit `--relays` values.
 
+### `portal update`
+
+Update the CLI binary to the latest release.
+
+```bash
+portal update
+```
+
+The update flow:
+
+1. Checks the latest version by resolving the GitHub releases redirect URL
+2. Compares with the currently installed version
+3. If a newer version exists: downloads the binary, verifies its SHA256 checksum, and replaces the current executable
+4. If already up to date: prints a message and exits
+
+No flags. Works on macOS, Linux, and Windows. Requires write access to the directory containing the `portal` binary.
+
+**Examples:**
+
+```bash
+# Update to the latest version
+portal update
+# Already up to date (v2.1.5).
+
+# Or when a new version is available:
+portal update
+# Updating v2.1.5 → v2.2.0 ...
+# Updated v2.1.5 → v2.2.0
+```
+
+### `portal version`
+
+Print the currently installed version.
+
+```bash
+portal version
+```
+
+No flags. Outputs the version string (e.g., `v2.1.5`) and exits.
+
 ## Behavior Notes
 
+- **Update notifications** - `portal expose` and `portal list` check for new releases in the background. The check runs at most once every 24 hours (cached locally) and never blocks command execution. When a newer version is found, a hint is printed to stderr after the command output.
 - **Identity persistence** - `portal expose` loads or creates a signing identity at `identity.json` (or `--identity-path`). Reusing the same path keeps the same address across runs.
 - **Multiple relays** - Multiple relay URLs are registered independently. Each relay gets its own lease. A relay going down does not stop healthy relays from serving.
 - **Retry semantics** - Relay startup and reconnect failures are retried in the background. The tunnel starts as soon as relay URLs pass local validation.
