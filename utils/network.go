@@ -122,6 +122,25 @@ func SanitizeReportedIP(raw string) string {
 	return candidate
 }
 
+// FetchRelayVersion calls GET /sdk/domain on a relay and returns its release version.
+// Returns an empty string on any error (timeout, unreachable, bad response).
+func FetchRelayVersion(ctx context.Context, relayURL string) string {
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := httpDo(ctx, client, http.MethodGet, relayURL+types.PathSDKDomain, nil, nil)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var envelope types.APIEnvelope[types.DomainResponse]
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil || !envelope.OK {
+		return ""
+	}
+	return envelope.Data.ReleaseVersion
+}
+
 func ResolvePortalRelayURLs(ctx context.Context, explicit []string, includeDefaults bool) ([]string, error) {
 	explicit, err := NormalizeRelayURLs(explicit...)
 	if err != nil {
