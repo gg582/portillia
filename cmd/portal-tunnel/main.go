@@ -22,6 +22,10 @@ func main() {
 	if err := utils.RunCommands(os.Args[1:], os.Stdout, os.Stderr, printRootUsage, map[string]utils.CommandFunc{
 		"expose": runExposeCommand,
 		"list":   runListCommand,
+		"version": func(args []string) error {
+			fmt.Fprintln(os.Stdout, types.ReleaseVersion)
+			return nil
+		},
 		"help": utils.MakeHelpCommand(printRootUsage, []utils.HelpTopic{
 			{Name: "expose", Usage: printExposeUsage},
 			{Name: "list", Usage: printListUsage},
