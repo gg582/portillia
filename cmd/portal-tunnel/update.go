@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,67 +19,82 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
-func runUpdateCommand(args []string) error {
+const updateCheckTTL = 24 * time.Hour
+
+type updateCache struct {
+	CheckedAt     time.Time `json:"checked_at"`
+	LatestVersion string    `json:"latest_version"`
+}
+
+// startUpdateCheck begins a background goroutine that checks for a newer
+// release. It returns a buffered channel that will receive the latest version
+// string when a newer version exists, or an empty string otherwise. The check
+// is skipped when a valid cache entry exists within the TTL.
+func startUpdateCheck() <-chan string {
+	ch := make(chan string, 1)
+
 	slug := runtime.GOOS + "-" + runtime.GOARCH
-	if _, ok := installer.AssetFilename(slug); !ok {
-		return fmt.Errorf("unsupported platform: %s/%s", runtime.GOOS, runtime.GOARCH)
+	binURL, ok := installer.OfficialAssetURL(slug, false)
+	if !ok {
+		ch <- ""
+		return ch
 	}
 
-	execPath, err := os.Executable()
+	go func() {
+		ch <- checkForUpdate(binURL)
+	}()
+
+	return ch
+}
+
+func checkForUpdate(binURL string) string {
+	cacheDir, err := updateCacheDir()
 	if err != nil {
-		return fmt.Errorf("failed to determine executable path: %w", err)
+		return ""
 	}
-	execPath, err = filepath.EvalSymlinks(execPath)
-	if err != nil {
-		return fmt.Errorf("failed to resolve executable path: %w", err)
+	cachePath := filepath.Join(cacheDir, "update_check.json")
+
+	// Try reading the cache first.
+	if cached, err := readUpdateCache(cachePath); err == nil {
+		if time.Since(cached.CheckedAt) < updateCheckTTL {
+			if cached.LatestVersion != types.ReleaseVersion {
+				return cached.LatestVersion
+			}
+			return ""
+		}
 	}
 
-	// Pre-check: verify that the binary's directory is writable before downloading.
-	if err := checkWritable(filepath.Dir(execPath)); err != nil {
-		return fmt.Errorf("cannot update %s: %w", execPath, err)
-	}
-
-	binURL, _ := installer.OfficialAssetURL(slug, false)
-
+	// Cache is missing or stale — check the network.
 	latestVersion, err := detectLatestVersion(binURL)
 	if err != nil {
-		return fmt.Errorf("failed to detect latest version: %w", err)
+		return ""
 	}
 
-	if latestVersion == types.ReleaseVersion {
-		fmt.Fprintf(os.Stderr, "Already up to date (%s).\n", types.ReleaseVersion)
-		return nil
-	}
+	// Write cache atomically.
+	writeUpdateCache(cachePath, updateCache{
+		CheckedAt:     time.Now(),
+		LatestVersion: latestVersion,
+	})
 
-	fmt.Fprintf(os.Stderr, "Updating %s → %s ...\n", types.ReleaseVersion, latestVersion)
-
-	tmpFile, err := os.CreateTemp("", "portal-update-*")
-	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
+	if latestVersion != types.ReleaseVersion {
+		return latestVersion
 	}
-	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	return ""
+}
 
-	if err := downloadBinary(binURL, tmpFile); err != nil {
-		_ = tmpFile.Close()
-		return fmt.Errorf("failed to download binary: %w", err)
+// printUpdateHint collects from the channel with a short timeout and prints
+// a hint to stderr if a newer version is available.
+func printUpdateHint(ch <-chan string) {
+	if ch == nil {
+		return
 	}
-	if err := tmpFile.Sync(); err != nil {
-		_ = tmpFile.Close()
-		return fmt.Errorf("failed to sync downloaded binary: %w", err)
+	select {
+	case version := <-ch:
+		if version != "" {
+			fmt.Fprintf(os.Stderr, "\nA new version is available: %s. Run 'portal update' to upgrade.\n", version)
+		}
+	case <-time.After(500 * time.Millisecond):
 	}
-	_ = tmpFile.Close()
-
-	checksumURL, _ := installer.OfficialAssetURL(slug, true)
-	if err := verifyChecksum(tmpFile.Name(), checksumURL); err != nil {
-		return fmt.Errorf("checksum verification failed: %w", err)
-	}
-
-	if err := replaceBinary(tmpFile.Name(), execPath); err != nil {
-		return fmt.Errorf("failed to replace binary: %w", err)
-	}
-
-	fmt.Fprintf(os.Stderr, "Updated %s → %s\n", types.ReleaseVersion, latestVersion)
-	return nil
 }
 
 // detectLatestVersion sends a HEAD request to the GitHub releases latest URL
@@ -172,7 +188,11 @@ func verifyChecksum(filePath, checksumURL string) error {
 		return fmt.Errorf("failed to read checksum response: %w", err)
 	}
 
-	expectedHash := strings.ToLower(strings.Fields(strings.TrimSpace(string(body)))[0])
+	fields := strings.Fields(strings.TrimSpace(string(body)))
+	if len(fields) == 0 {
+		return fmt.Errorf("empty checksum response")
+	}
+	expectedHash := strings.ToLower(fields[0])
 	if len(expectedHash) != 64 {
 		return fmt.Errorf("invalid checksum format (expected 64 hex chars, got %d)", len(expectedHash))
 	}
@@ -263,4 +283,51 @@ func replaceBinaryWindows(srcPath, dstPath string) error {
 	// Best-effort cleanup of the old binary.
 	_ = os.Remove(oldPath)
 	return nil
+}
+
+func updateCacheDir() (string, error) {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(base, "portal-tunnel")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func readUpdateCache(path string) (updateCache, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return updateCache{}, err
+	}
+	var c updateCache
+	if err := json.Unmarshal(data, &c); err != nil {
+		return updateCache{}, err
+	}
+	return c, nil
+}
+
+func writeUpdateCache(path string, c updateCache) {
+	data, err := json.Marshal(c)
+	if err != nil {
+		return
+	}
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".update_check-*.json")
+	if err != nil {
+		return
+	}
+	tmpName := tmp.Name()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return
+	}
+	_ = tmp.Close()
+
+	_ = os.Rename(tmpName, path)
 }
