@@ -140,10 +140,6 @@ func (r *Refresher) refreshHTTPS(ctx context.Context) error {
 				continue
 			}
 		}
-		if state.hasObservedDescriptor() && !state.Descriptor.Discovery {
-			continue
-		}
-
 		relayURL := state.Descriptor.APIHTTPSAddr
 		if relayURL == "" {
 			continue

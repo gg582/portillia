@@ -141,6 +141,28 @@ Returns signed relay discovery descriptors for this relay and any known peer rel
 | `generated_at` | `string` | ISO 8601 timestamp |
 | `relays` | `RelayDescriptor[]` | Signed descriptors for this relay and known peer relays |
 
+`RelayDescriptor` contains the signed relay contract and relay-reported telemetry:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `address` | `string` | Relay signing address used to verify `signature` |
+| `version` | `string` | Discovery protocol version used by this signed descriptor |
+| `issued_at` | `string` | Descriptor issue time |
+| `expires_at` | `string` | Descriptor expiry time |
+| `api_https_addr` | `string` | Public HTTPS API base URL |
+| `wireguard_public_key` | `string` | WireGuard overlay public key, present when overlay is enabled |
+| `wireguard_port` | `number` | Public WireGuard UDP port on the `api_https_addr` host, present when overlay is enabled |
+| `supports_overlay` | `boolean` | Relay can participate in WireGuard multi-hop overlay routing |
+| `supports_udp` | `boolean` | Relay can allocate public UDP leases |
+| `supports_tcp` | `boolean` | Relay can allocate raw TCP port leases |
+| `active_connections` | `number` | Current proxied connection count reported by the relay |
+| `tcp_bps` | `number` | Recent proxied TCP throughput in bytes per second |
+| `signature` | `string` | Signature over the descriptor fields above |
+
+Relay telemetry is sampled when the descriptor is issued; use `issued_at` to judge freshness.
+
+Overlay peer support is advertised by `supports_overlay`. When it is true, `wireguard_public_key` and `wireguard_port` are present. The WireGuard endpoint host is the `api_https_addr` host, and the overlay IPv4 is derived from the WireGuard public key. Relay-local observations such as recent overlay reachability are not part of the signed descriptor.
+
 **Example:**
 
 ```bash

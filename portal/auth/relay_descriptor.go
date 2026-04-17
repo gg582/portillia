@@ -16,10 +16,6 @@ import (
 // private key (hex encoded). The signature is recoverable, so verifiers do
 // not need to know the public key out of band; they recover it from the
 // signature and check it derives the descriptor's Address field.
-//
-// Mutable telemetry fields (Load, LoadScore, LastUpdated) are NOT covered by
-// the signature, so callers may update them after signing without
-// invalidating the signature.
 func SignRelayDescriptor(desc types.RelayDescriptor, privateKeyHex string) (types.RelayDescriptor, error) {
 	privateKey, _, err := utils.ParseSecp256k1PrivateKeyHex(privateKeyHex, true)
 	if err != nil {
@@ -30,9 +26,6 @@ func SignRelayDescriptor(desc types.RelayDescriptor, privateKeyHex string) (type
 	normalized, err := utils.NormalizeDescriptor(desc)
 	if err != nil {
 		return types.RelayDescriptor{}, fmt.Errorf("normalize relay descriptor for signing: %w", err)
-	}
-	if strings.TrimSpace(normalized.Address) == "" {
-		return types.RelayDescriptor{}, errors.New("relay descriptor address is required for signature verification")
 	}
 	desc = normalized
 
@@ -69,9 +62,6 @@ func VerifyRelayDescriptor(desc types.RelayDescriptor) (types.RelayDescriptor, e
 	normalized, err := utils.NormalizeDescriptor(unsignedCopy)
 	if err != nil {
 		return types.RelayDescriptor{}, fmt.Errorf("relay descriptor signature is invalid: normalize: %w", err)
-	}
-	if strings.TrimSpace(normalized.Address) == "" {
-		return types.RelayDescriptor{}, errors.New("relay descriptor address is required for signature verification")
 	}
 	canonical, err := types.CanonicalBytes(normalized)
 	if err != nil {

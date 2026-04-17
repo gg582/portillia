@@ -217,7 +217,7 @@ func (r *leaseRegistry) RegisterHopRoute(route *types.HopRoute, now time.Time) e
 	}
 	matchHostname := utils.NormalizeHostname(route.MatchHostname)
 	matchToken := strings.TrimSpace(route.MatchToken)
-	overlayIPv4 := strings.TrimSpace(route.ForwardRelay.OverlayIPv4)
+	overlayIPv4, overlayErr := utils.DeriveWireGuardOverlayIPv4(route.ForwardRelay.WireGuardPublicKey)
 	forwardToken := strings.TrimSpace(route.ForwardToken)
 	expiresAt := route.ExpiresAt.UTC()
 
@@ -230,8 +230,8 @@ func (r *leaseRegistry) RegisterHopRoute(route *types.HopRoute, now time.Time) e
 		return errors.New("hostname or token matcher is required")
 	case matchHostname != "" && matchToken != "":
 		return errors.New("hostname and token matchers are mutually exclusive")
-	case overlayIPv4 == "":
-		return errors.New("forward overlay ipv4 is required")
+	case overlayErr != nil:
+		return fmt.Errorf("forward relay overlay ipv4: %w", overlayErr)
 	case forwardToken == "":
 		return errors.New("forward token is required")
 	}

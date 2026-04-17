@@ -112,6 +112,9 @@ func (l *listener) registerLease(ctx context.Context, ttl time.Duration, udpEnab
 			if !ok {
 				return types.RegisterResponse{}, nil, fmt.Errorf("multi-hop relay %d descriptor was not discovered", i)
 			}
+			if !desc.SupportsOverlay {
+				return types.RegisterResponse{}, nil, fmt.Errorf("multi-hop relay %d does not support overlay", i)
+			}
 			hopPath = append(hopPath, desc)
 		}
 

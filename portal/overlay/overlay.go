@@ -23,29 +23,23 @@ type desiredPeer struct {
 }
 
 type Config struct {
-	PrivateKey   string
-	PublicKey    string
-	Endpoint     string
-	OverlayIPv4  string
-	OverlayCIDRs []string
+	PrivateKey string
+	PublicKey  string
+	ListenPort int
 }
 
 func (c Config) Copy() Config {
 	return Config{
-		PrivateKey:   c.PrivateKey,
-		PublicKey:    c.PublicKey,
-		Endpoint:     c.Endpoint,
-		OverlayIPv4:  c.OverlayIPv4,
-		OverlayCIDRs: append([]string(nil), c.OverlayCIDRs...),
+		PrivateKey: c.PrivateKey,
+		PublicKey:  c.PublicKey,
+		ListenPort: c.ListenPort,
 	}
 }
 
-func NormalizeConfig(rootHost string, cfg Config) (Config, error) {
+func NormalizeConfig(cfg Config) (Config, error) {
 	configured := strings.TrimSpace(cfg.PrivateKey) != "" ||
 		strings.TrimSpace(cfg.PublicKey) != "" ||
-		strings.TrimSpace(cfg.Endpoint) != "" ||
-		strings.TrimSpace(cfg.OverlayIPv4) != "" ||
-		len(cfg.OverlayCIDRs) > 0
+		cfg.ListenPort != 0
 	if !configured {
 		return cfg, nil
 	}
@@ -68,26 +62,11 @@ func NormalizeConfig(rootHost string, cfg Config) (Config, error) {
 
 	cfg.PrivateKey = privateKey
 	cfg.PublicKey = publicKey
-	if len(cfg.OverlayCIDRs) > 0 {
-		cfg.OverlayCIDRs, err = utils.NormalizeOverlayCIDRs(cfg.OverlayCIDRs)
-		if err != nil {
-			return Config{}, fmt.Errorf("normalize overlay cidrs: %w", err)
-		}
+	if cfg.ListenPort == 0 {
+		cfg.ListenPort = DefaultListenPort
 	}
-	if strings.TrimSpace(cfg.Endpoint) == "" {
-		cfg.Endpoint = net.JoinHostPort(rootHost, fmt.Sprintf("%d", DefaultListenPort))
-	}
-	if strings.TrimSpace(cfg.OverlayIPv4) == "" {
-		cfg.OverlayIPv4, err = utils.DeriveWireGuardOverlayIPv4(cfg.PublicKey)
-		if err != nil {
-			return Config{}, fmt.Errorf("derive overlay ipv4: %w", err)
-		}
-	}
-	if err := utils.ValidateWireGuardEndpoint(cfg.Endpoint); err != nil {
-		return Config{}, err
-	}
-	if err := utils.ValidateOverlayIPv4(cfg.OverlayIPv4); err != nil {
-		return Config{}, err
+	if cfg.ListenPort < 0 || cfg.ListenPort > 65535 {
+		return Config{}, errors.New("wireguard listen port is invalid")
 	}
 	return cfg, nil
 }
@@ -99,8 +78,8 @@ type Overlay struct {
 	server   *http.Server
 }
 
-func NewOverlay(rootHost string, cfg Config, handler http.Handler) (*Overlay, error) {
-	cfg, err := NormalizeConfig(rootHost, cfg)
+func NewOverlay(cfg Config, handler http.Handler) (*Overlay, error) {
+	cfg, err := NormalizeConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -194,14 +173,18 @@ func (o *Overlay) DiscoverRelay(ctx context.Context, relay types.RelayDescriptor
 	if o == nil || o.stack == nil {
 		return types.DiscoveryResponse{}, errors.New("overlay is not initialized")
 	}
-	if strings.TrimSpace(relay.OverlayIPv4) == "" {
-		return types.DiscoveryResponse{}, errors.New("relay overlay ipv4 is required")
+	if !relay.HasOverlayPeer() {
+		return types.DiscoveryResponse{}, errors.New("relay wireguard overlay metadata is required")
+	}
+	overlayIPv4, err := utils.DeriveWireGuardOverlayIPv4(relay.WireGuardPublicKey)
+	if err != nil {
+		return types.DiscoveryResponse{}, err
 	}
 
 	var resp types.DiscoveryResponse
 	baseURL := &url.URL{
 		Scheme: "http",
-		Host:   net.JoinHostPort(relay.OverlayIPv4, fmt.Sprintf("%d", DefaultPeerAPIHTTPPort)),
+		Host:   net.JoinHostPort(overlayIPv4, fmt.Sprintf("%d", DefaultPeerAPIHTTPPort)),
 	}
 	if err := utils.HTTPDoAPIPath(ctx, o.Client(), baseURL, http.MethodGet, types.PathDiscovery, nil, nil, &resp); err != nil {
 		return types.DiscoveryResponse{}, err
@@ -219,7 +202,7 @@ func (o *Overlay) Sync(relays []discovery.RelayState) error {
 func peersForRelays(publicKey string, relays []discovery.RelayState) []desiredPeer {
 	peers := make([]desiredPeer, 0, len(relays))
 	for _, relay := range relays {
-		if !relay.Descriptor.SupportsOverlayPeer {
+		if !relay.Descriptor.HasOverlayPeer() {
 			continue
 		}
 
@@ -228,12 +211,18 @@ func peersForRelays(publicKey string, relays []discovery.RelayState) []desiredPe
 			continue
 		}
 
-		allowedIPs := []string{desc.OverlayIPv4 + "/32"}
-		allowedIPs = append(allowedIPs, desc.OverlayCIDRs...)
+		overlayIPv4, err := utils.DeriveWireGuardOverlayIPv4(desc.WireGuardPublicKey)
+		if err != nil {
+			continue
+		}
+		wireGuardEndpoint, err := utils.RelayWireGuardEndpoint(desc)
+		if err != nil {
+			continue
+		}
 		peers = append(peers, desiredPeer{
 			wireGuardPublicKey: desc.WireGuardPublicKey,
-			wireGuardEndpoint:  desc.WireGuardEndpoint,
-			allowedIPs:         allowedIPs,
+			wireGuardEndpoint:  wireGuardEndpoint,
+			allowedIPs:         []string{overlayIPv4 + "/32"},
 		})
 	}
 	sort.Slice(peers, func(i, j int) bool {

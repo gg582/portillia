@@ -166,43 +166,28 @@ func (s *Server) signedRelayDescriptor(now time.Time) (types.RelayDescriptor, er
 	} else {
 		now = now.UTC()
 	}
-	activeConns := float64(s.proxy.activeConnectionCount())
-	tcpTrafficBPS := s.proxy.currentTCPBPS(now)
-	ingressAddr := s.identity.Name
-	if s.cfg.SNIPort != 0 && s.cfg.SNIPort != 443 {
-		ingressAddr = fmt.Sprintf("%s:%d", ingressAddr, s.cfg.SNIPort)
-	}
 
-	var wireGuardPublicKey, wireGuardEndpoint, overlayIPv4 string
-	var overlayCIDRs []string
+	var wireGuardPublicKey string
+	var wireGuardPort int
 	if s.overlay != nil {
 		cfg := s.overlay.Config()
 		wireGuardPublicKey = cfg.PublicKey
-		wireGuardEndpoint = cfg.Endpoint
-		overlayIPv4 = cfg.OverlayIPv4
-		overlayCIDRs = append([]string(nil), cfg.OverlayCIDRs...)
+		wireGuardPort = cfg.ListenPort
 	}
 
 	self := types.RelayDescriptor{
-		Identity:            s.identity.Base(),
-		RelayID:             s.cfg.PortalURL,
-		OwnerAddress:        s.identity.Address,
-		Version:             1,
-		IssuedAt:            now,
-		ExpiresAt:           now.Add(discovery.DiscoveryDescriptorTTL),
-		APIHTTPSAddr:        s.cfg.PortalURL,
-		Discovery:           s.cfg.DiscoveryEnabled,
-		IngressTLSAddr:      ingressAddr,
-		WireGuardPublicKey:  wireGuardPublicKey,
-		WireGuardEndpoint:   wireGuardEndpoint,
-		OverlayIPv4:         overlayIPv4,
-		OverlayCIDRs:        overlayCIDRs,
-		SupportsUDP:         s.cfg.UDPEnabled && s.quicTunnel != nil,
-		SupportsTCP:         s.cfg.TCPEnabled,
-		SupportsOverlayPeer: s.overlay != nil,
-		Load:                activeConns,
-		LoadScore:           tcpTrafficBPS,
-		LastUpdated:         now.UnixMilli(),
+		Address:            s.identity.Address,
+		Version:            types.DiscoveryVersion,
+		IssuedAt:           now,
+		ExpiresAt:          now.Add(discovery.DiscoveryDescriptorTTL),
+		APIHTTPSAddr:       s.cfg.PortalURL,
+		WireGuardPublicKey: wireGuardPublicKey,
+		WireGuardPort:      wireGuardPort,
+		SupportsOverlay:    s.overlay != nil,
+		SupportsUDP:        s.cfg.UDPEnabled && s.quicTunnel != nil,
+		SupportsTCP:        s.cfg.TCPEnabled,
+		ActiveConnections:  s.proxy.activeConnectionCount(),
+		TCPBPS:             s.proxy.currentTCPBPS(now),
 	}
 
 	signedSelf, err := auth.SignRelayDescriptor(self, s.identity.PrivateKey)
@@ -535,10 +520,7 @@ func (s *Server) handleHop(w http.ResponseWriter, r *http.Request) {
 		utils.InvalidRequestError(fmt.Errorf("forward relay: %w", err)).Write(w)
 		return
 	}
-	if !forwardRelay.SupportsOverlayPeer ||
-		strings.TrimSpace(forwardRelay.WireGuardPublicKey) == "" ||
-		strings.TrimSpace(forwardRelay.WireGuardEndpoint) == "" ||
-		strings.TrimSpace(forwardRelay.OverlayIPv4) == "" {
+	if !forwardRelay.HasOverlayPeer() {
 		utils.InvalidRequestError(errors.New("forward relay wireguard overlay metadata is required")).Write(w)
 		return
 	}

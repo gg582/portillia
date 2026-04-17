@@ -235,12 +235,7 @@ func (s *RelaySet) OverlayPeerStates() []RelayState {
 	s.mu.RLock()
 	out := make([]RelayState, 0, len(s.relays))
 	for _, state := range s.relays {
-		if state.Banned || !state.hasObservedDescriptor() || !state.Descriptor.ExpiresAt.After(now) || !state.Descriptor.SupportsOverlayPeer {
-			continue
-		}
-		if state.Descriptor.WireGuardPublicKey == "" ||
-			state.Descriptor.WireGuardEndpoint == "" ||
-			state.Descriptor.OverlayIPv4 == "" {
+		if state.Banned || !state.hasObservedDescriptor() || !state.Descriptor.ExpiresAt.After(now) || !state.Descriptor.HasOverlayPeer() {
 			continue
 		}
 		out = append(out, state)
@@ -259,9 +254,6 @@ func (s *RelaySet) BootstrapRelayURLs() []string {
 	out := make([]string, 0, len(s.relays))
 	for _, state := range s.relays {
 		if state.Banned || !state.Bootstrap {
-			continue
-		}
-		if state.hasObservedDescriptor() && !state.Descriptor.Discovery {
 			continue
 		}
 		relayURL := strings.TrimSpace(state.Descriptor.APIHTTPSAddr)
@@ -296,12 +288,12 @@ func (s *RelaySet) Descriptors(self types.RelayDescriptor) []types.RelayDescript
 		out = append(out, desc)
 	}
 
-	if self.APIHTTPSAddr != "" && self.Discovery && self.ExpiresAt.After(now) {
+	if self.APIHTTPSAddr != "" && self.ExpiresAt.After(now) {
 		add(self)
 	}
 	s.mu.RLock()
 	for _, state := range s.relays {
-		if state.Banned || !state.hasObservedDescriptor() || !state.Descriptor.Discovery {
+		if state.Banned || !state.hasObservedDescriptor() {
 			continue
 		}
 		add(state.Descriptor)

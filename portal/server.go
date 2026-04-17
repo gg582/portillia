@@ -80,6 +80,7 @@ func normalizeServerConfig(cfg ServerConfig) (ServerConfig, error) {
 
 	cfg.APIPort = utils.IntOrDefault(cfg.APIPort, 4017)
 	cfg.SNIPort = utils.IntOrDefault(cfg.SNIPort, 443)
+	cfg.WireGuardPort = utils.IntOrDefault(cfg.WireGuardPort, overlay.DefaultListenPort)
 	cfg.APIListenAddr = utils.StringOrDefault(cfg.APIListenAddr, fmt.Sprintf(":%d", cfg.APIPort))
 	cfg.SNIListenAddr = utils.StringOrDefault(cfg.SNIListenAddr, fmt.Sprintf(":%d", cfg.SNIPort))
 
@@ -642,10 +643,10 @@ func (s *Server) startOverlay() (*overlay.Overlay, error) {
 		peerMux.HandleFunc(types.PathDiscovery, s.handleRelayDiscovery)
 	}
 
-	overlay, err := overlay.NewOverlay(s.identity.Name, overlay.Config{
+	overlay, err := overlay.NewOverlay(overlay.Config{
 		PrivateKey: s.identity.WireGuardPrivateKey,
 		PublicKey:  s.identity.WireGuardPublicKey,
-		Endpoint:   net.JoinHostPort(s.identity.Name, fmt.Sprintf("%d", utils.IntOrDefault(s.cfg.WireGuardPort, overlay.DefaultListenPort))),
+		ListenPort: s.cfg.WireGuardPort,
 	}, peerMux)
 	if err != nil {
 		return nil, fmt.Errorf("start wireguard overlay: %w", err)

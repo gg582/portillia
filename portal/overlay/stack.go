@@ -45,12 +45,16 @@ func newStack(cfg Config) (*stack, error) {
 		return nil, fmt.Errorf("normalize wireguard private key: %w", err)
 	}
 
-	listenPort, err := utils.WireGuardListenPort(cfg.Endpoint)
-	if err != nil {
-		return nil, err
+	listenPort := cfg.ListenPort
+	if listenPort <= 0 || listenPort > 65535 {
+		return nil, errors.New("wireguard listen port is invalid")
 	}
 
-	overlayIP, err := netip.ParseAddr(cfg.OverlayIPv4)
+	overlayIPv4, err := utils.DeriveWireGuardOverlayIPv4(cfg.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("derive overlay ipv4: %w", err)
+	}
+	overlayIP, err := netip.ParseAddr(overlayIPv4)
 	if err != nil || !overlayIP.Is4() {
 		return nil, errors.New("overlay ipv4 must be a valid IPv4 address")
 	}

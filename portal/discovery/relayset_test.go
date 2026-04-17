@@ -10,7 +10,7 @@ import (
 func TestApplyRelayDiscoveryResponsePreservesBootstrapFlag(t *testing.T) {
 	set := NewRelaySet([]string{"https://relay-a.example"})
 
-	desc := mustPolicyRelayDescriptor(t, "relay-a", "https://relay-a.example")
+	desc := mustPolicyRelayDescriptor(t, "https://relay-a.example")
 	if _, err := set.ApplyRelayDiscoveryResponse(desc.APIHTTPSAddr, types.DiscoveryResponse{
 		ProtocolVersion: types.DiscoveryVersion,
 		Relays:          []types.RelayDescriptor{desc},
@@ -32,19 +32,11 @@ func TestDescriptorsDropsExpiredSignedRelayDescriptor(t *testing.T) {
 
 	now := time.Now().UTC()
 	relayURL := "https://relay-stale.example"
-	state := confirmedPolicyRelayState(t, "relay-stale", relayURL)
+	state := confirmedPolicyRelayState(t, relayURL)
 	state.Descriptor.ExpiresAt = now.Add(-time.Minute)
 	state.LastSeenAt = now.Add(-6 * time.Hour)
 	state.Descriptor.SupportsUDP = true
 	state.Descriptor.SupportsTCP = true
-	state.Descriptor.SupportsOverlayPeer = true
-	state.Descriptor.IngressTLSAddr = "relay-stale.example:443"
-	state.Descriptor.WireGuardPublicKey = "pub"
-	state.Descriptor.WireGuardEndpoint = "relay-stale.example:51820"
-	state.Descriptor.OverlayIPv4 = "10.0.0.1"
-	state.Descriptor.OverlayCIDRs = []string{"10.0.0.0/24"}
-	state.Descriptor.Load = 1
-	state.Descriptor.LoadScore = 2
 
 	set.mu.Lock()
 	set.relays[relayURL] = state
@@ -59,7 +51,7 @@ func TestDescriptorsDropsExpiredSignedRelayDescriptor(t *testing.T) {
 func TestApplyRelayDiscoveryResponseCollectsRelaysDespiteProtocolMismatch(t *testing.T) {
 	set := NewRelaySet(nil)
 
-	desc := mustPolicyRelayDescriptor(t, "relay-mismatch", "https://relay-mismatch.example")
+	desc := mustPolicyRelayDescriptor(t, "https://relay-mismatch.example")
 	changed, err := set.ApplyRelayDiscoveryResponse("", types.DiscoveryResponse{
 		ProtocolVersion: "5",
 		Relays:          []types.RelayDescriptor{desc},
@@ -86,7 +78,7 @@ func TestApplyRelayDiscoveryResponseCollectsRelaysDespiteProtocolMismatch(t *tes
 func TestApplyRelayDiscoveryResponseCollectsHintsWhenTargetDescriptorIsMissing(t *testing.T) {
 	set := NewRelaySet(nil)
 
-	hinted := mustPolicyRelayDescriptor(t, "relay-hinted", "https://relay-hinted.example")
+	hinted := mustPolicyRelayDescriptor(t, "https://relay-hinted.example")
 	changed, err := set.ApplyRelayDiscoveryResponse("https://relay-source.example", types.DiscoveryResponse{
 		ProtocolVersion: "5",
 		Relays:          []types.RelayDescriptor{hinted},
@@ -114,7 +106,7 @@ func TestApplyRelayDiscoveryResponseClearsDirectRetryOnAuthoritativeSuccess(t *t
 	set := NewRelaySet(nil)
 
 	relayURL := "https://relay-source.example"
-	desc := mustPolicyRelayDescriptor(t, "relay-source", relayURL)
+	desc := mustPolicyRelayDescriptor(t, relayURL)
 	set.mu.Lock()
 	state := RelayState{
 		Descriptor:          desc,
@@ -147,7 +139,7 @@ func TestApplyRelayDiscoveryResponsePreservesDirectRetryOnHint(t *testing.T) {
 	set := NewRelaySet(nil)
 
 	relayURL := "https://relay-hinted.example"
-	desc := mustPolicyRelayDescriptor(t, "relay-hinted", relayURL)
+	desc := mustPolicyRelayDescriptor(t, relayURL)
 	nextDirectRefreshAt := time.Now().UTC().Add(time.Minute)
 	set.mu.Lock()
 	state := RelayState{
@@ -178,7 +170,7 @@ func TestConfirmRelayURLMarksRelayConfirmedWithoutChangingAggregateDescriptor(t 
 
 	relayURL := "https://relay-confirmed.example"
 	state := RelayState{
-		Descriptor: mustPolicyRelayDescriptor(t, "relay-confirmed", relayURL),
+		Descriptor: mustPolicyRelayDescriptor(t, relayURL),
 		LastSeenAt: time.Now().UTC(),
 	}
 
@@ -203,7 +195,7 @@ func TestUnconfirmRelayURLClearsLocalConfirmationOnly(t *testing.T) {
 	set := NewRelaySet(nil)
 
 	relayURL := "https://relay-confirmed.example"
-	state := confirmedPolicyRelayState(t, "relay-confirmed", relayURL)
+	state := confirmedPolicyRelayState(t, relayURL)
 
 	set.mu.Lock()
 	set.relays[relayURL] = state

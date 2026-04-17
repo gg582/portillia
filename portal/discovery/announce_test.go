@@ -18,36 +18,26 @@ func mustSigningIdentity(t *testing.T) types.Identity {
 	return identity
 }
 
-func mustUnsignedDescriptor(t *testing.T, signing types.Identity, relayName, relayURL string) types.RelayDescriptor {
+func mustUnsignedDescriptor(t *testing.T, signing types.Identity, relayURL string) types.RelayDescriptor {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	return types.RelayDescriptor{
-		Identity: types.Identity{
-			Name:    relayName,
-			Address: signing.Address,
-		},
-		RelayID:      relayURL,
-		Version:      1,
+		Address:      signing.Address,
+		Version:      types.DiscoveryVersion,
 		IssuedAt:     now,
 		ExpiresAt:    now.Add(time.Hour),
 		APIHTTPSAddr: relayURL,
-		Discovery:    true,
 	}
 }
 
-func mustSignedDescriptor(t *testing.T, signing types.Identity, relayName, relayURL string, issuedAt time.Time) types.RelayDescriptor {
+func mustSignedDescriptor(t *testing.T, signing types.Identity, relayURL string, issuedAt time.Time) types.RelayDescriptor {
 	t.Helper()
 	signed, err := auth.SignRelayDescriptor(types.RelayDescriptor{
-		Identity: types.Identity{
-			Name:    relayName,
-			Address: signing.Address,
-		},
-		RelayID:      relayURL,
-		Version:      1,
+		Address:      signing.Address,
+		Version:      types.DiscoveryVersion,
 		IssuedAt:     issuedAt,
 		ExpiresAt:    issuedAt.Add(DiscoveryDescriptorTTL),
 		APIHTTPSAddr: relayURL,
-		Discovery:    true,
 	}, signing.PrivateKey)
 	if err != nil {
 		t.Fatalf("SignRelayDescriptor() error = %v", err)
@@ -59,7 +49,7 @@ func TestInsertAnnouncedAcceptsValidDescriptor(t *testing.T) {
 	set := NewRelaySet(nil)
 	signing := mustSigningIdentity(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	desc := mustSignedDescriptor(t, signing, "relay-ann", "https://relay-ann.example", now)
+	desc := mustSignedDescriptor(t, signing, "https://relay-ann.example", now)
 	if err := set.InsertAnnounced(desc, now); err != nil {
 		t.Fatalf("InsertAnnounced() error = %v", err)
 	}
@@ -72,7 +62,7 @@ func TestInsertAnnouncedRejectsUnsigned(t *testing.T) {
 	set := NewRelaySet(nil)
 	signing := mustSigningIdentity(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	desc := mustUnsignedDescriptor(t, signing, "relay-unsigned", "https://relay-unsigned.example")
+	desc := mustUnsignedDescriptor(t, signing, "https://relay-unsigned.example")
 	if err := set.InsertAnnounced(desc, now); err == nil {
 		t.Fatal("expected unsigned reject")
 	}
@@ -83,11 +73,11 @@ func TestInsertAnnouncedIgnoresSupersededRollback(t *testing.T) {
 	signing := mustSigningIdentity(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	relayURL := "https://relay-roll.example"
-	newer := mustSignedDescriptor(t, signing, "relay-roll", relayURL, now)
+	newer := mustSignedDescriptor(t, signing, relayURL, now)
 	if err := set.InsertAnnounced(newer, now); err != nil {
 		t.Fatalf("seed insert error = %v", err)
 	}
-	older := mustSignedDescriptor(t, signing, "relay-roll", relayURL, now.Add(-time.Minute))
+	older := mustSignedDescriptor(t, signing, relayURL, now.Add(-time.Minute))
 	if err := set.InsertAnnounced(older, now); err != nil {
 		t.Fatalf("superseded insert error = %v", err)
 	}
@@ -105,11 +95,11 @@ func TestInsertAnnouncedRejectsRollbackAcrossRelayURL(t *testing.T) {
 	set := NewRelaySet(nil)
 	signing := mustSigningIdentity(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	newer := mustSignedDescriptor(t, signing, "relay-roll", "https://relay-roll-new.example", now)
+	newer := mustSignedDescriptor(t, signing, "https://relay-roll-new.example", now)
 	if err := set.InsertAnnounced(newer, now); err != nil {
 		t.Fatalf("seed insert error = %v", err)
 	}
-	older := mustSignedDescriptor(t, signing, "relay-roll", "https://relay-roll-old.example", now.Add(-time.Minute))
+	older := mustSignedDescriptor(t, signing, "https://relay-roll-old.example", now.Add(-time.Minute))
 	if err := set.InsertAnnounced(older, now); err == nil {
 		t.Fatal("expected rollback reject")
 	}
@@ -122,12 +112,12 @@ func TestInsertAnnouncedBlocksCrossIdentityTakeover(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	relayURL := "https://relay-takeover.example"
 
-	ownerDesc := mustSignedDescriptor(t, owner, "relay-takeover", relayURL, now)
+	ownerDesc := mustSignedDescriptor(t, owner, relayURL, now)
 	if err := set.InsertAnnounced(ownerDesc, now); err != nil {
 		t.Fatalf("owner insert error = %v", err)
 	}
 
-	attackerDesc := mustSignedDescriptor(t, attacker, "relay-takeover", relayURL, now.Add(time.Second))
+	attackerDesc := mustSignedDescriptor(t, attacker, relayURL, now.Add(time.Second))
 	if err := set.InsertAnnounced(attackerDesc, now); err == nil {
 		t.Fatal("expected takeover reject")
 	}

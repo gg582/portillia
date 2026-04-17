@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -31,16 +32,13 @@ func NormalizeIdentity(identity types.Identity) (types.Identity, error) {
 }
 
 func NormalizeDescriptor(desc types.RelayDescriptor) (types.RelayDescriptor, error) {
-	desc.Name = NormalizeHostname(desc.Name)
 	desc.Address = strings.TrimSpace(desc.Address)
+	desc.Version = strings.TrimSpace(desc.Version)
 	desc.APIHTTPSAddr = strings.TrimSpace(desc.APIHTTPSAddr)
-	desc.RelayID = strings.TrimSpace(desc.RelayID)
-	desc.IngressTLSAddr = strings.TrimSpace(desc.IngressTLSAddr)
 	desc.WireGuardPublicKey = strings.TrimSpace(desc.WireGuardPublicKey)
-	desc.WireGuardEndpoint = strings.TrimSpace(desc.WireGuardEndpoint)
-	desc.OverlayIPv4 = strings.TrimSpace(desc.OverlayIPv4)
-	desc.OverlayCIDRs = NormalizeIPPrefixes(desc.OverlayCIDRs)
-	desc.OwnerAddress = strings.TrimSpace(desc.OwnerAddress)
+	if desc.Version == "" {
+		desc.Version = types.DiscoveryVersion
+	}
 	if !desc.IssuedAt.IsZero() {
 		desc.IssuedAt = desc.IssuedAt.UTC()
 	}
@@ -55,16 +53,6 @@ func NormalizeDescriptor(desc types.RelayDescriptor) (types.RelayDescriptor, err
 		}
 		desc.APIHTTPSAddr = normalized
 	}
-	if desc.RelayID != "" {
-		normalized, err := NormalizeRelayURL(desc.RelayID)
-		if err != nil {
-			return types.RelayDescriptor{}, fmt.Errorf("normalize relay id: %w", err)
-		}
-		desc.RelayID = normalized
-	}
-	if desc.RelayID == "" {
-		desc.RelayID = desc.APIHTTPSAddr
-	}
 	if desc.Address != "" {
 		normalized, err := NormalizeEVMAddress(desc.Address)
 		if err != nil {
@@ -72,24 +60,34 @@ func NormalizeDescriptor(desc types.RelayDescriptor) (types.RelayDescriptor, err
 		}
 		desc.Address = normalized
 	}
-	if desc.OwnerAddress == "" {
-		desc.OwnerAddress = desc.Address
-	}
-	if desc.OwnerAddress != "" {
-		normalized, err := NormalizeEVMAddress(desc.OwnerAddress)
-		if err != nil {
-			return types.RelayDescriptor{}, fmt.Errorf("normalize owner address: %w", err)
+	if desc.WireGuardPublicKey != "" {
+		if err := ValidateWireGuardPublicKey(desc.WireGuardPublicKey); err != nil {
+			return types.RelayDescriptor{}, err
 		}
-		desc.OwnerAddress = normalized
+	}
+	if desc.WireGuardPort < 0 || desc.WireGuardPort > 65535 {
+		return types.RelayDescriptor{}, errors.New("wireguard_port is invalid")
+	}
+	if desc.ActiveConnections < 0 {
+		return types.RelayDescriptor{}, errors.New("active_connections is invalid")
+	}
+	if desc.TCPBPS < 0 || math.IsNaN(desc.TCPBPS) || math.IsInf(desc.TCPBPS, 0) {
+		return types.RelayDescriptor{}, errors.New("tcp_bps is invalid")
 	}
 
 	switch {
-	case desc.Name == "":
-		return types.RelayDescriptor{}, errors.New("identity.name is required")
+	case desc.Address == "":
+		return types.RelayDescriptor{}, errors.New("address is required")
+	case desc.Version != types.DiscoveryVersion:
+		return types.RelayDescriptor{}, fmt.Errorf("unsupported relay descriptor version %q", desc.Version)
 	case desc.APIHTTPSAddr == "":
 		return types.RelayDescriptor{}, errors.New("api_https_addr is required")
-	case desc.RelayID != desc.APIHTTPSAddr:
-		return types.RelayDescriptor{}, errors.New("relay_id must match api_https_addr")
+	case desc.SupportsOverlay && desc.WireGuardPublicKey == "":
+		return types.RelayDescriptor{}, errors.New("wireguard_public_key is required when supports_overlay is set")
+	case desc.SupportsOverlay && desc.WireGuardPort == 0:
+		return types.RelayDescriptor{}, errors.New("wireguard_port is required when supports_overlay is set")
+	case !desc.SupportsOverlay && (desc.WireGuardPublicKey != "" || desc.WireGuardPort != 0):
+		return types.RelayDescriptor{}, errors.New("supports_overlay is required when wireguard metadata is set")
 	case desc.ExpiresAt.IsZero():
 		return types.RelayDescriptor{}, errors.New("expires_at is required")
 	case desc.IssuedAt.After(desc.ExpiresAt):
@@ -97,6 +95,17 @@ func NormalizeDescriptor(desc types.RelayDescriptor) (types.RelayDescriptor, err
 	}
 
 	return desc, nil
+}
+
+func RelayWireGuardEndpoint(desc types.RelayDescriptor) (string, error) {
+	host := PortalRootHost(desc.APIHTTPSAddr)
+	if host == "" {
+		return "", errors.New("api_https_addr host is required")
+	}
+	if desc.WireGuardPort <= 0 || desc.WireGuardPort > 65535 {
+		return "", errors.New("wireguard_port is invalid")
+	}
+	return net.JoinHostPort(host, fmt.Sprintf("%d", desc.WireGuardPort)), nil
 }
 
 func ResolveRelayStateDir(path string) string {
