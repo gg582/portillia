@@ -1,8 +1,6 @@
 package auth
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -23,26 +21,20 @@ func SignHopRoute(method string, route types.HopRoute, identity types.Identity, 
 	if err != nil {
 		return types.HopRoute{}, err
 	}
-	ownerToken, err := identity.DeriveToken(
-		"hop-route-owner",
-		route.RelayURL,
-		route.MatchHostname,
-		route.MatchToken,
-	)
+	identity, err = utils.NormalizeStoredIdentity(identity)
 	if err != nil {
 		return types.HopRoute{}, err
 	}
-	ownerSeed := sha256.Sum256([]byte(ownerToken))
-	owner, err := utils.ResolveSecp256k1Identity(hex.EncodeToString(ownerSeed[:]))
-	if err != nil {
-		return types.HopRoute{}, err
+	if strings.TrimSpace(identity.PrivateKey) == "" || strings.TrimSpace(identity.PublicKey) == "" {
+		return types.HopRoute{}, errors.New("hop route owner identity is required")
 	}
-	route.OwnerPublicKey = owner.PublicKey
+
+	route.OwnerPublicKey = identity.PublicKey
 	payload, err := types.HopRouteBytes(method, route)
 	if err != nil {
 		return types.HopRoute{}, err
 	}
-	route.Signature, err = utils.SignSHA256Secp256k1DER(payload, owner.PrivateKey)
+	route.Signature, err = utils.SignSHA256Secp256k1DER(payload, identity.PrivateKey)
 	if err != nil {
 		return types.HopRoute{}, err
 	}

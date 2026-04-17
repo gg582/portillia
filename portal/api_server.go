@@ -454,7 +454,7 @@ func (s *Server) handleUnregister(w http.ResponseWriter, r *http.Request) {
 		writeAPIErrorResponse(w, err)
 		return
 	}
-	if record.isDirect() && s.acmeManager != nil {
+	if record.isPublicEntry() && s.acmeManager != nil {
 		deleteCtx, cancel := context.WithTimeout(context.Background(), defaultClaimTimeout)
 		if err := s.acmeManager.DeleteENSGaslessHostname(deleteCtx, record.Hostname); err != nil {
 			log.Warn().
@@ -503,7 +503,18 @@ func (s *Server) handleHop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodDelete {
-		s.registry.DeleteHopRoute(&route)
+		record := s.registry.DeleteHopRoute(&route)
+		if record != nil && record.isPublicEntry() && s.acmeManager != nil {
+			deleteCtx, cancel := context.WithTimeout(context.Background(), defaultClaimTimeout)
+			if err := s.acmeManager.DeleteENSGaslessHostname(deleteCtx, record.Hostname); err != nil {
+				log.Warn().
+					Err(err).
+					Str("hostname", record.Hostname).
+					Str("address", record.Address).
+					Msg("delete hop route remote state")
+			}
+			cancel()
+		}
 		utils.WriteAPIData(w, http.StatusOK, map[string]any{})
 		return
 	}
@@ -531,9 +542,20 @@ func (s *Server) handleHop(w http.ResponseWriter, r *http.Request) {
 		utils.WriteAPIError(w, http.StatusInternalServerError, types.APIErrorCodeInternal, err.Error())
 		return
 	}
-	if err := s.registry.RegisterHopRoute(&route, now); err != nil {
+	record, err := s.registry.RegisterHopRoute(&route, now)
+	if err != nil {
 		writeAPIErrorResponse(w, err)
 		return
+	}
+	if record.isPublicEntry() && s.acmeManager != nil {
+		syncCtx, cancel := context.WithTimeout(context.Background(), defaultClaimTimeout)
+		if err := s.acmeManager.SyncENSGaslessHostname(syncCtx, record.Hostname, record.Address); err != nil {
+			cancel()
+			_ = s.registry.DeleteHopRoute(&route)
+			writeAPIErrorResponse(w, err)
+			return
+		}
+		cancel()
 	}
 	utils.WriteAPIData(w, http.StatusOK, map[string]any{})
 }
@@ -778,7 +800,7 @@ func (s *Server) registerLease(req types.RegisterChallengeRequest, clientIP, rep
 		record.Close()
 		return types.RegisterResponse{}, err
 	}
-	if record.isDirect() {
+	if record.isPublicEntry() {
 		syncCtx, cancel := context.WithTimeout(context.Background(), defaultClaimTimeout)
 		defer cancel()
 		if err := s.acmeManager.SyncENSGaslessHostname(syncCtx, record.Hostname, record.Address); err != nil {

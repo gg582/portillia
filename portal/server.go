@@ -322,7 +322,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 		for _, lease := range s.registry.CloseAll() {
 			if lease != nil {
-				if lease.isDirect() && s.acmeManager != nil {
+				if lease.isPublicEntry() && s.acmeManager != nil {
 					deleteCtx, cancel := context.WithTimeout(ctx, defaultClaimTimeout)
 					if err := s.acmeManager.DeleteENSGaslessHostname(deleteCtx, lease.Hostname); err != nil {
 						log.Warn().
@@ -404,7 +404,7 @@ func (s *Server) LeaseSnapshotByHostname(hostname string) (types.Lease, bool) {
 	}
 
 	record, ok := s.registry.Lookup(hostname)
-	if !ok || record == nil || record.isHopForward() || time.Now().After(record.ExpiresAt) {
+	if !ok || record == nil || time.Now().After(record.ExpiresAt) {
 		return types.Lease{}, false
 	}
 	return s.registry.Snapshot(record), true
@@ -530,7 +530,8 @@ func (s *Server) runHopMux(ctx context.Context) error {
 					_ = stream.Conn.Close()
 					return
 				}
-				log.Info().Str("remote_addr", stream.RemoteAddr).Bool("forward", record.isHopForward()).Msg("hop stream received")
+				_, _, hasNextHop := record.nextHop()
+				log.Info().Str("remote_addr", stream.RemoteAddr).Bool("forward", hasNextHop).Msg("hop stream received")
 				if err := s.bridgeLeaseConn(groupCtx, stream.Conn, record); err != nil {
 					log.Warn().Err(err).Str("remote_addr", stream.RemoteAddr).Msg("hop stream bridge failed")
 					_ = stream.Conn.Close()
@@ -545,9 +546,7 @@ func (s *Server) bridgeLeaseConn(ctx context.Context, conn net.Conn, record *lea
 	if s == nil || s.registry == nil || record == nil || time.Now().After(record.ExpiresAt) {
 		return errLeaseNotFound
 	}
-	if record.isHopForward() {
-		overlayIPv4 := strings.TrimSpace(record.hopNextOverlayIPv4)
-		forwardToken := strings.TrimSpace(record.hopNextToken)
+	if overlayIPv4, forwardToken, hasNextHop := record.nextHop(); hasNextHop {
 		switch {
 		case s.hopMux == nil:
 			return errFeatureUnavailable
@@ -608,7 +607,7 @@ func (s *Server) runLeaseJanitor(ctx context.Context, interval time.Duration) er
 			return nil
 		case <-ticker.C:
 			for _, lease := range s.registry.cleanupExpired(time.Now()) {
-				if lease.isDirect() && s.acmeManager != nil {
+				if lease.isPublicEntry() && s.acmeManager != nil {
 					deleteCtx, cancel := context.WithTimeout(context.Background(), defaultClaimTimeout)
 					err := s.acmeManager.DeleteENSGaslessHostname(deleteCtx, lease.Hostname)
 					cancel()
