@@ -15,6 +15,7 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 
+	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
@@ -127,7 +128,7 @@ func (s *stack) DialContext(ctx context.Context, network, address string) (net.C
 	return s.net.DialContextTCPAddrPort(ctx, netip.AddrPortFrom(ip, uint16(port)))
 }
 
-func (s *stack) ApplyPeers(peers []desiredPeer) error {
+func (s *stack) ApplyPeers(peers []types.RelayDescriptor) error {
 	if s == nil || s.device == nil {
 		return errors.New("wireguard is not initialized")
 	}
@@ -146,45 +147,45 @@ func (s *stack) ApplyPeers(peers []desiredPeer) error {
 	nextPeerEndpoints := map[string]string{}
 
 	for _, peer := range peers {
-		peerKey := strings.TrimSpace(peer.wireGuardPublicKey)
-		publicKeyHex, err := utils.WireGuardKeyHex(peer.wireGuardPublicKey)
+		peerKey := strings.TrimSpace(peer.WireGuardPublicKey)
+		overlayIPv4, err := utils.DeriveWireGuardOverlayIPv4(peer.WireGuardPublicKey)
+		if err != nil {
+			continue
+		}
+		wireGuardEndpoint, err := utils.RelayWireGuardEndpoint(peer)
+		if err != nil {
+			continue
+		}
+		publicKeyHex, err := utils.WireGuardKeyHex(peer.WireGuardPublicKey)
 		if err != nil {
 			return fmt.Errorf("normalize peer %q public key: %w", peerKey, err)
 		}
 
 		resolvedEndpoint := ""
-		if endpoint := peer.wireGuardEndpoint; endpoint != "" {
-			resolvedEndpoint, err = resolvePeerEndpoint(endpoint)
-			if err != nil {
-				s.mu.Lock()
-				currentEndpoint := s.peerEndpoints[publicKeyHex]
-				s.mu.Unlock()
-				if currentEndpoint != "" {
-					warnErr = errors.Join(warnErr, fmt.Errorf("resolve peer %q endpoint: %w; using current endpoint %q", peerKey, err, currentEndpoint))
-					resolvedEndpoint = currentEndpoint
-				} else {
-					warnErr = errors.Join(warnErr, fmt.Errorf("resolve peer %q endpoint: %w", peerKey, err))
-					continue
-				}
+		resolvedEndpoint, err = resolvePeerEndpoint(wireGuardEndpoint)
+		if err != nil {
+			s.mu.Lock()
+			currentEndpoint := s.peerEndpoints[publicKeyHex]
+			s.mu.Unlock()
+			if currentEndpoint != "" {
+				warnErr = errors.Join(warnErr, fmt.Errorf("resolve peer %q endpoint: %w; using current endpoint %q", peerKey, err, currentEndpoint))
+				resolvedEndpoint = currentEndpoint
+			} else {
+				warnErr = errors.Join(warnErr, fmt.Errorf("resolve peer %q endpoint: %w", peerKey, err))
+				continue
 			}
 		}
 
 		builder.WriteString("public_key=")
 		builder.WriteString(publicKeyHex)
 		builder.WriteByte('\n')
-		if resolvedEndpoint != "" {
-			builder.WriteString("endpoint=")
-			builder.WriteString(resolvedEndpoint)
-			builder.WriteByte('\n')
-			nextPeerEndpoints[publicKeyHex] = resolvedEndpoint
-		}
-
-		allowedIPs := utils.NormalizeIPPrefixes(peer.allowedIPs)
-		for _, allowedIP := range allowedIPs {
-			builder.WriteString("allowed_ip=")
-			builder.WriteString(allowedIP)
-			builder.WriteByte('\n')
-		}
+		builder.WriteString("endpoint=")
+		builder.WriteString(resolvedEndpoint)
+		builder.WriteByte('\n')
+		nextPeerEndpoints[publicKeyHex] = resolvedEndpoint
+		builder.WriteString("allowed_ip=")
+		builder.WriteString(overlayIPv4)
+		builder.WriteString("/32\n")
 		if DefaultPersistentKeepalive > 0 {
 			builder.WriteString("persistent_keepalive_interval=")
 			builder.WriteString(strconv.Itoa(DefaultPersistentKeepalive))

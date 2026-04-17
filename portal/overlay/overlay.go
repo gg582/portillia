@@ -16,12 +16,6 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
-type desiredPeer struct {
-	wireGuardPublicKey string
-	wireGuardEndpoint  string
-	allowedIPs         []string
-}
-
 type Config struct {
 	PrivateKey string
 	PublicKey  string
@@ -196,37 +190,20 @@ func (o *Overlay) Sync(relays []discovery.RelayState) error {
 	if o == nil || o.stack == nil {
 		return nil
 	}
-	return o.stack.ApplyPeers(peersForRelays(o.cfg.PublicKey, relays))
-}
 
-func peersForRelays(publicKey string, relays []discovery.RelayState) []desiredPeer {
-	peers := make([]desiredPeer, 0, len(relays))
+	peers := make([]types.RelayDescriptor, 0, len(relays))
 	for _, relay := range relays {
-		if !relay.Descriptor.HasOverlayPeer() {
-			continue
-		}
-
 		desc := relay.Descriptor
-		if desc.WireGuardPublicKey == publicKey {
+		if !desc.HasOverlayPeer() {
 			continue
 		}
-
-		overlayIPv4, err := utils.DeriveWireGuardOverlayIPv4(desc.WireGuardPublicKey)
-		if err != nil {
+		if desc.WireGuardPublicKey == o.cfg.PublicKey {
 			continue
 		}
-		wireGuardEndpoint, err := utils.RelayWireGuardEndpoint(desc)
-		if err != nil {
-			continue
-		}
-		peers = append(peers, desiredPeer{
-			wireGuardPublicKey: desc.WireGuardPublicKey,
-			wireGuardEndpoint:  wireGuardEndpoint,
-			allowedIPs:         []string{overlayIPv4 + "/32"},
-		})
+		peers = append(peers, desc)
 	}
 	sort.Slice(peers, func(i, j int) bool {
-		return peers[i].wireGuardPublicKey < peers[j].wireGuardPublicKey
+		return peers[i].WireGuardPublicKey < peers[j].WireGuardPublicKey
 	})
-	return peers
+	return o.stack.ApplyPeers(peers)
 }
