@@ -464,7 +464,7 @@ func populateRelayIdentity(identity *types.RelayIdentity, discoveryEnabled bool)
 	}
 
 	if strings.TrimSpace(identity.AdminSecretKey) == "" {
-		adminSecretKey, err := identity.Identity.DeriveToken("admin")
+		adminSecretKey, err := identity.Identity.DeriveToken("admin-secret")
 		if err != nil {
 			return fmt.Errorf("derive relay admin secret key: %w", err)
 		}

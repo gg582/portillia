@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -61,21 +62,24 @@ func (i Identity) Key() string {
 	return name + IdentityKeySeparator + address
 }
 
-func (i Identity) DeriveToken(nonce string) (string, error) {
+// DeriveToken derives a deterministic identity-scoped token from ordered
+// length-prefixed token parts. The first part should identify the token family.
+func (i Identity) DeriveToken(parts ...string) (string, error) {
 	privateKey := strings.TrimSpace(i.PrivateKey)
 	if privateKey == "" {
 		return "", errors.New("identity private key is required")
-	}
-	nonce = strings.TrimSpace(nonce)
-	if nonce == "" {
-		return "", errors.New("identity token nonce is required")
 	}
 
 	mac := hmac.New(sha256.New, []byte(privateKey))
 	_, _ = mac.Write([]byte("Portal identity token v1\n"))
 	_, _ = mac.Write([]byte(i.Key()))
-	_, _ = mac.Write([]byte("\n"))
-	_, _ = mac.Write([]byte(nonce))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		_, _ = mac.Write([]byte("\n"))
+		_, _ = mac.Write([]byte(strconv.Itoa(len(part))))
+		_, _ = mac.Write([]byte(":"))
+		_, _ = mac.Write([]byte(part))
+	}
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 }
 

@@ -3,7 +3,6 @@ package auth
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -24,20 +23,12 @@ func SignHopRoute(method string, route types.HopRoute, identity types.Identity, 
 	if err != nil {
 		return types.HopRoute{}, err
 	}
-	ownerScope := struct {
-		RelayURL      string `json:"relay_url"`
-		MatchHostname string `json:"match_hostname"`
-		MatchToken    string `json:"match_token"`
-	}{
-		RelayURL:      route.RelayURL,
-		MatchHostname: route.MatchHostname,
-		MatchToken:    route.MatchToken,
-	}
-	encodedOwnerScope, err := json.Marshal(ownerScope)
-	if err != nil {
-		return types.HopRoute{}, err
-	}
-	ownerToken, err := identity.DeriveToken("hop-owner:" + string(encodedOwnerScope) + ":0")
+	ownerToken, err := identity.DeriveToken(
+		"hop-route-owner",
+		route.RelayURL,
+		route.MatchHostname,
+		route.MatchToken,
+	)
 	if err != nil {
 		return types.HopRoute{}, err
 	}

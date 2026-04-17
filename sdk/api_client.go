@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -127,7 +128,13 @@ func (l *listener) registerLease(ctx context.Context, ttl time.Duration, udpEnab
 
 		tokens := make([]string, len(hopPath)-1)
 		for i := range tokens {
-			token, err := l.identity.DeriveToken(fmt.Sprintf("hop:%s:%d:%s:%s", publicHostname, i, hopPath[i].APIHTTPSAddr, hopPath[i+1].APIHTTPSAddr))
+			token, err := l.identity.DeriveToken(
+				"hop-token",
+				publicHostname,
+				strconv.Itoa(i),
+				hopPath[i].APIHTTPSAddr,
+				hopPath[i+1].APIHTTPSAddr,
+			)
 			if err != nil {
 				return types.RegisterResponse{}, nil, err
 			}
