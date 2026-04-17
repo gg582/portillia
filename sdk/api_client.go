@@ -115,8 +115,9 @@ func (l *listener) registerLease(ctx context.Context, ttl time.Duration, udpEnab
 		}
 		keylessURL = hopPath[0].APIHTTPSAddr
 
-		tokens := make([]string, len(hopPath)-1)
-		for i := range tokens {
+		hopRoutes = make([]types.HopRoute, 0, len(hopPath)-1)
+		var previousHopToken string
+		for i := 0; i < len(hopPath)-1; i++ {
 			token, err := l.identity.DeriveToken(
 				"hop-token",
 				publicHostname,
@@ -127,24 +128,21 @@ func (l *listener) registerLease(ctx context.Context, ttl time.Duration, udpEnab
 			if err != nil {
 				return types.RegisterResponse{}, nil, err
 			}
-			tokens[i] = "hpt_" + token
-		}
-
-		hopRoutes = make([]types.HopRoute, 0, len(tokens))
-		for i := range tokens {
+			forwardToken := "hpt_" + token
 			route := types.HopRoute{
 				RelayURL:     hopPath[i].APIHTTPSAddr,
 				ForwardRelay: hopPath[i+1],
-				ForwardToken: tokens[i],
+				ForwardToken: forwardToken,
 			}
 			if i == 0 {
 				route.MatchHostname = publicHostname
 			} else {
-				route.MatchToken = tokens[i-1]
+				route.MatchToken = previousHopToken
 			}
 			hopRoutes = append(hopRoutes, route)
+			previousHopToken = forwardToken
 		}
-		exitHopToken = tokens[len(tokens)-1]
+		exitHopToken = previousHopToken
 	}
 
 	var challenge types.RegisterChallengeResponse

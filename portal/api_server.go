@@ -454,20 +454,28 @@ func (s *Server) handleUnregister(w http.ResponseWriter, r *http.Request) {
 		writeAPIErrorResponse(w, err)
 		return
 	}
+	s.cleanupRemovedRecord(context.Background(), record, "delete lease remote state")
+
+	utils.WriteAPIData(w, http.StatusOK, map[string]any{})
+}
+
+func (s *Server) cleanupRemovedRecord(ctx context.Context, record *leaseRecord, logMessage string) {
+	if record == nil {
+		return
+	}
 	if record.isPublicEntry() && s.acmeManager != nil {
-		deleteCtx, cancel := context.WithTimeout(context.Background(), defaultClaimTimeout)
-		if err := s.acmeManager.DeleteENSGaslessHostname(deleteCtx, record.Hostname); err != nil {
+		deleteCtx, cancel := context.WithTimeout(ctx, defaultClaimTimeout)
+		err := s.acmeManager.DeleteENSGaslessHostname(deleteCtx, record.Hostname)
+		cancel()
+		if err != nil {
 			log.Warn().
 				Err(err).
 				Str("hostname", record.Hostname).
 				Str("address", record.Address).
-				Msg("delete lease remote state")
+				Msg(logMessage)
 		}
-		cancel()
 	}
 	record.Close()
-
-	utils.WriteAPIData(w, http.StatusOK, map[string]any{})
 }
 
 func (s *Server) handleHop(w http.ResponseWriter, r *http.Request) {
@@ -504,17 +512,7 @@ func (s *Server) handleHop(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodDelete {
 		record := s.registry.DeleteHopRoute(&route)
-		if record != nil && record.isPublicEntry() && s.acmeManager != nil {
-			deleteCtx, cancel := context.WithTimeout(context.Background(), defaultClaimTimeout)
-			if err := s.acmeManager.DeleteENSGaslessHostname(deleteCtx, record.Hostname); err != nil {
-				log.Warn().
-					Err(err).
-					Str("hostname", record.Hostname).
-					Str("address", record.Address).
-					Msg("delete hop route remote state")
-			}
-			cancel()
-		}
+		s.cleanupRemovedRecord(context.Background(), record, "delete hop route remote state")
 		utils.WriteAPIData(w, http.StatusOK, map[string]any{})
 		return
 	}
@@ -551,7 +549,11 @@ func (s *Server) handleHop(w http.ResponseWriter, r *http.Request) {
 		syncCtx, cancel := context.WithTimeout(context.Background(), defaultClaimTimeout)
 		if err := s.acmeManager.SyncENSGaslessHostname(syncCtx, record.Hostname, record.Address); err != nil {
 			cancel()
-			_ = s.registry.DeleteHopRoute(&route)
+			removed := s.registry.DeleteHopRoute(&route)
+			if removed == nil {
+				removed = record
+			}
+			s.cleanupRemovedRecord(context.Background(), removed, "delete hop route remote state after sync failure")
 			writeAPIErrorResponse(w, err)
 			return
 		}
@@ -802,8 +804,11 @@ func (s *Server) registerLease(req types.RegisterChallengeRequest, clientIP, rep
 		syncCtx, cancel := context.WithTimeout(context.Background(), defaultClaimTimeout)
 		defer cancel()
 		if err := s.acmeManager.SyncENSGaslessHostname(syncCtx, record.Hostname, record.Address); err != nil {
-			_, _ = s.registry.Unregister(record.Key())
-			record.Close()
+			removed, _ := s.registry.Unregister(record.Key())
+			if removed == nil {
+				removed = record
+			}
+			s.cleanupRemovedRecord(context.Background(), removed, "delete lease remote state after sync failure")
 			return types.RegisterResponse{}, err
 		}
 	}

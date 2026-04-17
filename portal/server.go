@@ -253,19 +253,19 @@ func (s *Server) Start(ctx context.Context, apiMux *http.ServeMux) error {
 	started = true
 
 	group.Go(s.runAPIServer)
-	group.Go(func() error { return s.runSNIListener(groupCtx) })
-	group.Go(func() error { return s.runLeaseJanitor(groupCtx, 5*time.Second) })
-	if s.cfg.DiscoveryEnabled {
-		group.Go(func() error { return s.runRelayDiscoveryLoop(groupCtx) })
-	}
+	group.Go(func() error { return s.runPublicIngress(groupCtx) })
 	if s.overlay != nil {
 		group.Go(s.overlay.Serve)
-	}
-	if s.hopMux != nil {
-		group.Go(func() error { return s.runHopMux(groupCtx) })
+		if s.hopMux != nil {
+			group.Go(func() error { return s.runOverlayIngress(groupCtx) })
+		}
 	}
 	if s.quicTunnel != nil {
 		group.Go(s.runQUICTunnelListener)
+	}
+	group.Go(func() error { return s.runRegistryJanitor(groupCtx, 5*time.Second) })
+	if s.cfg.DiscoveryEnabled {
+		group.Go(func() error { return s.runRelayDiscoveryLoop(groupCtx) })
 	}
 	s.acmeManager.Start(serverCtx)
 	group.Go(func() error {
@@ -306,6 +306,34 @@ func (s *Server) Wait() error {
 	return err
 }
 
+func (s *Server) PolicyRuntime() *policy.Runtime {
+	if s == nil || s.registry == nil {
+		return nil
+	}
+	return s.registry.policy
+}
+
+func (s *Server) PortalURL() string {
+	if s == nil {
+		return ""
+	}
+	return s.cfg.PortalURL
+}
+
+func (s *Server) PublicLeases() []types.Lease {
+	if s == nil || s.registry == nil {
+		return nil
+	}
+	return s.registry.PublicLeases(time.Now())
+}
+
+func (s *Server) AdminLeases() []types.AdminLease {
+	if s == nil || s.registry == nil {
+		return nil
+	}
+	return s.registry.AdminLeases(time.Now())
+}
+
 func (s *Server) RelayIdentity() types.RelayIdentity {
 	if s == nil {
 		return types.RelayIdentity{}
@@ -321,20 +349,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 
 		for _, lease := range s.registry.CloseAll() {
-			if lease != nil {
-				if lease.isPublicEntry() && s.acmeManager != nil {
-					deleteCtx, cancel := context.WithTimeout(ctx, defaultClaimTimeout)
-					if err := s.acmeManager.DeleteENSGaslessHostname(deleteCtx, lease.Hostname); err != nil {
-						log.Warn().
-							Err(err).
-							Str("hostname", lease.Hostname).
-							Str("address", lease.Address).
-							Msg("delete lease remote state during shutdown")
-					}
-					cancel()
-				}
-				lease.Close()
-			}
+			s.cleanupRemovedRecord(ctx, lease, "delete lease remote state during shutdown")
 		}
 
 		if s.quicTunnel != nil {
@@ -368,34 +383,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 	})
 	return shutdownErr
-}
-
-func (s *Server) PolicyRuntime() *policy.Runtime {
-	if s == nil || s.registry == nil {
-		return nil
-	}
-	return s.registry.policy
-}
-
-func (s *Server) PortalURL() string {
-	if s == nil {
-		return ""
-	}
-	return s.cfg.PortalURL
-}
-
-func (s *Server) PublicLeases() []types.Lease {
-	if s == nil || s.registry == nil {
-		return nil
-	}
-	return s.registry.PublicLeases(time.Now())
-}
-
-func (s *Server) AdminLeases() []types.AdminLease {
-	if s == nil || s.registry == nil {
-		return nil
-	}
-	return s.registry.AdminLeases(time.Now())
 }
 
 func (s *Server) prepareAPITLS(ctx context.Context) (keyless.TLSMaterialConfig, *acme.Manager, error) {
@@ -435,7 +422,7 @@ func (s *Server) prepareAPITLS(ctx context.Context) (keyless.TLSMaterialConfig, 
 	return apiTLS, manager, nil
 }
 
-func (s *Server) runSNIListener(ctx context.Context) error {
+func (s *Server) runPublicIngress(ctx context.Context) error {
 	for {
 		conn, err := s.sniListener.Accept()
 		switch {
@@ -478,7 +465,7 @@ func (s *Server) runSNIListener(ctx context.Context) error {
 					return
 				}
 				if err := s.bridgeLeaseConn(ctx, wrappedConn, record); err != nil {
-					log.Warn().Err(err).Str("server_name", serverName).Msg("bridge lease connection")
+					log.Warn().Err(err).Str("server_name", serverName).Msg("bridge public ingress")
 					_ = wrappedConn.Close()
 					return
 				}
@@ -494,12 +481,7 @@ func (s *Server) runSNIListener(ctx context.Context) error {
 	}
 }
 
-func (s *Server) runHopMux(ctx context.Context) error {
-	if s == nil || s.hopMux == nil {
-		<-ctx.Done()
-		return nil
-	}
-
+func (s *Server) runOverlayIngress(ctx context.Context) error {
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error { return s.hopMux.Serve(groupCtx) })
 	group.Go(func() error {
@@ -523,6 +505,7 @@ func (s *Server) runHopMux(ctx context.Context) error {
 					hopRole = "middle"
 				}
 				log.Info().Str("remote_addr", stream.RemoteAddr).Str("hop_role", hopRole).Msg("hop stream received")
+
 				if err := s.bridgeLeaseConn(groupCtx, stream.Conn, record); err != nil {
 					log.Warn().Err(err).Str("remote_addr", stream.RemoteAddr).Msg("hop stream bridge failed")
 					_ = stream.Conn.Close()
@@ -534,13 +517,11 @@ func (s *Server) runHopMux(ctx context.Context) error {
 }
 
 func (s *Server) bridgeLeaseConn(ctx context.Context, conn net.Conn, record *leaseRecord) error {
-	if s == nil || s.registry == nil || record == nil || time.Now().After(record.ExpiresAt) {
+	if record.isExpired(time.Now()) {
 		return errLeaseNotFound
 	}
 	if overlayIPv4, forwardToken, hasNextHop := record.nextHop(); hasNextHop {
 		switch {
-		case s.hopMux == nil:
-			return errFeatureUnavailable
 		case overlayIPv4 == "":
 			return errors.New("next hop overlay ipv4 is required")
 		case forwardToken == "":
@@ -584,7 +565,7 @@ func (s *Server) bridgeLeaseConn(ctx context.Context, conn net.Conn, record *lea
 	return nil
 }
 
-func (s *Server) runLeaseJanitor(ctx context.Context, interval time.Duration) error {
+func (s *Server) runRegistryJanitor(ctx context.Context, interval time.Duration) error {
 	if interval <= 0 {
 		return errors.New("janitor interval must be positive")
 	}
@@ -598,19 +579,7 @@ func (s *Server) runLeaseJanitor(ctx context.Context, interval time.Duration) er
 			return nil
 		case <-ticker.C:
 			for _, lease := range s.registry.cleanupExpired(time.Now()) {
-				if lease.isPublicEntry() && s.acmeManager != nil {
-					deleteCtx, cancel := context.WithTimeout(context.Background(), defaultClaimTimeout)
-					err := s.acmeManager.DeleteENSGaslessHostname(deleteCtx, lease.Hostname)
-					cancel()
-					if err != nil {
-						log.Warn().
-							Err(err).
-							Str("hostname", lease.Hostname).
-							Str("address", lease.Address).
-							Msg("delete expired lease remote state")
-					}
-				}
-				lease.Close()
+				s.cleanupRemovedRecord(context.Background(), lease, "delete expired lease remote state")
 			}
 		}
 	}

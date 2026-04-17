@@ -219,12 +219,12 @@ func TestLeaseRegistryCleanupExpiredClosesBroker(t *testing.T) {
 	}
 }
 
-func TestServerRunLeaseJanitorRejectsNonPositiveInterval(t *testing.T) {
+func TestServerRunRegistryJanitorRejectsNonPositiveInterval(t *testing.T) {
 	t.Parallel()
 
 	server := &Server{registry: newTestRegistry(t)}
-	err := server.runLeaseJanitor(context.Background(), 0)
+	err := server.runRegistryJanitor(context.Background(), 0)
 	if err == nil {
-		t.Fatal("runLeaseJanitor() error = nil, want validation error")
+		t.Fatal("runRegistryJanitor() error = nil, want validation error")
 	}
 }
