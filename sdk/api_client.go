@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gosuda/portal-tunnel/v2/portal/overlay"
+	"github.com/gosuda/portal-tunnel/v2/portal/auth"
 	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/gosuda/portal-tunnel/v2/utils"
 )
@@ -227,7 +227,7 @@ func (l *listener) syncHopRoutes(ctx context.Context, method string, expiresAt t
 
 	var syncErr error
 	for _, unsignedRoute := range orderedRoutes {
-		route, err := overlay.SignHopRoute(method, unsignedRoute, l.identity, expiresAt)
+		route, err := auth.SignHopRoute(method, unsignedRoute, l.identity, expiresAt)
 		if err != nil {
 			if method == http.MethodDelete {
 				syncErr = errors.Join(syncErr, err)

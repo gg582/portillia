@@ -1,4 +1,4 @@
-package overlay
+package auth
 
 import (
 	"crypto/sha256"
@@ -24,16 +24,29 @@ func SignHopRoute(method string, route types.HopRoute, identity types.Identity, 
 	if err != nil {
 		return types.HopRoute{}, err
 	}
-	owner, err := deriveHopRouteOwner(identity, route)
+	ownerScope := struct {
+		RelayURL      string `json:"relay_url"`
+		MatchHostname string `json:"match_hostname"`
+		MatchToken    string `json:"match_token"`
+	}{
+		RelayURL:      route.RelayURL,
+		MatchHostname: route.MatchHostname,
+		MatchToken:    route.MatchToken,
+	}
+	encodedOwnerScope, err := json.Marshal(ownerScope)
+	if err != nil {
+		return types.HopRoute{}, err
+	}
+	ownerToken, err := identity.DeriveToken("hop-owner:" + string(encodedOwnerScope) + ":0")
+	if err != nil {
+		return types.HopRoute{}, err
+	}
+	ownerSeed := sha256.Sum256([]byte(ownerToken))
+	owner, err := utils.ResolveSecp256k1Identity(hex.EncodeToString(ownerSeed[:]))
 	if err != nil {
 		return types.HopRoute{}, err
 	}
 	route.OwnerPublicKey = owner.PublicKey
-
-	route, err = normalizeHopRoute(route, true)
-	if err != nil {
-		return types.HopRoute{}, err
-	}
 	payload, err := types.HopRouteBytes(method, route)
 	if err != nil {
 		return types.HopRoute{}, err
@@ -87,40 +100,4 @@ func normalizeHopRoute(route types.HopRoute, requireOwner bool) (types.HopRoute,
 	route.ExpiresAt = route.ExpiresAt.UTC()
 	route.Signature = strings.TrimSpace(route.Signature)
 	return route, nil
-}
-
-func deriveHopRouteOwner(identity types.Identity, route types.HopRoute) (types.Identity, error) {
-	nonce, err := hopRouteOwnerNonce(route)
-	if err != nil {
-		return types.Identity{}, err
-	}
-	for counter := range 4 {
-		token, err := identity.DeriveToken(fmt.Sprintf("hop-owner:%s:%d", nonce, counter))
-		if err != nil {
-			return types.Identity{}, err
-		}
-		seed := sha256.Sum256([]byte(token))
-		owner, err := utils.ResolveSecp256k1Identity(hex.EncodeToString(seed[:]))
-		if err == nil {
-			return owner, nil
-		}
-	}
-	return types.Identity{}, errors.New("derive hop route owner key")
-}
-
-func hopRouteOwnerNonce(route types.HopRoute) (string, error) {
-	payload := struct {
-		RelayURL      string `json:"relay_url"`
-		MatchHostname string `json:"match_hostname"`
-		MatchToken    string `json:"match_token"`
-	}{
-		RelayURL:      route.RelayURL,
-		MatchHostname: route.MatchHostname,
-		MatchToken:    route.MatchToken,
-	}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-	return string(encoded), nil
 }

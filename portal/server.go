@@ -519,7 +519,14 @@ func (s *Server) runHopMux(ctx context.Context) error {
 			}
 			go func(stream overlay.HopStream) {
 				record, ok := s.registry.RecordByHopToken(stream.Token, time.Now())
-				if !ok || !s.bridgeLeaseConn(groupCtx, stream.Conn, record) {
+				if !ok {
+					log.Warn().Str("remote_addr", stream.RemoteAddr).Msg("hop stream rejected")
+					_ = stream.Conn.Close()
+					return
+				}
+				log.Info().Str("remote_addr", stream.RemoteAddr).Bool("forward", record.isHopForward()).Msg("hop stream received")
+				if !s.bridgeLeaseConn(groupCtx, stream.Conn, record) {
+					log.Warn().Str("remote_addr", stream.RemoteAddr).Msg("hop stream bridge failed")
 					_ = stream.Conn.Close()
 				}
 			}(stream)

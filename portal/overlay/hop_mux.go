@@ -3,7 +3,6 @@ package overlay
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,18 +12,11 @@ import (
 	"time"
 
 	"github.com/hashicorp/yamux"
-	"github.com/rs/zerolog/log"
 )
 
 const (
-	hopProtocolVersion    = 1
-	hopPrefaceLimit       = 4 << 10
-	hopIncomingBuffer     = 128
-	defaultPrefaceTimeout = 2 * time.Second
-)
-
-const (
-	hopModeTLSStream = "tls-stream"
+	maxHopTokenBytes    = 256
+	defaultTokenTimeout = 2 * time.Second
 )
 
 type HopMux struct {
@@ -37,15 +29,10 @@ type HopMux struct {
 	done     chan struct{}
 }
 
-type hopPreface struct {
-	Version int    `json:"version"`
-	Mode    string `json:"mode"`
-	Token   string `json:"token"`
-}
-
 type HopStream struct {
-	Conn  net.Conn
-	Token string
+	Conn       net.Conn
+	Token      string
+	RemoteAddr string
 }
 
 func NewHopMux(overlay *Overlay) (*HopMux, error) {
@@ -59,17 +46,13 @@ func NewHopMux(overlay *Overlay) (*HopMux, error) {
 	return &HopMux{
 		listener: listener,
 		overlay:  overlay,
-		incoming: make(chan HopStream, hopIncomingBuffer),
+		incoming: make(chan HopStream),
 		outbound: make(map[string]*yamux.Session),
 		done:     make(chan struct{}),
 	}, nil
 }
 
 func (m *HopMux) Serve(ctx context.Context) error {
-	if m == nil || m.listener == nil {
-		<-ctx.Done()
-		return nil
-	}
 	go func() {
 		<-ctx.Done()
 		_ = m.Close()
@@ -92,10 +75,6 @@ func (m *HopMux) Serve(ctx context.Context) error {
 }
 
 func (m *HopMux) Accept(ctx context.Context) (HopStream, error) {
-	if m == nil {
-		<-ctx.Done()
-		return HopStream{}, ctx.Err()
-	}
 	select {
 	case stream := <-m.incoming:
 		return stream, nil
@@ -105,14 +84,7 @@ func (m *HopMux) Accept(ctx context.Context) (HopStream, error) {
 }
 
 func (m *HopMux) Close() error {
-	if m == nil {
-		return nil
-	}
-
 	m.mu.Lock()
-	if m.done == nil {
-		m.done = make(chan struct{})
-	}
 	select {
 	case <-m.done:
 		m.mu.Unlock()
@@ -122,19 +94,12 @@ func (m *HopMux) Close() error {
 	close(m.done)
 	sessions := make([]*yamux.Session, 0, len(m.outbound))
 	for _, session := range m.outbound {
-		if session == nil {
-			continue
-		}
 		sessions = append(sessions, session)
 	}
 	m.outbound = make(map[string]*yamux.Session)
-	listener := m.listener
 	m.mu.Unlock()
 
-	var closeErr error
-	if listener != nil {
-		closeErr = errors.Join(closeErr, listener.Close())
-	}
+	closeErr := m.listener.Close()
 	for _, session := range sessions {
 		closeErr = errors.Join(closeErr, session.Close())
 	}
@@ -147,23 +112,6 @@ func (m *HopMux) OpenStream(ctx context.Context, overlayIPv4, token string) (net
 		return nil, errors.New("next hop token is required")
 	}
 
-	stream, err := m.openYamuxStream(ctx, overlayIPv4)
-	if err != nil {
-		return nil, err
-	}
-	preface := hopPreface{
-		Version: hopProtocolVersion,
-		Mode:    hopModeTLSStream,
-		Token:   token,
-	}
-	if err := writeFramedJSON(stream, preface, hopPrefaceLimit); err != nil {
-		_ = stream.Close()
-		return nil, err
-	}
-	return stream, nil
-}
-
-func (m *HopMux) openYamuxStream(ctx context.Context, overlayIPv4 string) (*yamux.Stream, error) {
 	overlayIPv4 = strings.TrimSpace(overlayIPv4)
 	if overlayIPv4 == "" {
 		return nil, errors.New("next hop overlay ipv4 is required")
@@ -175,9 +123,29 @@ func (m *HopMux) openYamuxStream(ctx context.Context, overlayIPv4 string) (*yamu
 	}
 	stream, err := session.OpenStream()
 	if err != nil {
-		m.forgetSession(overlayIPv4, session)
+		m.mu.Lock()
+		if m.outbound[overlayIPv4] == session {
+			delete(m.outbound, overlayIPv4)
+		}
+		m.mu.Unlock()
 		_ = session.Close()
 		return nil, err
+	}
+
+	payload := []byte(token)
+	if len(payload) > maxHopTokenBytes {
+		_ = stream.Close()
+		return nil, errors.New("next hop token is too large")
+	}
+	frame := make([]byte, 4+len(payload))
+	binary.BigEndian.PutUint32(frame[:4], uint32(len(payload)))
+	copy(frame[4:], payload)
+	if n, err := stream.Write(frame); err != nil {
+		_ = stream.Close()
+		return nil, err
+	} else if n != len(frame) {
+		_ = stream.Close()
+		return nil, io.ErrShortWrite
 	}
 	return stream, nil
 }
@@ -199,9 +167,6 @@ func (m *HopMux) session(ctx context.Context, overlayIPv4 string) (*yamux.Sessio
 	delete(m.outbound, overlayIPv4)
 	m.mu.Unlock()
 
-	if m.overlay == nil || m.overlay.stack == nil {
-		return nil, errors.New("overlay is not initialized")
-	}
 	addr := net.JoinHostPort(overlayIPv4, fmt.Sprintf("%d", DefaultPeerYamuxPort))
 	conn, err := m.overlay.stack.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -232,19 +197,10 @@ func (m *HopMux) session(ctx context.Context, overlayIPv4 string) (*yamux.Sessio
 	return session, nil
 }
 
-func (m *HopMux) forgetSession(overlayIPv4 string, session *yamux.Session) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.outbound[overlayIPv4] == session {
-		delete(m.outbound, overlayIPv4)
-	}
-}
-
 func (m *HopMux) serveSession(ctx context.Context, conn net.Conn) {
 	session, err := yamux.Server(conn, hopYamuxConfig())
 	if err != nil {
 		_ = conn.Close()
-		log.Warn().Err(err).Msg("create hop yamux session")
 		return
 	}
 	m.mu.Lock()
@@ -282,38 +238,41 @@ func (m *HopMux) serveSession(ctx context.Context, conn net.Conn) {
 }
 
 func (m *HopMux) handleStream(ctx context.Context, stream *yamux.Stream) {
-	_ = stream.SetReadDeadline(time.Now().Add(defaultPrefaceTimeout))
-	var preface hopPreface
-	err := readFramedJSON(stream, &preface, hopPrefaceLimit)
-	_ = stream.SetReadDeadline(time.Time{})
-	if err != nil {
-		_ = stream.Close()
-		return
-	}
-	if preface.Version != hopProtocolVersion {
-		_ = stream.Close()
-		return
-	}
-	switch preface.Mode {
-	case hopModeTLSStream:
-		if strings.TrimSpace(preface.Token) == "" {
-			_ = stream.Close()
-			return
-		}
-		m.deliver(ctx, HopStream{
-			Conn:  stream,
-			Token: preface.Token,
-		})
-	default:
-		_ = stream.Close()
-	}
-}
+	_ = stream.SetReadDeadline(time.Now().Add(defaultTokenTimeout))
+	defer stream.SetReadDeadline(time.Time{})
 
-func (m *HopMux) deliver(ctx context.Context, stream HopStream) {
+	var size [4]byte
+	if _, err := io.ReadFull(stream, size[:]); err != nil {
+		_ = stream.Close()
+		return
+	}
+	n := binary.BigEndian.Uint32(size[:])
+	if n == 0 || n > uint32(maxHopTokenBytes) {
+		_ = stream.Close()
+		return
+	}
+	payload := make([]byte, n)
+	if _, err := io.ReadFull(stream, payload); err != nil {
+		_ = stream.Close()
+		return
+	}
+	token := strings.TrimSpace(string(payload))
+	if token == "" {
+		_ = stream.Close()
+		return
+	}
+	remoteAddr := ""
+	if stream.RemoteAddr() != nil {
+		remoteAddr = stream.RemoteAddr().String()
+	}
 	select {
-	case m.incoming <- stream:
+	case m.incoming <- HopStream{
+		Conn:       stream,
+		Token:      token,
+		RemoteAddr: remoteAddr,
+	}:
 	case <-ctx.Done():
-		_ = stream.Conn.Close()
+		_ = stream.Close()
 	}
 }
 
@@ -324,52 +283,4 @@ func hopYamuxConfig() *yamux.Config {
 	cfg.StreamOpenTimeout = 75 * time.Second
 	cfg.StreamCloseTimeout = 5 * time.Minute
 	return cfg
-}
-
-func writeFramedJSON(w io.Writer, value any, limit int) error {
-	payload, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	if len(payload) == 0 || len(payload) > limit {
-		return errors.New("frame size is invalid")
-	}
-	var size [4]byte
-	binary.BigEndian.PutUint32(size[:], uint32(len(payload)))
-	if err := writeAll(w, size[:]); err != nil {
-		return err
-	}
-	return writeAll(w, payload)
-}
-
-func readFramedJSON(r io.Reader, dst any, limit int) error {
-	var size [4]byte
-	if _, err := io.ReadFull(r, size[:]); err != nil {
-		return err
-	}
-	n := binary.BigEndian.Uint32(size[:])
-	if n == 0 || n > uint32(limit) {
-		return errors.New("frame size is invalid")
-	}
-	payload := make([]byte, n)
-	if _, err := io.ReadFull(r, payload); err != nil {
-		return err
-	}
-	return json.Unmarshal(payload, dst)
-}
-
-func writeAll(w io.Writer, p []byte) error {
-	for len(p) > 0 {
-		n, err := w.Write(p)
-		if n > 0 {
-			p = p[n:]
-		}
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
-	}
-	return nil
 }

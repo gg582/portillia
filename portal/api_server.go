@@ -19,7 +19,6 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/portal/auth"
 	"github.com/gosuda/portal-tunnel/v2/portal/discovery"
 	"github.com/gosuda/portal-tunnel/v2/portal/keyless"
-	"github.com/gosuda/portal-tunnel/v2/portal/overlay"
 	"github.com/gosuda/portal-tunnel/v2/portal/transport"
 	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/gosuda/portal-tunnel/v2/utils"
@@ -490,8 +489,8 @@ func (s *Server) handleHop(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	route, err := overlay.VerifyHopRoute(r.Method, route)
-	if errors.Is(err, overlay.ErrHopRouteSignatureInvalid) {
+	route, err := auth.VerifyHopRoute(r.Method, route)
+	if errors.Is(err, auth.ErrHopRouteSignatureInvalid) {
 		utils.WriteAPIError(w, http.StatusForbidden, types.APIErrorCodeUnauthorized, "hop route signature is invalid")
 		return
 	}
@@ -503,7 +502,6 @@ func (s *Server) handleHop(w http.ResponseWriter, r *http.Request) {
 		utils.WriteAPIError(w, http.StatusForbidden, types.APIErrorCodeUnauthorized, "hop route relay url does not match receiving relay")
 		return
 	}
-
 	if r.Method == http.MethodDelete {
 		s.registry.DeleteHopRoute(&route)
 		utils.WriteAPIData(w, http.StatusOK, map[string]any{})
