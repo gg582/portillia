@@ -247,6 +247,23 @@ func (s *RelaySet) OverlayPeerStates() []RelayState {
 	return out
 }
 
+func (s *RelaySet) OverlayRelayDescriptor(relayURL string, now time.Time) (types.RelayDescriptor, bool) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	relayURL = strings.TrimSpace(relayURL)
+
+	s.mu.RLock()
+	state := s.relays[relayURL]
+	s.mu.RUnlock()
+	if state.Banned || !state.hasObservedDescriptor() || !state.Descriptor.ExpiresAt.After(now) || !state.Descriptor.HasOverlayPeer() {
+		return types.RelayDescriptor{}, false
+	}
+	return state.Descriptor, true
+}
+
 // BootstrapRelayURLs returns configured bootstrap discovery endpoints that
 // can receive this relay's periodic self-announce.
 func (s *RelaySet) BootstrapRelayURLs() []string {

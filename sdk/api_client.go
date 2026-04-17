@@ -98,23 +98,12 @@ func (l *listener) registerLease(ctx context.Context, ttl time.Duration, udpEnab
 			return types.RegisterResponse{}, nil, errors.New("multi-hop relay set is unavailable")
 		}
 
-		states := l.relaySet.AggregateRelays()
-		descriptors := make(map[string]types.RelayDescriptor, len(states))
-		for _, state := range states {
-			desc := state.Descriptor
-			if desc.APIHTTPSAddr != "" {
-				descriptors[desc.APIHTTPSAddr] = desc
-			}
-		}
-
+		now := time.Now().UTC()
 		hopPath := make([]types.RelayDescriptor, 0, len(l.multiHop))
 		for i, relayURL := range l.multiHop {
-			desc, ok := descriptors[relayURL]
+			desc, ok := l.relaySet.OverlayRelayDescriptor(relayURL, now)
 			if !ok {
-				return types.RegisterResponse{}, nil, fmt.Errorf("multi-hop relay %d descriptor was not discovered", i)
-			}
-			if !desc.SupportsOverlay {
-				return types.RegisterResponse{}, nil, fmt.Errorf("multi-hop relay %d does not support overlay", i)
+				return types.RegisterResponse{}, nil, fmt.Errorf("multi-hop relay %d descriptor is unavailable", i)
 			}
 			hopPath = append(hopPath, desc)
 		}
@@ -228,7 +217,18 @@ func (l *listener) syncHopRoutes(ctx context.Context, method string, expiresAt t
 
 	orderedRoutes := routes
 	if method == http.MethodPost {
+		if l.relaySet == nil {
+			return errors.New("multi-hop relay set is unavailable")
+		}
 		orderedRoutes = append([]types.HopRoute(nil), routes...)
+		now := time.Now().UTC()
+		for i := range orderedRoutes {
+			desc, ok := l.relaySet.OverlayRelayDescriptor(orderedRoutes[i].ForwardRelay.APIHTTPSAddr, now)
+			if !ok {
+				return fmt.Errorf("multi-hop forward relay %d descriptor is unavailable", i)
+			}
+			orderedRoutes[i].ForwardRelay = desc
+		}
 		slices.Reverse(orderedRoutes)
 	}
 

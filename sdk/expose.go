@@ -165,7 +165,7 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 		}
 	}
 
-	if cfg.Discovery {
+	if cfg.Discovery || len(multiHop) > 0 {
 		go exposure.runDiscoveryLoop(exposureCtx)
 	}
 

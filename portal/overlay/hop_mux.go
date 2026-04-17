@@ -121,7 +121,7 @@ func (m *HopMux) OpenStream(ctx context.Context, overlayIPv4, token string) (net
 	if err != nil {
 		return nil, err
 	}
-	stream, err := session.OpenStream()
+	stream, err := openYamuxStream(ctx, session)
 	if err != nil {
 		m.mu.Lock()
 		if m.outbound[overlayIPv4] == session {
@@ -148,6 +148,25 @@ func (m *HopMux) OpenStream(ctx context.Context, overlayIPv4, token string) (net
 		return nil, io.ErrShortWrite
 	}
 	return stream, nil
+}
+
+func openYamuxStream(ctx context.Context, session *yamux.Session) (*yamux.Stream, error) {
+	type openResult struct {
+		stream *yamux.Stream
+		err    error
+	}
+	result := make(chan openResult, 1)
+	go func() {
+		stream, err := session.OpenStream()
+		result <- openResult{stream: stream, err: err}
+	}()
+	select {
+	case res := <-result:
+		return res.stream, res.err
+	case <-ctx.Done():
+		_ = session.Close()
+		return nil, ctx.Err()
+	}
 }
 
 func (m *HopMux) session(ctx context.Context, overlayIPv4 string) (*yamux.Session, error) {

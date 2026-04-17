@@ -34,6 +34,7 @@ const (
 	defaultReadyQueueLimit  = 8
 	defaultClientHelloWait  = 2 * time.Second
 	defaultControlBodyLimit = 4 << 20
+	defaultHopOpenRetryWait = 250 * time.Millisecond
 )
 
 type ServerConfig struct {
@@ -484,7 +485,12 @@ func (s *Server) runSNIListener(ctx context.Context) error {
 				}
 
 				record, ok := s.registry.Lookup(serverName)
-				if !ok || !s.bridgeLeaseConn(ctx, wrappedConn, record) {
+				if !ok {
+					_ = wrappedConn.Close()
+					return
+				}
+				if err := s.bridgeLeaseConn(ctx, wrappedConn, record); err != nil {
+					log.Warn().Err(err).Str("server_name", serverName).Msg("bridge lease connection")
 					_ = wrappedConn.Close()
 					return
 				}
@@ -525,8 +531,8 @@ func (s *Server) runHopMux(ctx context.Context) error {
 					return
 				}
 				log.Info().Str("remote_addr", stream.RemoteAddr).Bool("forward", record.isHopForward()).Msg("hop stream received")
-				if !s.bridgeLeaseConn(groupCtx, stream.Conn, record) {
-					log.Warn().Str("remote_addr", stream.RemoteAddr).Msg("hop stream bridge failed")
+				if err := s.bridgeLeaseConn(groupCtx, stream.Conn, record); err != nil {
+					log.Warn().Err(err).Str("remote_addr", stream.RemoteAddr).Msg("hop stream bridge failed")
 					_ = stream.Conn.Close()
 				}
 			}(stream)
@@ -535,35 +541,57 @@ func (s *Server) runHopMux(ctx context.Context) error {
 	return group.Wait()
 }
 
-func (s *Server) bridgeLeaseConn(ctx context.Context, conn net.Conn, record *leaseRecord) bool {
+func (s *Server) bridgeLeaseConn(ctx context.Context, conn net.Conn, record *leaseRecord) error {
 	if s == nil || s.registry == nil || record == nil || time.Now().After(record.ExpiresAt) {
-		return false
+		return errLeaseNotFound
 	}
 	if record.isHopForward() {
 		overlayIPv4 := strings.TrimSpace(record.hopNextOverlayIPv4)
 		forwardToken := strings.TrimSpace(record.hopNextToken)
-		if s.hopMux == nil || overlayIPv4 == "" || forwardToken == "" {
-			return false
+		switch {
+		case s.hopMux == nil:
+			return errFeatureUnavailable
+		case overlayIPv4 == "":
+			return errors.New("next hop overlay ipv4 is required")
+		case forwardToken == "":
+			return errors.New("next hop token is required")
 		}
-		next, err := s.hopMux.OpenStream(ctx, overlayIPv4, forwardToken)
-		if err != nil {
-			log.Warn().Err(err).Str("next_overlay_ipv4", overlayIPv4).Msg("open next hop stream")
-			return false
+
+		openCtx, cancel := context.WithTimeout(ctx, defaultClaimTimeout)
+		defer cancel()
+		var next net.Conn
+		var lastErr error
+		for {
+			var err error
+			next, err = s.hopMux.OpenStream(openCtx, overlayIPv4, forwardToken)
+			if err == nil {
+				break
+			}
+			lastErr = err
+			if errors.Is(err, net.ErrClosed) {
+				return fmt.Errorf("open next hop stream: %w", err)
+			}
+			if !utils.SleepOrDone(openCtx, defaultHopOpenRetryWait) {
+				return fmt.Errorf("open next hop stream within %s: %w", defaultClaimTimeout, errors.Join(lastErr, openCtx.Err()))
+			}
 		}
 		s.proxy.bridge(conn, next, "", nil)
-		return true
+		return nil
 	}
-	if record.stream == nil || !s.registry.policy.IsIdentityRoutable(record.Key()) {
-		return false
+	if record.stream == nil {
+		return errors.New("lease stream is not ready")
+	}
+	if !s.registry.policy.IsIdentityRoutable(record.Key()) {
+		return errLeaseRejected
 	}
 	claimCtx, cancel := context.WithTimeout(ctx, defaultClaimTimeout)
 	session, err := record.stream.Claim(claimCtx)
 	cancel()
 	if err != nil {
-		return false
+		return fmt.Errorf("claim lease stream: %w", err)
 	}
 	s.proxy.bridge(conn, session, record.Key(), s.registry.policy.BPSManager())
-	return true
+	return nil
 }
 
 func (s *Server) runLeaseJanitor(ctx context.Context, interval time.Duration) error {
