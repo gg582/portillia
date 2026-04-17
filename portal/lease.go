@@ -582,6 +582,12 @@ func (r *leaseRegistry) publicLease(record *leaseRecord) types.Lease {
 	}
 	if record.stream != nil {
 		lease.Ready = record.stream.ReadyCount()
+	} else if record.isPublicEntry() {
+		_, _, hasNextHop := record.nextHop()
+		if !hasNextHop {
+			return lease
+		}
+		lease.Ready = 1
 	}
 	return lease
 }

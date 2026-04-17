@@ -518,7 +518,11 @@ func (s *Server) runHopMux(ctx context.Context) error {
 					_ = stream.Conn.Close()
 					return
 				}
-				log.Info().Str("remote_addr", stream.RemoteAddr).Bool("forward", record.isHopMiddle()).Msg("hop stream received")
+				hopRole := "exit"
+				if record.isHopMiddle() {
+					hopRole = "middle"
+				}
+				log.Info().Str("remote_addr", stream.RemoteAddr).Str("hop_role", hopRole).Msg("hop stream received")
 				if err := s.bridgeLeaseConn(groupCtx, stream.Conn, record); err != nil {
 					log.Warn().Err(err).Str("remote_addr", stream.RemoteAddr).Msg("hop stream bridge failed")
 					_ = stream.Conn.Close()
