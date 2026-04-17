@@ -1,7 +1,12 @@
 package types
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -57,6 +62,27 @@ func (i Identity) Key() string {
 	return name + IdentityKeySeparator + address
 }
 
+// DeriveToken derives a deterministic identity-scoped token from ordered
+// length-prefixed token parts. The first part should identify the token family.
+func (i Identity) DeriveToken(parts ...string) (string, error) {
+	privateKey := strings.TrimSpace(i.PrivateKey)
+	if privateKey == "" {
+		return "", errors.New("identity private key is required")
+	}
+
+	mac := hmac.New(sha256.New, []byte(privateKey))
+	_, _ = mac.Write([]byte("Portal identity token v1\n"))
+	_, _ = mac.Write([]byte(i.Key()))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		_, _ = mac.Write([]byte("\n"))
+		_, _ = mac.Write([]byte(strconv.Itoa(len(part))))
+		_, _ = mac.Write([]byte(":"))
+		_, _ = mac.Write([]byte(part))
+	}
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
+}
+
 type LeaseMetadata struct {
 	Description string   `json:"description,omitempty"`
 	Owner       string   `json:"owner,omitempty"`
@@ -102,88 +128,60 @@ type AdminLease struct {
 }
 
 type RelayDescriptor struct {
-	Identity
-
-	RelayID             string    `json:"relay_id,omitempty"`
-	OwnerAddress        string    `json:"owner_address,omitempty"`
-	Version             uint32    `json:"version"`
-	IssuedAt            time.Time `json:"issued_at"`
-	ExpiresAt           time.Time `json:"expires_at"`
-	APIHTTPSAddr        string    `json:"api_https_addr"`
-	IngressTLSAddr      string    `json:"ingress_tls_addr,omitempty"`
-	WireGuardPublicKey  string    `json:"wireguard_public_key,omitempty"`
-	WireGuardEndpoint   string    `json:"wireguard_endpoint,omitempty"`
-	OverlayIPv4         string    `json:"overlay_ipv4,omitempty"`
-	OverlayCIDRs        []string  `json:"overlay_cidrs,omitempty"`
-	Discovery           bool      `json:"discovery,omitempty"`
-	SupportsUDP         bool      `json:"supports_udp,omitempty"`
-	SupportsTCP         bool      `json:"supports_tcp,omitempty"`
-	SupportsOverlayPeer bool      `json:"supports_overlay_peer,omitempty"`
-	Load                float64   `json:"load,omitempty"`
-	LoadScore           float64   `json:"load_score,omitempty"`
-	LastUpdated         int64     `json:"last_updated,omitempty"`
-	Signature           string    `json:"signature,omitempty"`
+	Address            string    `json:"address"`
+	Version            string    `json:"version"`
+	IssuedAt           time.Time `json:"issued_at"`
+	ExpiresAt          time.Time `json:"expires_at"`
+	APIHTTPSAddr       string    `json:"api_https_addr"`
+	WireGuardPublicKey string    `json:"wireguard_public_key,omitempty"`
+	WireGuardPort      int       `json:"wireguard_port,omitempty"`
+	SupportsOverlay    bool      `json:"supports_overlay,omitempty"`
+	SupportsUDP        bool      `json:"supports_udp,omitempty"`
+	SupportsTCP        bool      `json:"supports_tcp,omitempty"`
+	ActiveConnections  int64     `json:"active_connections,omitempty"`
+	TCPBPS             float64   `json:"tcp_bps,omitempty"`
+	Signature          string    `json:"signature,omitempty"`
 }
 
-// canonicalRelayDescriptor mirrors the subset of RelayDescriptor fields that
-// participate in the cryptographic signature. Only fields that uniquely
-// identify the relay or affect routing are signed; mutable telemetry (Load,
-// LoadScore, LastUpdated) and the Signature itself are deliberately excluded
-// so that observers may update telemetry without invalidating the signature.
-//
-// All slice fields are normalized to non-nil to keep encoding deterministic
-// (json.Marshal encodes nil slices as `null` and empty slices as `[]`). Time
-// fields are encoded as Unix nanoseconds to avoid any RFC3339 round-trip
-// ambiguity.
-type canonicalRelayDescriptor struct {
-	Name                string   `json:"name"`
-	Address             string   `json:"address"`
-	RelayID             string   `json:"relay_id"`
-	OwnerAddress        string   `json:"owner_address"`
-	Version             uint32   `json:"version"`
-	IssuedAtUnixNano    int64    `json:"issued_at_unix_nano"`
-	ExpiresAtUnixNano   int64    `json:"expires_at_unix_nano"`
-	APIHTTPSAddr        string   `json:"api_https_addr"`
-	IngressTLSAddr      string   `json:"ingress_tls_addr"`
-	WireGuardPublicKey  string   `json:"wireguard_public_key"`
-	WireGuardEndpoint   string   `json:"wireguard_endpoint"`
-	OverlayIPv4         string   `json:"overlay_ipv4"`
-	OverlayCIDRs        []string `json:"overlay_cidrs"`
-	Discovery           bool     `json:"discovery"`
-	SupportsUDP         bool     `json:"supports_udp"`
-	SupportsTCP         bool     `json:"supports_tcp"`
-	SupportsOverlayPeer bool     `json:"supports_overlay_peer"`
+func (desc RelayDescriptor) HasOverlayPeer() bool {
+	return desc.SupportsOverlay &&
+		strings.TrimSpace(desc.WireGuardPublicKey) != "" &&
+		desc.WireGuardPort > 0 &&
+		desc.WireGuardPort <= 65535
 }
 
 // CanonicalBytes returns the deterministic byte representation of a relay
-// descriptor used for signing and signature verification. Two descriptors
-// that differ only in mutable telemetry fields produce identical bytes.
+// descriptor used for signing and signature verification.
 //
 // The encoding is JSON over a fixed struct schema (no maps, no omitempty),
 // which guarantees field order and presence regardless of input variation.
 func CanonicalBytes(desc RelayDescriptor) ([]byte, error) {
-	overlayCIDRs := desc.OverlayCIDRs
-	if overlayCIDRs == nil {
-		overlayCIDRs = []string{}
-	}
-	canonical := canonicalRelayDescriptor{
-		Name:                desc.Name,
-		Address:             desc.Address,
-		RelayID:             desc.RelayID,
-		OwnerAddress:        desc.OwnerAddress,
-		Version:             desc.Version,
-		IssuedAtUnixNano:    desc.IssuedAt.UTC().UnixNano(),
-		ExpiresAtUnixNano:   desc.ExpiresAt.UTC().UnixNano(),
-		APIHTTPSAddr:        desc.APIHTTPSAddr,
-		IngressTLSAddr:      desc.IngressTLSAddr,
-		WireGuardPublicKey:  desc.WireGuardPublicKey,
-		WireGuardEndpoint:   desc.WireGuardEndpoint,
-		OverlayIPv4:         desc.OverlayIPv4,
-		OverlayCIDRs:        overlayCIDRs,
-		Discovery:           desc.Discovery,
-		SupportsUDP:         desc.SupportsUDP,
-		SupportsTCP:         desc.SupportsTCP,
-		SupportsOverlayPeer: desc.SupportsOverlayPeer,
+	canonical := struct {
+		Address            string  `json:"address"`
+		Version            string  `json:"version"`
+		IssuedAtUnixNano   int64   `json:"issued_at_unix_nano"`
+		ExpiresAtUnixNano  int64   `json:"expires_at_unix_nano"`
+		APIHTTPSAddr       string  `json:"api_https_addr"`
+		WireGuardPublicKey string  `json:"wireguard_public_key"`
+		WireGuardPort      int     `json:"wireguard_port"`
+		SupportsOverlay    bool    `json:"supports_overlay"`
+		SupportsUDP        bool    `json:"supports_udp"`
+		SupportsTCP        bool    `json:"supports_tcp"`
+		ActiveConnections  int64   `json:"active_connections"`
+		TCPBPS             float64 `json:"tcp_bps"`
+	}{
+		Address:            desc.Address,
+		Version:            desc.Version,
+		IssuedAtUnixNano:   desc.IssuedAt.UTC().UnixNano(),
+		ExpiresAtUnixNano:  desc.ExpiresAt.UTC().UnixNano(),
+		APIHTTPSAddr:       desc.APIHTTPSAddr,
+		WireGuardPublicKey: desc.WireGuardPublicKey,
+		WireGuardPort:      desc.WireGuardPort,
+		SupportsOverlay:    desc.SupportsOverlay,
+		SupportsUDP:        desc.SupportsUDP,
+		SupportsTCP:        desc.SupportsTCP,
+		ActiveConnections:  desc.ActiveConnections,
+		TCPBPS:             desc.TCPBPS,
 	}
 	return json.Marshal(canonical)
 }

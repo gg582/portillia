@@ -45,7 +45,7 @@ func TestLeaseRegistryLifecycle(t *testing.T) {
 		t.Fatalf("Lookup() = %v, %v, want registered lease", lookedUp, ok)
 	}
 
-	renewed, err := registry.Renew(record.Copy(), time.Minute, "203.0.113.10", "")
+	renewed, err := registry.Renew(record.Key(), time.Minute, "203.0.113.10", "")
 	if err != nil {
 		t.Fatalf("Renew() error = %v", err)
 	}
@@ -56,7 +56,7 @@ func TestLeaseRegistryLifecycle(t *testing.T) {
 		t.Fatalf("Renew() did not register client IP for lease")
 	}
 
-	removed, err := registry.Unregister(record.Copy())
+	removed, err := registry.Unregister(record.Key())
 	if err != nil {
 		t.Fatalf("Unregister() error = %v", err)
 	}
@@ -111,7 +111,7 @@ func TestLeaseRegistryWildcardAndConflict(t *testing.T) {
 	}
 }
 
-func TestLeaseRegistrySnapshotAndRoutableUsePolicy(t *testing.T) {
+func TestLeaseRegistryAdminLeasesAndRoutableUsePolicy(t *testing.T) {
 	t.Parallel()
 
 	registry := newTestRegistry(t)
@@ -137,9 +137,12 @@ func TestLeaseRegistrySnapshotAndRoutableUsePolicy(t *testing.T) {
 		t.Fatal("policy.IsIdentityRoutable() = true, want false before approval")
 	}
 
-	snapshot := registry.AdminSnapshot(record)
-	if snapshot.IsApproved {
-		t.Fatal("AdminSnapshot().IsApproved = true, want false before approval")
+	leases := registry.AdminLeases(time.Now())
+	if len(leases) != 1 {
+		t.Fatalf("AdminLeases() length = %d, want 1", len(leases))
+	}
+	if leases[0].IsApproved {
+		t.Fatal("AdminLeases()[0].IsApproved = true, want false before approval")
 	}
 	if got := runtime.IPFilter().IdentityIP(record.Key()); got != "203.0.113.20" {
 		t.Fatalf("Register() lease IP = %q, want %q", got, "203.0.113.20")
@@ -150,9 +153,40 @@ func TestLeaseRegistrySnapshotAndRoutableUsePolicy(t *testing.T) {
 		t.Fatal("policy.IsIdentityRoutable() = false, want true after approval")
 	}
 
-	snapshot = registry.AdminSnapshot(record)
-	if !snapshot.IsApproved {
-		t.Fatal("AdminSnapshot().IsApproved = false, want true after approval")
+	leases = registry.AdminLeases(time.Now())
+	if len(leases) != 1 {
+		t.Fatalf("AdminLeases() length = %d, want 1", len(leases))
+	}
+	if !leases[0].IsApproved {
+		t.Fatal("AdminLeases()[0].IsApproved = false, want true after approval")
+	}
+}
+
+func TestLeaseRegistryPublicLeasesIncludesIngressRouteInManualApproval(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t)
+	if err := registry.policy.Approver().SetMode(policy.ModeManual); err != nil {
+		t.Fatalf("SetMode() error = %v", err)
+	}
+	route := &leaseRecord{
+		Identity: types.Identity{
+			Name:    "demo",
+			Address: "addr-ingress",
+		},
+		Hostname:  "demo.example.com",
+		ExpiresAt: time.Now().Add(30 * time.Second),
+	}
+	if err := registry.Register(route); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	leases := registry.PublicLeases(time.Now())
+	if len(leases) != 1 {
+		t.Fatalf("PublicLeases() length = %d, want 1", len(leases))
+	}
+	if leases[0].Hostname != route.Hostname {
+		t.Fatalf("PublicLeases()[0].Hostname = %q, want %q", leases[0].Hostname, route.Hostname)
 	}
 }
 
@@ -185,12 +219,12 @@ func TestLeaseRegistryCleanupExpiredClosesBroker(t *testing.T) {
 	}
 }
 
-func TestServerRunLeaseJanitorRejectsNonPositiveInterval(t *testing.T) {
+func TestServerRunRegistryJanitorRejectsNonPositiveInterval(t *testing.T) {
 	t.Parallel()
 
 	server := &Server{registry: newTestRegistry(t)}
-	err := server.runLeaseJanitor(context.Background(), 0)
+	err := server.runRegistryJanitor(context.Background(), 0)
 	if err == nil {
-		t.Fatal("runLeaseJanitor() error = nil, want validation error")
+		t.Fatal("runRegistryJanitor() error = nil, want validation error")
 	}
 }

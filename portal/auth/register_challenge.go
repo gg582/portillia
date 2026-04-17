@@ -54,6 +54,7 @@ func NewRegisterChallenge(req types.RegisterChallengeRequest, domain, uri string
 		TTL:        req.TTL,
 		UDPEnabled: req.UDPEnabled,
 		TCPEnabled: req.TCPEnabled,
+		HopToken:   strings.TrimSpace(req.HopToken),
 	}
 
 	return &RegisterChallenge{

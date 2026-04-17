@@ -7,10 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
-	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
@@ -299,22 +296,6 @@ func WireGuardPublicKeyFromPrivate(raw string) (string, error) {
 	return base64.StdEncoding.EncodeToString(publicKey[:]), nil
 }
 
-func WireGuardListenPort(rawEndpoint string) (int, error) {
-	endpoint := strings.TrimSpace(rawEndpoint)
-	if endpoint == "" {
-		return 0, errors.New("wireguard endpoint is required")
-	}
-	_, portText, err := net.SplitHostPort(endpoint)
-	if err != nil {
-		return 0, errors.New("wireguard endpoint must be host:port")
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil || port <= 0 || port > 65535 {
-		return 0, errors.New("wireguard endpoint port is invalid")
-	}
-	return port, nil
-}
-
 func DeriveWireGuardOverlayIPv4(publicKey string) (string, error) {
 	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(publicKey))
 	if err != nil {
@@ -383,63 +364,6 @@ func ValidateWireGuardPublicKey(raw string) error {
 		return errors.New("wireguard_public_key must be 32 bytes")
 	}
 	return nil
-}
-
-func ValidateWireGuardEndpoint(raw string) error {
-	endpoint := strings.TrimSpace(raw)
-	if endpoint == "" {
-		return errors.New("wireguard_endpoint is required")
-	}
-	host, port, err := net.SplitHostPort(endpoint)
-	if err != nil {
-		return errors.New("wireguard_endpoint must be host:port")
-	}
-	if strings.TrimSpace(host) == "" {
-		return errors.New("wireguard_endpoint host is required")
-	}
-	portNum, err := strconv.Atoi(port)
-	if err != nil || portNum <= 0 || portNum > 65535 {
-		return errors.New("wireguard_endpoint port is invalid")
-	}
-	return nil
-}
-
-func ValidateOverlayIPv4(raw string) error {
-	ipText := strings.TrimSpace(raw)
-	if ipText == "" {
-		return errors.New("overlay_ipv4 is required")
-	}
-	ip := net.ParseIP(ipText)
-	if ip == nil || ip.To4() == nil {
-		return errors.New("overlay_ipv4 must be a valid IPv4 address")
-	}
-	return nil
-}
-
-func NormalizeOverlayCIDRs(inputs []string) ([]string, error) {
-	if len(inputs) == 0 {
-		return nil, nil
-	}
-	seen := make(map[string]struct{}, len(inputs))
-	out := make([]string, 0, len(inputs))
-	for _, input := range inputs {
-		input = strings.TrimSpace(input)
-		if input == "" {
-			continue
-		}
-		_, network, err := net.ParseCIDR(input)
-		if err != nil {
-			return nil, fmt.Errorf("invalid overlay cidr %q", input)
-		}
-		normalized := network.String()
-		if _, ok := seen[normalized]; ok {
-			continue
-		}
-		seen[normalized] = struct{}{}
-		out = append(out, normalized)
-	}
-	sort.Strings(out)
-	return out, nil
 }
 
 func ParseSecp256k1PublicKeyHex(raw string) (*secp256k1.PublicKey, error) {

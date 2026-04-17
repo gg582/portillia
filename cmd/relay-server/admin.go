@@ -172,7 +172,7 @@ func (f *Frontend) serveAdmin(w http.ResponseWriter, r *http.Request) {
 		if !utils.RequireMethod(w, r, http.MethodGet) {
 			return
 		}
-		leases := f.server.AdminLeaseSnapshots()
+		leases := f.server.AdminLeases()
 		f.attachAutomaticAdminThumbnails(leases)
 		utils.WriteAPIData(w, http.StatusOK, types.AdminSnapshotResponse{
 			ApprovalMode:       string(runtime.Approver().Mode()),

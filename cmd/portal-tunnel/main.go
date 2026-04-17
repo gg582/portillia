@@ -43,6 +43,7 @@ func main() {
 
 type exposeFlags struct {
 	relayCSV        string
+	multiHopCSV     string
 	discovery       bool
 	banMITM         bool
 	identityPath    string
@@ -68,6 +69,7 @@ func runExposeCommand(args []string) error {
 	fs := utils.NewFlagSet("expose", printExposeUsage)
 
 	utils.StringFlag(fs, &flags.relayCSV, "relays", "", "Additional Portal relay server API URLs (comma-separated; scheme omitted defaults to https)")
+	utils.StringFlagEnv(fs, &flags.multiHopCSV, "multi-hop", "", "Ordered multi-hop relay API URLs, comma-separated", "MULTI_HOP")
 	utils.BoolFlag(fs, &flags.discovery, "discovery", true, "Include public registry relays and discover additional relay bootstraps")
 	utils.BoolFlagEnv(fs, &flags.banMITM, "ban-mitm", true, "Ban relay when the MITM self-probe detects TLS termination", "BAN_MITM")
 	utils.StringFlagEnv(fs, &flags.identityPath, "identity-path", "identity.json", "identity json file path", "IDENTITY_PATH")
@@ -121,6 +123,7 @@ func runExposeCommand(args []string) error {
 		UDPAddr:         flags.udpAddr,
 		UDPEnabled:      flags.udp,
 		TCPEnabled:      flags.tcp,
+		MultiHop:        utils.SplitCSV(flags.multiHopCSV),
 		BanMITM:         flags.banMITM,
 		MaxActiveRelays: flags.maxActiveRelays,
 		Metadata: types.LeaseMetadata{
@@ -304,6 +307,7 @@ func printExposeUsage(w io.Writer) {
 			"portal expose 3000 --udp --udp-addr 127.0.0.1:5353",
 			"portal expose 3000 --ban-mitm",
 			"portal expose 3000 --relays https://portal.example.com --discovery=false",
+			"portal expose 3000 --multi-hop https://entry.example.com,https://transit.example.com,https://exit.example.com",
 		},
 	)
 }

@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/gosuda/portal-tunnel/v2/types"
-	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
 const (
@@ -47,10 +46,6 @@ type RelayState struct {
 func newRelayState(relayURL string) RelayState {
 	return RelayState{
 		Descriptor: types.RelayDescriptor{
-			Identity: types.Identity{
-				Name: utils.PortalRootHost(relayURL),
-			},
-			RelayID:      relayURL,
 			APIHTTPSAddr: relayURL,
 		},
 	}

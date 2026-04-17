@@ -208,6 +208,26 @@ func HostnameMatchesBaseDomain(hostname, baseDomain string) bool {
 	return hostname == baseDomain || strings.HasSuffix(hostname, "."+baseDomain)
 }
 
+func HostnameMatchesPattern(pattern, hostname string) bool {
+	pattern = NormalizeHostname(pattern)
+	hostname = NormalizeHostname(hostname)
+	if pattern == "" || hostname == "" {
+		return false
+	}
+	if pattern == hostname {
+		return true
+	}
+	if !strings.HasPrefix(pattern, "*.") {
+		return false
+	}
+	suffix := strings.TrimPrefix(pattern, "*.")
+	if !strings.Contains(suffix, ".") {
+		return false
+	}
+	_, rest, ok := strings.Cut(hostname, ".")
+	return ok && rest == suffix
+}
+
 func NormalizeChildHostnames(inputs []string, baseDomain string) []string {
 	if len(inputs) == 0 {
 		return nil

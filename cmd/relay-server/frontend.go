@@ -207,12 +207,12 @@ func (f *Frontend) servePortalHTMLWithSSR(w http.ResponseWriter) {
 }
 
 func (f *Frontend) injectServerData(htmlContent string) string {
-	var snapshots []types.Lease
+	var leases []types.Lease
 	if f.server != nil {
-		snapshots = f.server.LeaseSnapshots()
-		f.attachAutomaticThumbnails(snapshots)
+		leases = f.server.PublicLeases()
+		f.attachAutomaticThumbnails(leases)
 	}
-	jsonData, err := json.Marshal(snapshots)
+	jsonData, err := json.Marshal(leases)
 	if err != nil {
 		jsonData = []byte("[]")
 	}
@@ -234,10 +234,10 @@ func (f *Frontend) serveTunnelStatus(w http.ResponseWriter, r *http.Request) {
 	resp := types.TunnelStatusResponse{
 		Hostname: hostname,
 	}
-	if snapshot, ok := f.server.LeaseSnapshotByHostname(hostname); ok {
-		resp.Hostname = snapshot.Hostname
+	if lease, ok := f.publicLeaseByHostname(hostname); ok {
+		resp.Hostname = lease.Hostname
 		resp.Registered = true
-		resp.ServiceAlive = snapshot.Ready > 0
+		resp.ServiceAlive = lease.Ready > 0
 	}
 	utils.WriteAPIData(w, http.StatusOK, resp)
 }
@@ -254,8 +254,8 @@ func (f *Frontend) serveThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snapshot, ok := f.server.LeaseSnapshotByHostname(hostname)
-	if !ok || snapshot.Metadata.Thumbnail != "" {
+	lease, ok := f.publicLeaseByHostname(hostname)
+	if !ok || lease.Metadata.Thumbnail != "" {
 		f.thumbnails.remove(hostname)
 		http.NotFound(w, r)
 		return
@@ -277,30 +277,43 @@ func (f *Frontend) serveThumbnail(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
-func (f *Frontend) attachAutomaticThumbnails(leases []types.Lease) {
-	if f == nil || f.thumbnails == nil {
-		return
+func (f *Frontend) publicLeaseByHostname(hostname string) (types.Lease, bool) {
+	if f == nil || f.server == nil {
+		return types.Lease{}, false
 	}
-	for i := range leases {
-		if leases[i].Hostname == "" || leases[i].Metadata.Thumbnail != "" {
-			continue
+	hostname = utils.NormalizeHostname(hostname)
+	if hostname == "" {
+		return types.Lease{}, false
+	}
+	for _, lease := range f.server.PublicLeases() {
+		if utils.HostnameMatchesPattern(lease.Hostname, hostname) {
+			return lease, true
 		}
-		leases[i].Metadata.Thumbnail = types.PathThumbnailPrefix + leases[i].Hostname
-		f.thumbnails.triggerAsync(leases[i].Hostname)
+	}
+	return types.Lease{}, false
+}
+
+func (f *Frontend) attachAutomaticThumbnails(leases []types.Lease) {
+	for i := range leases {
+		f.attachAutomaticThumbnail(leases[i].Hostname, &leases[i].Metadata)
 	}
 }
 
 func (f *Frontend) attachAutomaticAdminThumbnails(leases []types.AdminLease) {
+	for i := range leases {
+		f.attachAutomaticThumbnail(leases[i].Hostname, &leases[i].Metadata)
+	}
+}
+
+func (f *Frontend) attachAutomaticThumbnail(hostname string, metadata *types.LeaseMetadata) {
 	if f == nil || f.thumbnails == nil {
 		return
 	}
-	for i := range leases {
-		if leases[i].Hostname == "" || leases[i].Metadata.Thumbnail != "" {
-			continue
-		}
-		leases[i].Metadata.Thumbnail = types.PathThumbnailPrefix + leases[i].Hostname
-		f.thumbnails.triggerAsync(leases[i].Hostname)
+	if hostname == "" || metadata == nil || metadata.Thumbnail != "" {
+		return
 	}
+	metadata.Thumbnail = types.PathThumbnailPrefix + hostname
+	f.thumbnails.triggerAsync(hostname)
 }
 
 func (f *Frontend) injectOGMetadata(htmlContent, title, description string) string {

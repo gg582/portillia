@@ -10,7 +10,7 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
-func mustPolicyRelayDescriptor(t *testing.T, relayName, relayURL string) types.RelayDescriptor {
+func mustPolicyRelayDescriptor(t *testing.T, relayURL string) types.RelayDescriptor {
 	t.Helper()
 
 	signing, err := utils.ResolveSecp256k1Identity("")
@@ -19,16 +19,11 @@ func mustPolicyRelayDescriptor(t *testing.T, relayName, relayURL string) types.R
 	}
 	now := time.Now().UTC()
 	signed, err := auth.SignRelayDescriptor(types.RelayDescriptor{
-		Identity: types.Identity{
-			Name:    relayName,
-			Address: signing.Address,
-		},
-		RelayID:      relayURL,
-		Version:      1,
+		Address:      signing.Address,
+		Version:      types.DiscoveryVersion,
 		IssuedAt:     now,
 		ExpiresAt:    now.Add(time.Hour),
 		APIHTTPSAddr: relayURL,
-		Discovery:    true,
 	}, signing.PrivateKey)
 	if err != nil {
 		t.Fatalf("SignRelayDescriptor() error = %v", err)
@@ -39,30 +34,26 @@ func mustPolicyRelayDescriptor(t *testing.T, relayName, relayURL string) types.R
 func bootstrapPolicyRelayState(relayURL string) RelayState {
 	return RelayState{
 		Descriptor: types.RelayDescriptor{
-			Identity: types.Identity{
-				Name: utils.PortalRootHost(relayURL),
-			},
-			RelayID:      relayURL,
 			APIHTTPSAddr: relayURL,
 		},
 		Bootstrap: true,
 	}
 }
 
-func confirmedPolicyRelayState(t *testing.T, relayName, relayURL string) RelayState {
+func confirmedPolicyRelayState(t *testing.T, relayURL string) RelayState {
 	t.Helper()
 
 	return RelayState{
-		Descriptor: mustPolicyRelayDescriptor(t, relayName, relayURL),
+		Descriptor: mustPolicyRelayDescriptor(t, relayURL),
 		Confirmed:  true,
 		LastSeenAt: time.Now().UTC(),
 	}
 }
 
-func confirmedPolicyRelayStateWithRTT(t *testing.T, relayName, relayURL string, rtt time.Duration) RelayState {
+func confirmedPolicyRelayStateWithRTT(t *testing.T, relayURL string, rtt time.Duration) RelayState {
 	t.Helper()
 
-	state := confirmedPolicyRelayState(t, relayName, relayURL)
+	state := confirmedPolicyRelayState(t, relayURL)
 	state.DiscoveryRTT = rtt
 	state.DiscoveryRTTAt = time.Now().UTC()
 	return state
@@ -76,8 +67,8 @@ func TestSelectPriorityKeepsExplicitRelaysOutsideAutoLimit(t *testing.T) {
 
 	selected := policy.SelectPriority([]RelayState{
 		bootstrapPolicyRelayState(explicitRelay),
-		confirmedPolicyRelayState(t, "relay-a", relayA),
-		confirmedPolicyRelayState(t, "relay-b", relayB),
+		confirmedPolicyRelayState(t, relayA),
+		confirmedPolicyRelayState(t, relayB),
 	}, ClientState{
 		ExplicitRelayURLs: []string{explicitRelay},
 		MaxActiveRelays:   1,
@@ -112,10 +103,9 @@ func TestSelectAggregateKeepsBootstrapRelayWhenDescriptorExpired(t *testing.T) {
 func TestSelectAggregateKeepsCollectedRelayEvenWhenNotAdvertisable(t *testing.T) {
 	policy := DefaultRelayPolicy{}
 	state := RelayState{
-		Descriptor: mustPolicyRelayDescriptor(t, "relay-a", "https://relay-a.example"),
+		Descriptor: mustPolicyRelayDescriptor(t, "https://relay-a.example"),
 		LastSeenAt: time.Now().UTC().Add(-31 * 24 * time.Hour),
 	}
-	state.Descriptor.Discovery = false
 	state.Descriptor.ExpiresAt = time.Now().UTC().Add(-time.Second)
 
 	selected := policy.SelectAggregate([]RelayState{state})
@@ -128,7 +118,7 @@ func TestSelectAggregateKeepsCollectedRelayEvenWhenNotAdvertisable(t *testing.T)
 func TestSelectAggregateIncludesHintedRelayWithoutConfirmation(t *testing.T) {
 	policy := DefaultRelayPolicy{}
 	state := RelayState{
-		Descriptor: mustPolicyRelayDescriptor(t, "relay-hinted", "https://relay-hinted.example"),
+		Descriptor: mustPolicyRelayDescriptor(t, "https://relay-hinted.example"),
 		LastSeenAt: time.Now().UTC(),
 	}
 
@@ -160,8 +150,8 @@ func TestSelectPriorityColdStartSelectsEligibleRelay(t *testing.T) {
 	relayB := "https://relay-b.example"
 
 	selected := policy.SelectPriority([]RelayState{
-		confirmedPolicyRelayState(t, "relay-a", relayA),
-		confirmedPolicyRelayState(t, "relay-b", relayB),
+		confirmedPolicyRelayState(t, relayA),
+		confirmedPolicyRelayState(t, relayB),
 	}, ClientState{
 		MaxActiveRelays: 1,
 	})
@@ -176,9 +166,9 @@ func TestSelectPriorityColdStartSelectsEligibleRelay(t *testing.T) {
 
 func TestSelectPriorityPrefersConfirmedRelayOverHintedRelay(t *testing.T) {
 	policy := DefaultRelayPolicy{}
-	confirmedRelay := confirmedPolicyRelayState(t, "relay-confirmed", "https://relay-confirmed.example")
+	confirmedRelay := confirmedPolicyRelayState(t, "https://relay-confirmed.example")
 	hintedRelay := RelayState{
-		Descriptor: mustPolicyRelayDescriptor(t, "relay-hinted", "https://relay-hinted.example"),
+		Descriptor: mustPolicyRelayDescriptor(t, "https://relay-hinted.example"),
 		LastSeenAt: time.Now().UTC(),
 	}
 
@@ -204,7 +194,7 @@ func TestSelectPriorityKeepsCurrentRelayOverNewConfirmedRelay(t *testing.T) {
 
 	selected := policy.SelectPriority([]RelayState{
 		bootstrapPolicyRelayState(currentRelay),
-		confirmedPolicyRelayState(t, "relay-new", newRelay),
+		confirmedPolicyRelayState(t, newRelay),
 	}, ClientState{
 		ActiveRelayURLs: []string{currentRelay},
 		MaxActiveRelays: 1,
@@ -220,8 +210,8 @@ func TestSelectPriorityKeepsCurrentRelayOverNewConfirmedRelay(t *testing.T) {
 
 func TestSelectPriorityPushesHighRTTRelayBehindNormalRelay(t *testing.T) {
 	policy := DefaultRelayPolicy{}
-	normalRelay := confirmedPolicyRelayStateWithRTT(t, "relay-normal", "https://relay-normal.example", 200*time.Millisecond)
-	highRTTRelay := confirmedPolicyRelayStateWithRTT(t, "relay-high-rtt", "https://relay-high-rtt.example", 1500*time.Millisecond)
+	normalRelay := confirmedPolicyRelayStateWithRTT(t, "https://relay-normal.example", 200*time.Millisecond)
+	highRTTRelay := confirmedPolicyRelayStateWithRTT(t, "https://relay-high-rtt.example", 1500*time.Millisecond)
 
 	selected := policy.SelectPriority([]RelayState{
 		highRTTRelay,
@@ -242,7 +232,7 @@ func TestOnConfirmedMarksRelayConfirmed(t *testing.T) {
 	policy := DefaultRelayPolicy{}
 	nextDirectRefreshAt := time.Now().UTC().Add(time.Minute)
 	state := RelayState{
-		Descriptor:          mustPolicyRelayDescriptor(t, "relay-a", "https://relay-a.example"),
+		Descriptor:          mustPolicyRelayDescriptor(t, "https://relay-a.example"),
 		LastSeenAt:          time.Now().UTC(),
 		consecutiveFailures: defaultRecoveryFailures,
 		nextDirectRefreshAt: nextDirectRefreshAt,
@@ -263,7 +253,7 @@ func TestOnConfirmedMarksRelayConfirmed(t *testing.T) {
 
 func TestOnUnconfirmedClearsRelayConfirmation(t *testing.T) {
 	policy := DefaultRelayPolicy{}
-	state := confirmedPolicyRelayState(t, "relay-a", "https://relay-a.example")
+	state := confirmedPolicyRelayState(t, "https://relay-a.example")
 
 	state = policy.OnUnconfirmed(state)
 
@@ -274,7 +264,7 @@ func TestOnUnconfirmedClearsRelayConfirmation(t *testing.T) {
 
 func TestOnFailureSchedulesDirectRecoveryRetry(t *testing.T) {
 	policy := DefaultRelayPolicy{}
-	state := confirmedPolicyRelayState(t, "relay-a", "https://relay-a.example")
+	state := confirmedPolicyRelayState(t, "https://relay-a.example")
 	startedAt := time.Now().UTC()
 
 	var backedOff bool
@@ -297,7 +287,7 @@ func TestOnFailureSchedulesDirectRecoveryRetry(t *testing.T) {
 func TestOnFailureSchedulesRetryForHintedRelay(t *testing.T) {
 	policy := DefaultRelayPolicy{}
 	state := RelayState{
-		Descriptor: mustPolicyRelayDescriptor(t, "relay-hinted", "https://relay-hinted.example"),
+		Descriptor: mustPolicyRelayDescriptor(t, "https://relay-hinted.example"),
 		LastSeenAt: time.Now().UTC(),
 	}
 	startedAt := time.Now().UTC()

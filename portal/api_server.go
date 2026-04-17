@@ -111,6 +111,8 @@ func (s *Server) apiHandler(base *http.ServeMux, keylessSignerHandler http.Handl
 			s.handleRenew(w, r)
 		case types.PathSDKUnregister:
 			s.handleUnregister(w, r)
+		case types.PathSDKHop:
+			s.handleHop(w, r)
 		case types.PathSDKConnect:
 			s.handleConnect(w, r)
 		case types.PathDiscovery:
@@ -163,43 +165,28 @@ func (s *Server) signedRelayDescriptor(now time.Time) (types.RelayDescriptor, er
 	} else {
 		now = now.UTC()
 	}
-	activeConns := float64(s.proxy.activeConnectionCount())
-	tcpTrafficBPS := s.proxy.currentTCPBPS(now)
-	ingressAddr := s.identity.Name
-	if s.cfg.SNIPort != 0 && s.cfg.SNIPort != 443 {
-		ingressAddr = fmt.Sprintf("%s:%d", ingressAddr, s.cfg.SNIPort)
-	}
 
-	var wireGuardPublicKey, wireGuardEndpoint, overlayIPv4 string
-	var overlayCIDRs []string
+	var wireGuardPublicKey string
+	var wireGuardPort int
 	if s.overlay != nil {
 		cfg := s.overlay.Config()
 		wireGuardPublicKey = cfg.PublicKey
-		wireGuardEndpoint = cfg.Endpoint
-		overlayIPv4 = cfg.OverlayIPv4
-		overlayCIDRs = append([]string(nil), cfg.OverlayCIDRs...)
+		wireGuardPort = cfg.ListenPort
 	}
 
 	self := types.RelayDescriptor{
-		Identity:            s.identity.Base(),
-		RelayID:             s.cfg.PortalURL,
-		OwnerAddress:        s.identity.Address,
-		Version:             1,
-		IssuedAt:            now,
-		ExpiresAt:           now.Add(discovery.DiscoveryDescriptorTTL),
-		APIHTTPSAddr:        s.cfg.PortalURL,
-		Discovery:           s.cfg.DiscoveryEnabled,
-		IngressTLSAddr:      ingressAddr,
-		WireGuardPublicKey:  wireGuardPublicKey,
-		WireGuardEndpoint:   wireGuardEndpoint,
-		OverlayIPv4:         overlayIPv4,
-		OverlayCIDRs:        overlayCIDRs,
-		SupportsUDP:         s.cfg.UDPEnabled && s.quicTunnel != nil,
-		SupportsTCP:         s.cfg.TCPEnabled,
-		SupportsOverlayPeer: s.overlay != nil,
-		Load:                activeConns,
-		LoadScore:           tcpTrafficBPS,
-		LastUpdated:         now.UnixMilli(),
+		Address:            s.identity.Address,
+		Version:            types.DiscoveryVersion,
+		IssuedAt:           now,
+		ExpiresAt:          now.Add(discovery.DiscoveryDescriptorTTL),
+		APIHTTPSAddr:       s.cfg.PortalURL,
+		WireGuardPublicKey: wireGuardPublicKey,
+		WireGuardPort:      wireGuardPort,
+		SupportsOverlay:    s.overlay != nil,
+		SupportsUDP:        s.cfg.UDPEnabled && s.quicTunnel != nil,
+		SupportsTCP:        s.cfg.TCPEnabled,
+		ActiveConnections:  s.proxy.activeConnectionCount(),
+		TCPBPS:             s.proxy.currentTCPBPS(now),
 	}
 
 	signedSelf, err := auth.SignRelayDescriptor(self, s.identity.PrivateKey)
@@ -382,6 +369,11 @@ func (s *Server) handleRegisterChallenge(w http.ResponseWriter, r *http.Request)
 		Path:   types.PathSDKRegister,
 	}).String()
 
+	req.HopToken = strings.TrimSpace(req.HopToken)
+	if req.HopToken != "" && s.hopMux == nil {
+		utils.WriteAPIError(w, http.StatusServiceUnavailable, types.APIErrorCodeFeatureUnavailable, errFeatureUnavailable.Error())
+		return
+	}
 	if req.UDPEnabled && (!s.cfg.UDPEnabled || s.group != nil && s.quicTunnel == nil) {
 		utils.WriteAPIError(w, http.StatusServiceUnavailable, types.APIErrorCodeFeatureUnavailable, errFeatureUnavailable.Error())
 		return
@@ -425,12 +417,12 @@ func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request) {
 	if req.TTL > 0 {
 		ttl = time.Duration(req.TTL) * time.Second
 	}
-	record, err := s.registry.Renew(claims.Identity, ttl, clientIP, utils.SanitizeReportedIP(req.ReportedIP))
+	record, err := s.registry.Renew(claims.Identity.Key(), ttl, clientIP, utils.SanitizeReportedIP(req.ReportedIP))
 	if err != nil {
 		writeAPIErrorResponse(w, err)
 		return
 	}
-	nextAccessToken, _, err := auth.IssueLeaseAccessToken(s.identity.PrivateKey, s.identity.Address, s.cfg.PortalURL, record.Copy(), ttl)
+	nextAccessToken, _, err := auth.IssueLeaseAccessToken(s.identity.PrivateKey, s.identity.Address, s.cfg.PortalURL, record.Identity, ttl)
 	if err != nil {
 		utils.WriteAPIError(w, http.StatusInternalServerError, types.APIErrorCodeInternal, err.Error())
 		return
@@ -457,24 +449,116 @@ func (s *Server) handleUnregister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	record, err := s.registry.Unregister(claims.Identity)
+	record, err := s.registry.Unregister(claims.Identity.Key())
 	if err != nil {
 		writeAPIErrorResponse(w, err)
 		return
 	}
-	deleteCtx, cancel := context.WithTimeout(context.Background(), defaultClaimTimeout)
-	defer cancel()
-	if err := s.acmeManager.DeleteENSGaslessHostname(deleteCtx, record.Hostname); err != nil {
-		log.Warn().
-			Err(err).
-			Str("hostname", record.Hostname).
-			Str("address", record.Address).
-			Msg("delete lease ens gasless txt")
+	s.cleanupRemovedRecord(context.Background(), record, "delete lease remote state")
+
+	utils.WriteAPIData(w, http.StatusOK, map[string]any{})
+}
+
+func (s *Server) cleanupRemovedRecord(ctx context.Context, record *leaseRecord, logMessage string) {
+	if record == nil {
+		return
 	}
-	if record != nil {
-		record.Close()
+	if record.isPublicEntry() && s.acmeManager != nil {
+		deleteCtx, cancel := context.WithTimeout(ctx, defaultClaimTimeout)
+		err := s.acmeManager.DeleteENSGaslessHostname(deleteCtx, record.Hostname)
+		cancel()
+		if err != nil {
+			log.Warn().
+				Err(err).
+				Str("hostname", record.Hostname).
+				Str("address", record.Address).
+				Msg(logMessage)
+		}
+	}
+	record.Close()
+}
+
+func (s *Server) handleHop(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost, http.MethodDelete:
+	default:
+		utils.MethodNotAllowedError().Write(w)
+		return
+	}
+	if s.hopMux == nil || s.overlay == nil || s.relaySet == nil {
+		utils.WriteAPIError(w, http.StatusServiceUnavailable, types.APIErrorCodeFeatureUnavailable, errFeatureUnavailable.Error())
+		return
+	}
+	if _, ok := s.extractAllowedClientIP(w, r); !ok {
+		return
 	}
 
+	route, ok := utils.DecodeJSONRequest[types.HopRoute](w, r, defaultControlBodyLimit)
+	if !ok {
+		return
+	}
+	route, err := auth.VerifyHopRoute(r.Method, route)
+	if errors.Is(err, auth.ErrHopRouteSignatureInvalid) {
+		utils.WriteAPIError(w, http.StatusForbidden, types.APIErrorCodeUnauthorized, "hop route signature is invalid")
+		return
+	}
+	if err != nil {
+		utils.InvalidRequestError(err).Write(w)
+		return
+	}
+	if route.RelayURL != s.cfg.PortalURL {
+		utils.WriteAPIError(w, http.StatusForbidden, types.APIErrorCodeUnauthorized, "hop route relay url does not match receiving relay")
+		return
+	}
+	if r.Method == http.MethodDelete {
+		record := s.registry.DeleteHopRoute(&route)
+		s.cleanupRemovedRecord(context.Background(), record, "delete hop route remote state")
+		utils.WriteAPIData(w, http.StatusOK, map[string]any{})
+		return
+	}
+
+	now := time.Now().UTC()
+	if !route.ExpiresAt.UTC().After(now) {
+		utils.InvalidRequestError(errors.New("route expiry must be in the future")).Write(w)
+		return
+	}
+	forwardRelay, err := auth.VerifyRelayDescriptor(route.ForwardRelay)
+	if err != nil {
+		utils.InvalidRequestError(fmt.Errorf("forward relay: %w", err)).Write(w)
+		return
+	}
+	if !forwardRelay.HasOverlayPeer() {
+		utils.InvalidRequestError(errors.New("forward relay wireguard overlay metadata is required")).Write(w)
+		return
+	}
+	route.ForwardRelay = forwardRelay
+	if err := s.relaySet.InsertAnnounced(forwardRelay, now); err != nil {
+		utils.InvalidRequestError(fmt.Errorf("forward relay: %w", err)).Write(w)
+		return
+	}
+	if err := s.overlay.Sync(s.relaySet.OverlayPeerStates()); err != nil {
+		utils.WriteAPIError(w, http.StatusInternalServerError, types.APIErrorCodeInternal, err.Error())
+		return
+	}
+	record, err := s.registry.RegisterHopRoute(&route, now)
+	if err != nil {
+		writeAPIErrorResponse(w, err)
+		return
+	}
+	if record.isPublicEntry() && s.acmeManager != nil {
+		syncCtx, cancel := context.WithTimeout(context.Background(), defaultClaimTimeout)
+		if err := s.acmeManager.SyncENSGaslessHostname(syncCtx, record.Hostname, record.Address); err != nil {
+			cancel()
+			removed := s.registry.DeleteHopRoute(&route)
+			if removed == nil {
+				removed = record
+			}
+			s.cleanupRemovedRecord(context.Background(), removed, "delete hop route remote state after sync failure")
+			writeAPIErrorResponse(w, err)
+			return
+		}
+		cancel()
+	}
 	utils.WriteAPIData(w, http.StatusOK, map[string]any{})
 }
 
@@ -534,7 +618,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.registry.Touch(lease.Copy(), clientIP, time.Now())
+	s.registry.Touch(lease.Key(), clientIP, time.Now())
 	log.Info().
 		Str("address", lease.Address).
 		Str("lease_name", lease.Name).
@@ -588,7 +672,7 @@ func (s *Server) handleQUICTunnelConn(conn *quic.Conn) {
 	}
 
 	_ = json.NewEncoder(stream).Encode(types.QUICControlResponse{OK: true})
-	s.registry.Touch(lease.Copy(), conn.RemoteAddr().String(), time.Now())
+	s.registry.Touch(lease.Key(), conn.RemoteAddr().String(), time.Now())
 	log.Info().
 		Str("component", "quic-tunnel-listener").
 		Str("address", lease.Address).
@@ -602,9 +686,9 @@ func (s *Server) admitLeaseByToken(token string, requireDatagram bool) (*leaseRe
 	if err != nil {
 		return nil, errUnauthorized
 	}
-	lease, err := s.registry.Find(claims.Identity)
-	if err != nil {
-		return nil, err
+	lease, ok := s.registry.RecordByKey(claims.Identity.Key(), time.Now())
+	if !ok {
+		return nil, errLeaseNotFound
 	}
 	if !s.registry.policy.IsIdentityRoutable(lease.Key()) {
 		return nil, errLeaseRejected
@@ -661,19 +745,22 @@ func (s *Server) registerLease(req types.RegisterChallengeRequest, clientIP, rep
 	}
 	issuedAt := claims.IssuedAt.Time().UTC()
 	expiresAt := claims.Expiry.Time().UTC()
+	req.HopToken = strings.TrimSpace(req.HopToken)
+	if req.HopToken != "" && s.hopMux == nil {
+		return types.RegisterResponse{}, errFeatureUnavailable
+	}
 	identityKey := identity.Key()
 	stream := transport.NewRelayStream(identityKey, defaultIdleKeepalive, defaultReadyQueueLimit)
 	record := &leaseRecord{
 		Identity:    identity,
 		Hostname:    hostname,
-		Metadata:    req.Metadata.Copy(),
+		Metadata:    req.Metadata,
 		ExpiresAt:   expiresAt,
 		FirstSeenAt: issuedAt,
 		LastSeenAt:  issuedAt,
 		ClientIP:    clientIP,
 		ReportedIP:  utils.SanitizeReportedIP(reportedIP),
-		UDPEnabled:  req.UDPEnabled,
-		TCPEnabled:  req.TCPEnabled,
+		hopToken:    req.HopToken,
 		stream:      stream,
 	}
 	if req.UDPEnabled {
@@ -713,21 +800,26 @@ func (s *Server) registerLease(req types.RegisterChallengeRequest, clientIP, rep
 		record.Close()
 		return types.RegisterResponse{}, err
 	}
-	syncCtx, cancel := context.WithTimeout(context.Background(), defaultClaimTimeout)
-	defer cancel()
-	if err := s.acmeManager.SyncENSGaslessHostname(syncCtx, record.Hostname, record.Address); err != nil {
-		_, _ = s.registry.Unregister(record.Copy())
-		record.Close()
-		return types.RegisterResponse{}, err
+	if record.isPublicEntry() {
+		syncCtx, cancel := context.WithTimeout(context.Background(), defaultClaimTimeout)
+		defer cancel()
+		if err := s.acmeManager.SyncENSGaslessHostname(syncCtx, record.Hostname, record.Address); err != nil {
+			removed, _ := s.registry.Unregister(record.Key())
+			if removed == nil {
+				removed = record
+			}
+			s.cleanupRemovedRecord(context.Background(), removed, "delete lease remote state after sync failure")
+			return types.RegisterResponse{}, err
+		}
 	}
 
 	resp := types.RegisterResponse{
-		Identity:    record.Copy(),
+		Identity:    record.Identity,
 		Hostname:    hostname,
 		ExpiresAt:   expiresAt,
 		AccessToken: accessToken,
-		UDPEnabled:  record.UDPEnabled,
-		TCPEnabled:  record.TCPEnabled,
+		UDPEnabled:  record.datagram != nil,
+		TCPEnabled:  record.tcpPort != nil,
 	}
 	if record.datagram != nil {
 		resp.SNIPort = s.cfg.SNIPort

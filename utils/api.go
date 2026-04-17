@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -121,21 +122,32 @@ func HTTPDoAPIPath(ctx context.Context, client *http.Client, baseURL *url.URL, m
 		return DecodeAPIRequestError(resp)
 	}
 
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	if err := DecodeAPIData(respBody, out); err != nil {
+		var apiErr *types.APIRequestError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == 0 {
+			apiErr.StatusCode = resp.StatusCode
+		}
+		return err
+	}
+	return nil
+}
+
+func DecodeAPIData(body []byte, out any) error {
 	var envelope types.APIEnvelope[json.RawMessage]
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	if err := json.Unmarshal(body, &envelope); err != nil {
 		return fmt.Errorf("decode response: %w", err)
 	}
 	if !envelope.OK {
 		if envelope.Error == nil {
-			return &types.APIRequestError{
-				StatusCode: resp.StatusCode,
-				Message:    fmt.Sprintf("api request failed with status %d", resp.StatusCode),
-			}
+			return &types.APIRequestError{Message: "api response is not ok"}
 		}
 		return &types.APIRequestError{
-			StatusCode: resp.StatusCode,
-			Code:       envelope.Error.Code,
-			Message:    envelope.Error.Message,
+			Code:    envelope.Error.Code,
+			Message: envelope.Error.Message,
 		}
 	}
 	if out == nil {

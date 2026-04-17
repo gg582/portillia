@@ -4,18 +4,17 @@
 
 <p align="center"><img width="800" alt="Portal Demo" src="./portal.gif" /></p>
 
-<p align="center">Expose your local application to the public internet - no port forwarding, no NAT, no DNS setup.<br />Portal is a trustless relay network where relays cannot access your traffic. Connect to any relay or run your own.</p><br />
+<p align="center">Expose your local application to the public internet - no port forwarding, no NAT, no DNS setup.<br />Portal is a trustless relay network where relays cannot access your traffic. Connect to any relay or chain several for better anonymity.</p><br />
 
 ## Features
 
-- **Public HTTPS for localhost**: NAT-friendly publishing via TCP passthrough (no port forwarding)
-- **End-to-end TLS**: TLS terminates on your side with built-in MITM detection, so relays cannot access plaintext
-- **One-command setup**: Start relays and tunnels with minimal setup
-- **Self-hosted relays**: Connect to public relays or run your own
-- **Relay discovery and pools**: Use discovered relays as a pool, with multi-relay access and failover
+- **Public HTTPS for localhost**: NAT-friendly publishing via TCP passthrough
+- **End-to-end TLS**: TLS terminates on the client, relays can`t access plaintext or session keys
+- **Relay discovery pools**: Choose multiple discovered relays as a flexible connection pool
+- **Multi-hop relay routing**: Improve anonymity by splitting the traffic path across multiple relays
+- **Self-hosted relays**: Run your own relay or connect to public relays
 - **No login, no API keys**: Authenticate ownership using SIWE, with ENS-based identity support
-- **Raw TCP/UDP + TCP port routing**: Native TCP reverse sessions, optional UDP, and dedicated TCP ports for non-TLS services
-- **Auto-generated thumbnails**: Optional headless screenshot sidecar generates dashboard card previews for tunnel apps
+- **Raw TCP/UDP routing**: Native TCP reverse sessions, optional UDP, and dedicated TCP ports for non-TLS services
 
 ## Comparison
 
@@ -25,7 +24,8 @@
 | TLS termination | Client-side | Edge (default) | Edge (always) | Server-side |
 | MITM detection | **Built-in** | No | No | No |
 | Self-hostable | **Yes** | Enterprise only | No | Yes |
-| Multi-relay failover | **Yes** | Managed | Built-in multi-DC | No |
+| multi-relay failover | **Yes** | Managed | Built-in multi-DC | No |
+| multi-hop routing | **Yes** | No | No | No |
 | Custom domain | **Yes** | Paid plans | Yes | Yes |
 | Transport | Raw TCP / UDP | HTTP/S, TCP, TLS | HTTP/S, TCP, UDP | HTTP/S, TCP, UDP |
 | Non-TLS TCP port routing | **Yes** | Paid plans | No | Yes |
@@ -97,6 +97,20 @@ Portal is designed so that tenant TLS terminates on your side rather than at the
 6. After the handshake, the relay continues forwarding ciphertext without needing tenant TLS plaintext to keep routing traffic.
 
 Portal also checks that the relay is preserving TLS passthrough. The Portal client connects to its own public endpoint and compares TLS exporter values observed on both client-controlled ends. If they differ, `portal expose` rejects the relay by default.
+
+## How Portal Provides Multi-Hop Relay Routing
+
+Portal can route a tunnel through an ordered chain of relays. This splits responsibility and visibility across multiple nodes instead of relying on a single relay.
+
+1. The client selects multiple relays and forms a relay chain.
+2. Public traffic enters through the ingress relay, which only knows the hostname it serves.
+3. Each relay forwards to the next hop without learning the whole route.
+4. The last relay reaches your Portal client through the reverse session.
+5. Tenant TLS still terminates only on your side. No relay receives tenant TLS plaintext.
+
+This improves anonymity by splitting routing knowledge across independent relays while preserving Portal's end-to-end encrypted traffic model.
+
+For CLI usage, see [cmd/portal-tunnel/README.md](cmd/portal-tunnel/README.md).
 
 ## Contributing
 

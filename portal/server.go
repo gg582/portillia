@@ -34,6 +34,7 @@ const (
 	defaultReadyQueueLimit  = 8
 	defaultClientHelloWait  = 2 * time.Second
 	defaultControlBodyLimit = 4 << 20
+	defaultHopOpenRetryWait = 250 * time.Millisecond
 )
 
 type ServerConfig struct {
@@ -80,6 +81,7 @@ func normalizeServerConfig(cfg ServerConfig) (ServerConfig, error) {
 
 	cfg.APIPort = utils.IntOrDefault(cfg.APIPort, 4017)
 	cfg.SNIPort = utils.IntOrDefault(cfg.SNIPort, 443)
+	cfg.WireGuardPort = utils.IntOrDefault(cfg.WireGuardPort, overlay.DefaultListenPort)
 	cfg.APIListenAddr = utils.StringOrDefault(cfg.APIListenAddr, fmt.Sprintf(":%d", cfg.APIPort))
 	cfg.SNIListenAddr = utils.StringOrDefault(cfg.SNIListenAddr, fmt.Sprintf(":%d", cfg.SNIPort))
 
@@ -117,6 +119,7 @@ type Server struct {
 	quicTunnel  *quic.Listener
 
 	overlay         *overlay.Overlay
+	hopMux          *overlay.HopMux
 	relaySet        *discovery.RelaySet
 	announceLimiter *discovery.AnnounceLimiter
 	registry        *leaseRegistry
@@ -174,15 +177,19 @@ func (s *Server) Start(ctx context.Context, apiMux *http.ServeMux) error {
 	var sniListener net.Listener
 	var apiServer *http.Server
 	var apiCloser io.Closer
-	var overlay *overlay.Overlay
+	var hopMux *overlay.HopMux
+	var ov *overlay.Overlay
 	var quicTunnel *quic.Listener
 	defer func() {
 		if started {
 			return
 		}
 		acmeManager.Stop()
-		if overlay != nil {
-			_ = overlay.Shutdown(context.Background())
+		if hopMux != nil {
+			_ = hopMux.Close()
+		}
+		if ov != nil {
+			_ = ov.Shutdown(context.Background())
 		}
 		if apiServer != nil {
 			_ = apiServer.Close()
@@ -216,7 +223,11 @@ func (s *Server) Start(ctx context.Context, apiMux *http.ServeMux) error {
 	}
 
 	if s.relaySet != nil && strings.TrimSpace(s.identity.WireGuardPrivateKey) != "" {
-		overlay, err = s.startOverlay()
+		ov, err = s.startOverlay()
+		if err != nil {
+			return err
+		}
+		hopMux, err = overlay.NewHopMux(ov)
 		if err != nil {
 			return err
 		}
@@ -236,21 +247,25 @@ func (s *Server) Start(ctx context.Context, apiMux *http.ServeMux) error {
 	s.acmeManager = acmeManager
 	s.cancel = cancel
 	s.group = group
-	s.overlay = overlay
+	s.overlay = ov
+	s.hopMux = hopMux
 	s.quicTunnel = quicTunnel
 	started = true
 
 	group.Go(s.runAPIServer)
-	group.Go(func() error { return s.runSNIListener(groupCtx) })
-	group.Go(func() error { return s.runLeaseJanitor(groupCtx, 5*time.Second) })
-	if s.cfg.DiscoveryEnabled {
-		group.Go(func() error { return s.runRelayDiscoveryLoop(groupCtx) })
-	}
+	group.Go(func() error { return s.runPublicIngress(groupCtx) })
 	if s.overlay != nil {
 		group.Go(s.overlay.Serve)
+		if s.hopMux != nil {
+			group.Go(func() error { return s.runOverlayIngress(groupCtx) })
+		}
 	}
 	if s.quicTunnel != nil {
 		group.Go(s.runQUICTunnelListener)
+	}
+	group.Go(func() error { return s.runRegistryJanitor(groupCtx, 5*time.Second) })
+	if s.cfg.DiscoveryEnabled {
+		group.Go(func() error { return s.runRelayDiscoveryLoop(groupCtx) })
 	}
 	s.acmeManager.Start(serverCtx)
 	group.Go(func() error {
@@ -269,6 +284,7 @@ func (s *Server) Start(ctx context.Context, apiMux *http.ServeMux) error {
 		Int("max_port", s.cfg.MaxPort).
 		Bool("discovery_enabled", s.cfg.DiscoveryEnabled).
 		Bool("wireguard_enabled", s.overlay != nil).
+		Bool("multihop_enabled", s.hopMux != nil).
 		Bool("udp_enabled", s.quicTunnel != nil).
 		Bool("tcp_enabled", s.cfg.TCPEnabled)
 	if s.quicTunnel != nil {
@@ -290,6 +306,34 @@ func (s *Server) Wait() error {
 	return err
 }
 
+func (s *Server) PolicyRuntime() *policy.Runtime {
+	if s == nil || s.registry == nil {
+		return nil
+	}
+	return s.registry.policy
+}
+
+func (s *Server) PortalURL() string {
+	if s == nil {
+		return ""
+	}
+	return s.cfg.PortalURL
+}
+
+func (s *Server) PublicLeases() []types.Lease {
+	if s == nil || s.registry == nil {
+		return nil
+	}
+	return s.registry.PublicLeases(time.Now())
+}
+
+func (s *Server) AdminLeases() []types.AdminLease {
+	if s == nil || s.registry == nil {
+		return nil
+	}
+	return s.registry.AdminLeases(time.Now())
+}
+
 func (s *Server) RelayIdentity() types.RelayIdentity {
 	if s == nil {
 		return types.RelayIdentity{}
@@ -305,20 +349,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 
 		for _, lease := range s.registry.CloseAll() {
-			if lease != nil {
-				if s.acmeManager != nil {
-					deleteCtx, cancel := context.WithTimeout(ctx, defaultClaimTimeout)
-					if err := s.acmeManager.DeleteENSGaslessHostname(deleteCtx, lease.Hostname); err != nil {
-						log.Warn().
-							Err(err).
-							Str("hostname", lease.Hostname).
-							Str("address", lease.Address).
-							Msg("delete lease ens gasless txt during shutdown")
-					}
-					cancel()
-				}
-				lease.Close()
-			}
+			s.cleanupRemovedRecord(ctx, lease, "delete lease remote state during shutdown")
 		}
 
 		if s.quicTunnel != nil {
@@ -331,6 +362,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 		if s.apiServer != nil {
 			if err := s.apiServer.Shutdown(ctx); err != nil && shutdownErr == nil {
+				shutdownErr = err
+			}
+		}
+		if s.hopMux != nil {
+			if err := s.hopMux.Close(); err != nil && shutdownErr == nil && !errors.Is(err, net.ErrClosed) {
 				shutdownErr = err
 			}
 		}
@@ -347,46 +383,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 	})
 	return shutdownErr
-}
-
-func (s *Server) PolicyRuntime() *policy.Runtime {
-	if s == nil || s.registry == nil {
-		return nil
-	}
-	return s.registry.policy
-}
-
-func (s *Server) PortalURL() string {
-	if s == nil {
-		return ""
-	}
-	return s.cfg.PortalURL
-}
-
-func (s *Server) LeaseSnapshots() []types.Lease {
-	if s == nil || s.registry == nil {
-		return nil
-	}
-	return s.registry.LeaseSnapshots(time.Now())
-}
-
-func (s *Server) AdminLeaseSnapshots() []types.AdminLease {
-	if s == nil || s.registry == nil {
-		return nil
-	}
-	return s.registry.AdminLeaseSnapshots(time.Now())
-}
-
-func (s *Server) LeaseSnapshotByHostname(hostname string) (types.Lease, bool) {
-	if s == nil || s.registry == nil {
-		return types.Lease{}, false
-	}
-
-	record, ok := s.registry.Lookup(hostname)
-	if !ok || record == nil || time.Now().After(record.ExpiresAt) {
-		return types.Lease{}, false
-	}
-	return s.registry.Snapshot(record), true
 }
 
 func (s *Server) prepareAPITLS(ctx context.Context) (keyless.TLSMaterialConfig, *acme.Manager, error) {
@@ -426,7 +422,7 @@ func (s *Server) prepareAPITLS(ctx context.Context) (keyless.TLSMaterialConfig, 
 	return apiTLS, manager, nil
 }
 
-func (s *Server) runSNIListener(ctx context.Context) error {
+func (s *Server) runPublicIngress(ctx context.Context) error {
 	for {
 		conn, err := s.sniListener.Accept()
 		switch {
@@ -464,21 +460,15 @@ func (s *Server) runSNIListener(ctx context.Context) error {
 				}
 
 				record, ok := s.registry.Lookup(serverName)
-				if !ok || record == nil || time.Now().After(record.ExpiresAt) || record.stream == nil || !s.registry.policy.IsIdentityRoutable(record.Key()) {
+				if !ok {
 					_ = wrappedConn.Close()
 					return
 				}
-
-				claimCtx, cancel := context.WithTimeout(ctx, defaultClaimTimeout)
-				defer cancel()
-
-				session, err := record.stream.Claim(claimCtx)
-				if err != nil {
+				if err := s.bridgeLeaseConn(ctx, wrappedConn, record); err != nil {
+					log.Warn().Err(err).Str("server_name", serverName).Msg("bridge public ingress")
 					_ = wrappedConn.Close()
 					return
 				}
-
-				s.proxy.bridge(wrappedConn, session, record.Key(), s.registry.policy.BPSManager())
 			}(conn)
 		case errors.Is(err, net.ErrClosed):
 			return nil
@@ -491,7 +481,91 @@ func (s *Server) runSNIListener(ctx context.Context) error {
 	}
 }
 
-func (s *Server) runLeaseJanitor(ctx context.Context, interval time.Duration) error {
+func (s *Server) runOverlayIngress(ctx context.Context) error {
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.Go(func() error { return s.hopMux.Serve(groupCtx) })
+	group.Go(func() error {
+		for {
+			stream, err := s.hopMux.Accept(groupCtx)
+			if err != nil {
+				if ctxErr := groupCtx.Err(); ctxErr != nil {
+					return ctxErr
+				}
+				return err
+			}
+			go func(stream overlay.HopStream) {
+				record, ok := s.registry.RecordByHopToken(stream.Token, time.Now())
+				if !ok {
+					log.Warn().Str("remote_addr", stream.RemoteAddr).Msg("hop stream rejected")
+					_ = stream.Conn.Close()
+					return
+				}
+				hopRole := "exit"
+				if record.isHopMiddle() {
+					hopRole = "middle"
+				}
+				log.Info().Str("remote_addr", stream.RemoteAddr).Str("hop_role", hopRole).Msg("hop stream received")
+
+				if err := s.bridgeLeaseConn(groupCtx, stream.Conn, record); err != nil {
+					log.Warn().Err(err).Str("remote_addr", stream.RemoteAddr).Msg("hop stream bridge failed")
+					_ = stream.Conn.Close()
+				}
+			}(stream)
+		}
+	})
+	return group.Wait()
+}
+
+func (s *Server) bridgeLeaseConn(ctx context.Context, conn net.Conn, record *leaseRecord) error {
+	if record.isExpired(time.Now()) {
+		return errLeaseNotFound
+	}
+	if overlayIPv4, forwardToken, hasNextHop := record.nextHop(); hasNextHop {
+		switch {
+		case overlayIPv4 == "":
+			return errors.New("next hop overlay ipv4 is required")
+		case forwardToken == "":
+			return errors.New("next hop token is required")
+		}
+
+		openCtx, cancel := context.WithTimeout(ctx, defaultClaimTimeout)
+		defer cancel()
+		var next net.Conn
+		var lastErr error
+		for {
+			var err error
+			next, err = s.hopMux.OpenStream(openCtx, overlayIPv4, forwardToken)
+			if err == nil {
+				break
+			}
+			lastErr = err
+			if errors.Is(err, net.ErrClosed) {
+				return fmt.Errorf("open next hop stream: %w", err)
+			}
+			if !utils.SleepOrDone(openCtx, defaultHopOpenRetryWait) {
+				return fmt.Errorf("open next hop stream within %s: %w", defaultClaimTimeout, errors.Join(lastErr, openCtx.Err()))
+			}
+		}
+		s.proxy.bridge(conn, next, "", nil)
+		return nil
+	}
+	if record.stream == nil {
+		return errors.New("lease stream is not ready")
+	}
+	if !s.registry.policy.IsIdentityRoutable(record.Key()) {
+		return errLeaseRejected
+	}
+	claimCtx, cancel := context.WithTimeout(ctx, defaultClaimTimeout)
+	session, err := record.stream.Claim(claimCtx)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("claim lease stream: %w", err)
+	}
+	s.proxy.bridge(conn, session, record.Key(), s.registry.policy.BPSManager())
+	return nil
+}
+
+func (s *Server) runRegistryJanitor(ctx context.Context, interval time.Duration) error {
 	if interval <= 0 {
 		return errors.New("janitor interval must be positive")
 	}
@@ -505,17 +579,7 @@ func (s *Server) runLeaseJanitor(ctx context.Context, interval time.Duration) er
 			return nil
 		case <-ticker.C:
 			for _, lease := range s.registry.cleanupExpired(time.Now()) {
-				deleteCtx, cancel := context.WithTimeout(context.Background(), defaultClaimTimeout)
-				err := s.acmeManager.DeleteENSGaslessHostname(deleteCtx, lease.Hostname)
-				cancel()
-				if err != nil {
-					log.Warn().
-						Err(err).
-						Str("hostname", lease.Hostname).
-						Str("address", lease.Address).
-						Msg("delete expired lease ens gasless txt")
-				}
-				lease.Close()
+				s.cleanupRemovedRecord(context.Background(), lease, "delete expired lease remote state")
 			}
 		}
 	}
@@ -573,10 +637,10 @@ func (s *Server) startOverlay() (*overlay.Overlay, error) {
 		peerMux.HandleFunc(types.PathDiscovery, s.handleRelayDiscovery)
 	}
 
-	overlay, err := overlay.NewOverlay(s.identity.Name, overlay.Config{
+	overlay, err := overlay.NewOverlay(overlay.Config{
 		PrivateKey: s.identity.WireGuardPrivateKey,
 		PublicKey:  s.identity.WireGuardPublicKey,
-		Endpoint:   net.JoinHostPort(s.identity.Name, fmt.Sprintf("%d", utils.IntOrDefault(s.cfg.WireGuardPort, overlay.DefaultListenPort))),
+		ListenPort: s.cfg.WireGuardPort,
 	}, peerMux)
 	if err != nil {
 		return nil, fmt.Errorf("start wireguard overlay: %w", err)

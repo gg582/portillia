@@ -239,7 +239,7 @@ func TestRegisterLeaseOmitsSNIPortWithoutUDP(t *testing.T) {
 		t.Fatalf("registerLease() error = %v", err)
 	}
 	t.Cleanup(func() {
-		if record, err := server.registry.Find(resp.Identity); err == nil {
+		if record, ok := server.registry.RecordByKey(resp.Identity.Key(), time.Now()); ok {
 			record.Close()
 		}
 	})
@@ -341,16 +341,16 @@ func TestRegisterLeaseDerivesFixedHostnameFromName(t *testing.T) {
 		t.Fatalf("registerLease() hostname = %q, want %q", resp.Hostname, wantHostname)
 	}
 
-	record, err := server.registry.Find(resp.Identity)
-	if err != nil {
-		t.Fatalf("registry.Find() error = %v, want registered lease", err)
+	record, ok := server.registry.RecordByKey(resp.Identity.Key(), time.Now())
+	if !ok {
+		t.Fatal("registry.RecordByKey() = false, want registered lease")
 	}
-	snapshot := server.registry.Snapshot(record)
-	if snapshot.Name != "demo-app" {
-		t.Fatalf("Snapshot().Name = %q, want %q", snapshot.Name, "demo-app")
+	lease := server.registry.publicLease(record)
+	if lease.Name != "demo-app" {
+		t.Fatalf("publicLease().Name = %q, want %q", lease.Name, "demo-app")
 	}
-	if snapshot.Hostname != wantHostname {
-		t.Fatalf("Snapshot().Hostname = %q, want %q", snapshot.Hostname, wantHostname)
+	if lease.Hostname != wantHostname {
+		t.Fatalf("publicLease().Hostname = %q, want %q", lease.Hostname, wantHostname)
 	}
 }
 
@@ -380,14 +380,14 @@ func TestRegisterLeaseBuildsUDPEnabledRuntime(t *testing.T) {
 		t.Fatalf("registerLease() error = %v", err)
 	}
 	t.Cleanup(func() {
-		if record, err := server.registry.Find(resp.Identity); err == nil {
+		if record, ok := server.registry.RecordByKey(resp.Identity.Key(), time.Now()); ok {
 			record.Close()
 		}
 	})
 
-	record, err := server.registry.Find(resp.Identity)
-	if err != nil {
-		t.Fatalf("registry.Find() error = %v, want registered lease", err)
+	record, ok := server.registry.RecordByKey(resp.Identity.Key(), time.Now())
+	if !ok {
+		t.Fatal("registry.RecordByKey() = false, want registered lease")
 	}
 	if record.stream == nil {
 		t.Fatal("stream = nil, want stream runtime")

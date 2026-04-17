@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gosuda/portal-tunnel/v2/portal/auth"
 	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/gosuda/portal-tunnel/v2/utils"
 )
@@ -81,7 +85,66 @@ func (l *listener) initHTTPTransport(ctx context.Context) error {
 	return nil
 }
 
-func (l *listener) registerLease(ctx context.Context, ttl time.Duration, udpEnabled, tcpEnabled bool) (types.RegisterResponse, error) {
+func (l *listener) registerLease(ctx context.Context, ttl time.Duration, udpEnabled, tcpEnabled bool) (types.RegisterResponse, []types.HopRoute, error) {
+	var exitHopToken string
+	var publicHostname string
+	var keylessURL string
+	var hopRoutes []types.HopRoute
+	if len(l.multiHop) > 0 {
+		if len(l.multiHop) < 2 {
+			return types.RegisterResponse{}, nil, errors.New("multi-hop requires at least entry and exit relay urls")
+		}
+		if l.relaySet == nil {
+			return types.RegisterResponse{}, nil, errors.New("multi-hop relay set is unavailable")
+		}
+
+		now := time.Now().UTC()
+		hopPath := make([]types.RelayDescriptor, 0, len(l.multiHop))
+		for i, relayURL := range l.multiHop {
+			desc, ok := l.relaySet.OverlayRelayDescriptor(relayURL, now)
+			if !ok {
+				return types.RegisterResponse{}, nil, fmt.Errorf("multi-hop relay %d descriptor is unavailable", i)
+			}
+			hopPath = append(hopPath, desc)
+		}
+
+		var err error
+		publicHostname, err = utils.LeaseHostname(l.identity.Name, utils.PortalRootHost(hopPath[0].APIHTTPSAddr))
+		if err != nil {
+			return types.RegisterResponse{}, nil, err
+		}
+		keylessURL = hopPath[0].APIHTTPSAddr
+
+		hopRoutes = make([]types.HopRoute, 0, len(hopPath)-1)
+		var previousHopToken string
+		for i := 0; i < len(hopPath)-1; i++ {
+			token, err := l.identity.DeriveToken(
+				"hop-token",
+				publicHostname,
+				strconv.Itoa(i),
+				hopPath[i].APIHTTPSAddr,
+				hopPath[i+1].APIHTTPSAddr,
+			)
+			if err != nil {
+				return types.RegisterResponse{}, nil, err
+			}
+			forwardToken := "hpt_" + token
+			route := types.HopRoute{
+				RelayURL:     hopPath[i].APIHTTPSAddr,
+				ForwardRelay: hopPath[i+1],
+				ForwardToken: forwardToken,
+			}
+			if i == 0 {
+				route.MatchHostname = publicHostname
+			} else {
+				route.MatchToken = previousHopToken
+			}
+			hopRoutes = append(hopRoutes, route)
+			previousHopToken = forwardToken
+		}
+		exitHopToken = previousHopToken
+	}
+
 	var challenge types.RegisterChallengeResponse
 	if err := utils.HTTPDoAPIPath(ctx, l.httpClient, l.relayURL, http.MethodPost, types.PathSDKRegisterChallenge, types.RegisterChallengeRequest{
 		Identity:   l.identity,
@@ -89,13 +152,14 @@ func (l *listener) registerLease(ctx context.Context, ttl time.Duration, udpEnab
 		TTL:        int(ttl / time.Second),
 		UDPEnabled: udpEnabled,
 		TCPEnabled: tcpEnabled,
+		HopToken:   exitHopToken,
 	}, nil, &challenge); err != nil {
-		return types.RegisterResponse{}, err
+		return types.RegisterResponse{}, nil, err
 	}
 
 	signature, err := utils.SignEthereumPersonalMessage(challenge.SIWEMessage, l.identity.PrivateKey)
 	if err != nil {
-		return types.RegisterResponse{}, err
+		return types.RegisterResponse{}, nil, err
 	}
 
 	var resp types.RegisterResponse
@@ -105,12 +169,20 @@ func (l *listener) registerLease(ctx context.Context, ttl time.Duration, udpEnab
 		SIWESignature: signature,
 		ReportedIP:    utils.ResolvePublicIP(ctx),
 	}, nil, &resp); err != nil {
-		return types.RegisterResponse{}, err
+		return types.RegisterResponse{}, nil, err
 	}
-	return resp, nil
+	if len(hopRoutes) > 0 {
+		if err := l.syncHopRoutes(ctx, http.MethodPost, resp.ExpiresAt, hopRoutes); err != nil {
+			_ = l.unregisterLease(context.Background(), resp.AccessToken, hopRoutes)
+			return types.RegisterResponse{}, nil, err
+		}
+		resp.Hostname = publicHostname
+		resp.KeylessURL = keylessURL
+	}
+	return resp, hopRoutes, nil
 }
 
-func (l *listener) renewRegisteredLease(ctx context.Context, ttl time.Duration, accessToken string) (types.RenewResponse, error) {
+func (l *listener) renewRegisteredLease(ctx context.Context, ttl time.Duration, accessToken string, hopRoutes []types.HopRoute) (types.RenewResponse, error) {
 	var resp types.RenewResponse
 	if err := utils.HTTPDoAPIPath(ctx, l.httpClient, l.relayURL, http.MethodPost, types.PathSDKRenew, types.RenewRequest{
 		AccessToken: accessToken,
@@ -119,11 +191,87 @@ func (l *listener) renewRegisteredLease(ctx context.Context, ttl time.Duration, 
 	}, nil, &resp); err != nil {
 		return types.RenewResponse{}, err
 	}
+	if err := l.syncHopRoutes(ctx, http.MethodPost, resp.ExpiresAt, hopRoutes); err != nil {
+		return types.RenewResponse{}, err
+	}
 	return resp, nil
 }
 
-func (l *listener) unregisterLease(ctx context.Context, accessToken string) error {
-	return utils.HTTPDoAPIPath(ctx, l.httpClient, l.relayURL, http.MethodPost, types.PathSDKUnregister, types.UnregisterRequest{
+func (l *listener) unregisterLease(ctx context.Context, accessToken string, hopRoutes []types.HopRoute) error {
+	var unregisterErr error
+	if err := l.syncHopRoutes(ctx, http.MethodDelete, time.Time{}, hopRoutes); err != nil {
+		unregisterErr = errors.Join(unregisterErr, err)
+	}
+	err := utils.HTTPDoAPIPath(ctx, l.httpClient, l.relayURL, http.MethodPost, types.PathSDKUnregister, types.UnregisterRequest{
 		AccessToken: accessToken,
 	}, nil, nil)
+	return errors.Join(unregisterErr, err)
+}
+
+func (l *listener) syncHopRoutes(ctx context.Context, method string, expiresAt time.Time, routes []types.HopRoute) error {
+	if len(routes) == 0 {
+		return nil
+	}
+
+	orderedRoutes := routes
+	if method == http.MethodPost {
+		if l.relaySet == nil {
+			return errors.New("multi-hop relay set is unavailable")
+		}
+		orderedRoutes = append([]types.HopRoute(nil), routes...)
+		now := time.Now().UTC()
+		for i := range orderedRoutes {
+			desc, ok := l.relaySet.OverlayRelayDescriptor(orderedRoutes[i].ForwardRelay.APIHTTPSAddr, now)
+			if !ok {
+				return fmt.Errorf("multi-hop forward relay %d descriptor is unavailable", i)
+			}
+			orderedRoutes[i].ForwardRelay = desc
+		}
+		slices.Reverse(orderedRoutes)
+	}
+
+	var syncErr error
+	for _, unsignedRoute := range orderedRoutes {
+		route, err := auth.SignHopRoute(method, unsignedRoute, l.identity, expiresAt)
+		if err != nil {
+			if method == http.MethodDelete {
+				syncErr = errors.Join(syncErr, err)
+				continue
+			}
+			return err
+		}
+		relayURL, err := url.Parse(route.RelayURL)
+		if err != nil {
+			err = fmt.Errorf("parse hop route relay url: %w", err)
+			if method == http.MethodDelete {
+				syncErr = errors.Join(syncErr, err)
+				continue
+			}
+			return err
+		}
+
+		bootstrapCtx, cancel := context.WithTimeout(ctx, defaultDialTimeout+defaultHandshakeTimeout)
+		_, client, err := utils.NewHTTPTLSClient(bootstrapCtx, relayURL, l.requestTimeout)
+		cancel()
+		if err != nil {
+			if method == http.MethodDelete {
+				syncErr = errors.Join(syncErr, err)
+				continue
+			}
+			return err
+		}
+		transport, _ := client.Transport.(*http.Transport)
+		err = utils.HTTPDoAPIPath(ctx, client, relayURL, method, types.PathSDKHop, route, nil, nil)
+		if transport != nil {
+			transport.CloseIdleConnections()
+		}
+		if err != nil {
+			if method == http.MethodDelete {
+				syncErr = errors.Join(syncErr, err)
+				continue
+			}
+			return err
+		}
+	}
+	return syncErr
 }

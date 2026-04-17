@@ -14,6 +14,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/go-rod/rod v0.116.2
 	github.com/gosuda/keyless_tls v0.0.1-0.20260304212324-7733f8366abc
+	github.com/hashicorp/yamux v0.1.2
 	github.com/quic-go/quic-go v0.59.0
 	github.com/rs/zerolog v1.34.0
 	github.com/spruceid/siwe-go v0.2.1

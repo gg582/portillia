@@ -29,6 +29,7 @@ type Refresher struct {
 	httpClient             *http.Client
 	overlay                OverlayRuntime
 	directRecoveryFailures int
+	lastAnnounceSuccess    map[string]bool
 }
 
 func NewRefresher(relaySet *RelaySet, overlay OverlayRuntime) *Refresher {
@@ -46,6 +47,7 @@ func NewRefresher(relaySet *RelaySet, overlay OverlayRuntime) *Refresher {
 		},
 		overlay:                overlay,
 		directRecoveryFailures: defaultRecoveryFailures,
+		lastAnnounceSuccess:    make(map[string]bool),
 	}
 }
 
@@ -94,10 +96,12 @@ func (r *Refresher) announceSelf(ctx context.Context, descriptor types.RelayDesc
 		}
 		baseURL, err := url.Parse(relayURL)
 		if err != nil {
-			log.Warn().
-				Err(err).
-				Str("relay", relayURL).
-				Msg("relay discovery announce target skipped")
+			if r.shouldLogAnnounce(relayURL, false) {
+				log.Warn().
+					Err(err).
+					Str("relay", relayURL).
+					Msg("relay discovery announce target skipped")
+			}
 			continue
 		}
 
@@ -105,17 +109,30 @@ func (r *Refresher) announceSelf(ctx context.Context, descriptor types.RelayDesc
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			log.Warn().
-				Err(err).
-				Str("relay", relayURL).
-				Msg("relay discovery announce failed")
+			if r.shouldLogAnnounce(relayURL, false) {
+				log.Warn().
+					Err(err).
+					Str("relay", relayURL).
+					Msg("relay discovery announce failed")
+			}
 			continue
 		}
-		log.Info().
-			Str("relay", relayURL).
-			Msg("relay discovery announce succeeded")
+		if r.shouldLogAnnounce(relayURL, true) {
+			log.Info().
+				Str("relay", relayURL).
+				Msg("relay discovery announce succeeded")
+		}
 	}
 	return nil
+}
+
+func (r *Refresher) shouldLogAnnounce(relayURL string, success bool) bool {
+	previous, ok := r.lastAnnounceSuccess[relayURL]
+	if ok && previous == success {
+		return false
+	}
+	r.lastAnnounceSuccess[relayURL] = success
+	return true
 }
 
 func (r *Refresher) refreshHTTPS(ctx context.Context) error {
@@ -140,10 +157,6 @@ func (r *Refresher) refreshHTTPS(ctx context.Context) error {
 				continue
 			}
 		}
-		if state.hasObservedDescriptor() && !state.Descriptor.Discovery {
-			continue
-		}
-
 		relayURL := state.Descriptor.APIHTTPSAddr
 		if relayURL == "" {
 			continue
