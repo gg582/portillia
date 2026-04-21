@@ -276,8 +276,12 @@ func (p MOLSRelayPolicy) SelectPriority(states []RelayState, clientState ClientS
 				return items[i].conf
 			}
 			if items[i].rtt != items[j].rtt {
-				if items[i].rtt == 0 { return false }
-				if items[j].rtt == 0 { return true }
+				if items[i].rtt == 0 {
+					return false
+				}
+				if items[j].rtt == 0 {
+					return true
+				}
 				return items[i].rtt < items[j].rtt
 			}
 			return items[i].url < items[j].url
