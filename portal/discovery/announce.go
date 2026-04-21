@@ -7,12 +7,12 @@ import (
 )
 
 // Default per-source-IP rate-limit parameters for the announce endpoint.
-// Honest relays announce roughly once per discovery TTL (every five minutes
-// at most), so a sustained rate of one request per minute with a small
-// burst is generous yet defends against memory-exhaustion injection spam.
+// Honest relays announce every 30 seconds per bootstrap. A source IP may
+// represent multiple relays behind the same NAT or proxy, so the default
+// receiver budget leaves room for shared egress while still bounding abuse.
 const (
-	DefaultAnnounceRatePerMinute = 5
-	DefaultAnnounceBurst         = 10
+	DefaultAnnounceRatePerMinute = 30
+	DefaultAnnounceBurst         = 60
 	announceLimiterPruneInterval = 10 * time.Minute
 	announceLimiterIdleTTL       = 30 * time.Minute
 )
