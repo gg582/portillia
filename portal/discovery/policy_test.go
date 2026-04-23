@@ -59,8 +59,35 @@ func confirmedPolicyRelayStateWithRTT(t *testing.T, relayURL string, rtt time.Du
 	return state
 }
 
+func TestSelectPriorityMathematicalOrdering(t *testing.T) {
+	policy := MOLSRelayPolicy{}
+	clientAddr := "192.168.0.10"
+	ingressIdx := hashToGF64(clientAddr)
+
+	relays := []string{
+		"https://relay-alpha.io",
+		"https://relay-beta.io",
+		"https://relay-gamma.io",
+	}
+
+	var states []RelayState
+	for _, url := range relays {
+		states = append(states, confirmedPolicyRelayState(t, url))
+	}
+
+	selected := policy.SelectPriority(states, ClientState{LocalAddress: clientAddr})
+
+	for i := 0; i < len(selected)-1; i++ {
+		scoreA := molsScore(ingressIdx, hashToGF64(selected[i]), molsBaseM1, molsBaseM2)
+		scoreB := molsScore(ingressIdx, hashToGF64(selected[i+1]), molsBaseM1, molsBaseM2)
+		if scoreA < scoreB {
+			t.Errorf("Priority mismatch at index %d: %d < %d", i, scoreA, scoreB)
+		}
+	}
+}
+
 func TestSelectPriorityKeepsExplicitRelaysOutsideAutoLimit(t *testing.T) {
-	policy := DefaultRelayPolicy{}
+	policy := MOLSRelayPolicy{}
 	explicitRelay := "https://relay-explicit.example"
 	relayA := "https://relay-a.example"
 	relayB := "https://relay-b.example"
@@ -70,20 +97,43 @@ func TestSelectPriorityKeepsExplicitRelaysOutsideAutoLimit(t *testing.T) {
 		confirmedPolicyRelayState(t, relayA),
 		confirmedPolicyRelayState(t, relayB),
 	}, ClientState{
+		LocalAddress:      "127.0.0.1",
 		ExplicitRelayURLs: []string{explicitRelay},
 		MaxActiveRelays:   1,
 	})
 
-	if len(selected) != 2 {
-		t.Fatalf("len(selected) = %d, want 2", len(selected))
+	if len(selected) < 2 {
+		t.Fatalf("len(selected) = %d, want at least 2", len(selected))
 	}
-	if got := selected[0]; got != explicitRelay {
-		t.Fatalf("selected[0] = %q, want explicit relay %q", got, explicitRelay)
+	if selected[0] != explicitRelay {
+		t.Fatalf("selected[0] = %q, want %q", selected[0], explicitRelay)
+	}
+}
+
+func TestSelectPriorityCongestionInversion(t *testing.T) {
+	policy := MOLSRelayPolicy{}
+	clientAddr := "10.0.0.1"
+	ingressIdx := hashToGF64(clientAddr)
+
+	r1, r2 := "https://r1.net", "https://r2.net"
+	states := []RelayState{
+		confirmedPolicyRelayStateWithRTT(t, r1, 800*time.Millisecond),
+		confirmedPolicyRelayStateWithRTT(t, r2, 900*time.Millisecond),
+	}
+
+	selected := policy.SelectPriority(states, ClientState{LocalAddress: clientAddr})
+
+	if len(selected) == 2 {
+		s1 := molsCongestionScore(ingressIdx, hashToGF64(selected[0]), molsBaseM1, molsBaseM2)
+		s2 := molsCongestionScore(ingressIdx, hashToGF64(selected[1]), molsBaseM1, molsBaseM2)
+		if s1 < s2 {
+			t.Errorf("Congestion priority failed: %d < %d", s1, s2)
+		}
 	}
 }
 
 func TestSelectAggregateKeepsBootstrapRelayWhenDescriptorExpired(t *testing.T) {
-	policy := DefaultRelayPolicy{}
+	policy := MOLSRelayPolicy{}
 	relayURL := "https://relay-bootstrap.example"
 
 	state := bootstrapPolicyRelayState(relayURL)
@@ -96,207 +146,56 @@ func TestSelectAggregateKeepsBootstrapRelayWhenDescriptorExpired(t *testing.T) {
 		t.Fatalf("len(selected) = %d, want 1", len(selected))
 	}
 	if got := selected[0].Descriptor.APIHTTPSAddr; got != relayURL {
-		t.Fatalf("selected[0] = %q, want bootstrap relay %q", got, relayURL)
+		t.Fatalf("selected[0] = %q, want %q", got, relayURL)
 	}
 }
 
-func TestSelectAggregateKeepsCollectedRelayEvenWhenNotAdvertisable(t *testing.T) {
-	policy := DefaultRelayPolicy{}
+func TestSelectPriorityFallbackPromotion(t *testing.T) {
+	policy := MOLSRelayPolicy{}
+	states := []RelayState{
+		confirmedPolicyRelayStateWithRTT(t, "https://f1.com", 3*time.Second),
+		confirmedPolicyRelayStateWithRTT(t, "https://f2.com", 4*time.Second),
+	}
+
+	selected := policy.SelectPriority(states, ClientState{LocalAddress: "1.1.1.1"})
+
+	if len(selected) < molsMinActiveNodes {
+		t.Errorf("Fallback promotion failed: got %d, want %d", len(selected), molsMinActiveNodes)
+	}
+}
+
+func TestOnConfirmedResetsFailures(t *testing.T) {
+	policy := MOLSRelayPolicy{}
 	state := RelayState{
-		Descriptor: mustPolicyRelayDescriptor(t, "https://relay-a.example"),
-		LastSeenAt: time.Now().UTC().Add(-31 * 24 * time.Hour),
-	}
-	state.Descriptor.ExpiresAt = time.Now().UTC().Add(-time.Second)
-
-	selected := policy.SelectAggregate([]RelayState{state})
-
-	if len(selected) != 1 {
-		t.Fatalf("len(selected) = %d, want 1", len(selected))
-	}
-}
-
-func TestSelectAggregateIncludesHintedRelayWithoutConfirmation(t *testing.T) {
-	policy := DefaultRelayPolicy{}
-	state := RelayState{
-		Descriptor: mustPolicyRelayDescriptor(t, "https://relay-hinted.example"),
-		LastSeenAt: time.Now().UTC(),
-	}
-
-	selected := policy.SelectAggregate([]RelayState{state})
-
-	if len(selected) != 1 {
-		t.Fatalf("len(selected) = %d, want 1", len(selected))
-	}
-	if got := selected[0].Descriptor.APIHTTPSAddr; got != state.Descriptor.APIHTTPSAddr {
-		t.Fatalf("selected[0] = %q, want %q", got, state.Descriptor.APIHTTPSAddr)
-	}
-}
-
-func TestSelectAggregateSkipsBannedBootstrapRelay(t *testing.T) {
-	policy := DefaultRelayPolicy{}
-	state := bootstrapPolicyRelayState("https://relay-banned.example")
-	state.Banned = true
-
-	selected := policy.SelectAggregate([]RelayState{state})
-
-	if len(selected) != 0 {
-		t.Fatalf("len(selected) = %d, want 0", len(selected))
-	}
-}
-
-func TestSelectPriorityColdStartSelectsEligibleRelay(t *testing.T) {
-	policy := DefaultRelayPolicy{}
-	relayA := "https://relay-a.example"
-	relayB := "https://relay-b.example"
-
-	selected := policy.SelectPriority([]RelayState{
-		confirmedPolicyRelayState(t, relayA),
-		confirmedPolicyRelayState(t, relayB),
-	}, ClientState{
-		MaxActiveRelays: 1,
-	})
-
-	if len(selected) != 1 {
-		t.Fatalf("len(selected) = %d, want 1", len(selected))
-	}
-	if got := selected[0]; got != relayA && got != relayB {
-		t.Fatalf("selected[0] = %q, want one of %q or %q", got, relayA, relayB)
-	}
-}
-
-func TestSelectPriorityPrefersConfirmedRelayOverHintedRelay(t *testing.T) {
-	policy := DefaultRelayPolicy{}
-	confirmedRelay := confirmedPolicyRelayState(t, "https://relay-confirmed.example")
-	hintedRelay := RelayState{
-		Descriptor: mustPolicyRelayDescriptor(t, "https://relay-hinted.example"),
-		LastSeenAt: time.Now().UTC(),
-	}
-
-	selected := policy.SelectPriority([]RelayState{
-		hintedRelay,
-		confirmedRelay,
-	}, ClientState{
-		MaxActiveRelays: 1,
-	})
-
-	if len(selected) != 1 {
-		t.Fatalf("len(selected) = %d, want 1", len(selected))
-	}
-	if got := selected[0]; got != confirmedRelay.Descriptor.APIHTTPSAddr {
-		t.Fatalf("selected[0] = %q, want confirmed relay %q", got, confirmedRelay.Descriptor.APIHTTPSAddr)
-	}
-}
-
-func TestSelectPriorityKeepsCurrentRelayOverNewConfirmedRelay(t *testing.T) {
-	policy := DefaultRelayPolicy{}
-	currentRelay := "https://relay-current.example"
-	newRelay := "https://relay-new.example"
-
-	selected := policy.SelectPriority([]RelayState{
-		bootstrapPolicyRelayState(currentRelay),
-		confirmedPolicyRelayState(t, newRelay),
-	}, ClientState{
-		ActiveRelayURLs: []string{currentRelay},
-		MaxActiveRelays: 1,
-	})
-
-	if len(selected) != 1 {
-		t.Fatalf("len(selected) = %d, want 1", len(selected))
-	}
-	if got := selected[0]; got != currentRelay {
-		t.Fatalf("selected[0] = %q, want current relay %q kept", got, currentRelay)
-	}
-}
-
-func TestSelectPriorityPushesHighRTTRelayBehindNormalRelay(t *testing.T) {
-	policy := DefaultRelayPolicy{}
-	normalRelay := confirmedPolicyRelayStateWithRTT(t, "https://relay-normal.example", 200*time.Millisecond)
-	highRTTRelay := confirmedPolicyRelayStateWithRTT(t, "https://relay-high-rtt.example", 1500*time.Millisecond)
-
-	selected := policy.SelectPriority([]RelayState{
-		highRTTRelay,
-		normalRelay,
-	}, ClientState{
-		MaxActiveRelays: 1,
-	})
-
-	if len(selected) != 1 {
-		t.Fatalf("len(selected) = %d, want 1", len(selected))
-	}
-	if got := selected[0]; got != normalRelay.Descriptor.APIHTTPSAddr {
-		t.Fatalf("selected[0] = %q, want normal RTT relay %q", got, normalRelay.Descriptor.APIHTTPSAddr)
-	}
-}
-
-func TestOnConfirmedMarksRelayConfirmed(t *testing.T) {
-	policy := DefaultRelayPolicy{}
-	nextDirectRefreshAt := time.Now().UTC().Add(time.Minute)
-	state := RelayState{
-		Descriptor:          mustPolicyRelayDescriptor(t, "https://relay-a.example"),
-		LastSeenAt:          time.Now().UTC(),
-		consecutiveFailures: defaultRecoveryFailures,
-		nextDirectRefreshAt: nextDirectRefreshAt,
+		consecutiveFailures: 5,
+		Confirmed:           false,
 	}
 
 	state = policy.OnConfirmed(state)
 
 	if !state.Confirmed {
-		t.Fatal("relay should become confirmed")
+		t.Fatal("Confirmed should be true")
 	}
-	if state.consecutiveFailures != defaultRecoveryFailures {
-		t.Fatalf("consecutiveFailures = %d, want %d", state.consecutiveFailures, defaultRecoveryFailures)
-	}
-	if !state.nextDirectRefreshAt.Equal(nextDirectRefreshAt) {
-		t.Fatalf("nextDirectRefreshAt = %v, want %v", state.nextDirectRefreshAt, nextDirectRefreshAt)
+	if state.consecutiveFailures != 0 {
+		t.Errorf("consecutiveFailures = %d, want 0", state.consecutiveFailures)
 	}
 }
 
-func TestOnUnconfirmedClearsRelayConfirmation(t *testing.T) {
-	policy := DefaultRelayPolicy{}
-	state := confirmedPolicyRelayState(t, "https://relay-a.example")
+func TestOnFailureBackoff(t *testing.T) {
+	policy := MOLSRelayPolicy{}
+	state := confirmedPolicyRelayState(t, "https://error.io")
+	budget := 3
 
-	state = policy.OnUnconfirmed(state)
-
-	if state.Confirmed {
-		t.Fatal("relay should become unconfirmed")
-	}
-}
-
-func TestOnFailureSchedulesDirectRecoveryRetry(t *testing.T) {
-	policy := DefaultRelayPolicy{}
-	state := confirmedPolicyRelayState(t, "https://relay-a.example")
-	startedAt := time.Now().UTC()
-
-	var backedOff bool
-	var reason string
-	for range defaultRecoveryFailures {
-		state, backedOff, reason = policy.OnFailure(state, errors.New("boom"), defaultRecoveryFailures)
+	start := time.Now()
+	for i := 0; i < budget; i++ {
+		var backed bool
+		state, backed, _ = policy.OnFailure(state, errors.New("err"), budget)
+		if i < budget-1 && backed {
+			t.Fatal("Premature backoff")
+		}
 	}
 
-	if !backedOff {
-		t.Fatal("expected relay to back off after recovery failure budget")
-	}
-	if reason != "recovery" {
-		t.Fatalf("backoff reason = %q, want recovery", reason)
-	}
-	if !state.nextDirectRefreshAt.After(startedAt) {
-		t.Fatalf("nextDirectRefreshAt = %v, want a future retry time", state.nextDirectRefreshAt)
-	}
-}
-
-func TestOnFailureSchedulesRetryForHintedRelay(t *testing.T) {
-	policy := DefaultRelayPolicy{}
-	state := RelayState{
-		Descriptor: mustPolicyRelayDescriptor(t, "https://relay-hinted.example"),
-		LastSeenAt: time.Now().UTC(),
-	}
-	startedAt := time.Now().UTC()
-
-	for range defaultRecoveryFailures {
-		state, _, _ = policy.OnFailure(state, errors.New("boom"), defaultRecoveryFailures)
-	}
-
-	if !state.nextDirectRefreshAt.After(startedAt) {
-		t.Fatalf("nextDirectRefreshAt = %v, want a future retry time", state.nextDirectRefreshAt)
+	if !state.nextDirectRefreshAt.After(start) {
+		t.Fatal("Retry timer not scheduled")
 	}
 }

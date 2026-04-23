@@ -58,6 +58,8 @@ Instead of a positional target, you can use `--http-route` for multi-service rou
 |------|------|---------|-------------|
 | `--relays` | string | _(registry)_ | Portal relay API URLs (comma-separated, https only) |
 | `--discovery` | bool | `true` | Include public registry relays and discover additional bootstraps |
+| `--multi-hop` | string | | Ordered multi-hop relay API URLs, comma-separated |
+| `--multi-hop-depth` | int | `0` | Automatically select one multi-hop route with this hop count; 0 or 1 disables multi-hop |
 | `--max-active-relays` | int | `3` | Maximum auto-selected relays to keep connected; explicit relays are always included |
 | `--ban-mitm` | bool | `true` | Ban relay when the MITM self-probe detects TLS termination |
 | `--identity-path` | string | `./identity.json` | Identity JSON file path; created automatically when missing |
@@ -111,6 +113,18 @@ Disable relay discovery:
 
 ```bash
 portal expose 3000 --relays https://portal.example.com --discovery=false
+```
+
+Explicit multi-hop route:
+
+```bash
+portal expose 3000 --multi-hop https://entry.example.com,https://transit.example.com,https://exit.example.com
+```
+
+Automatic multi-hop route:
+
+```bash
+portal expose 3000 --multi-hop-depth 3
 ```
 
 Warning-only MITM mode:

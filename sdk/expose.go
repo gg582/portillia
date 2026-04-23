@@ -32,6 +32,7 @@ type Exposure struct {
 	udpEnabled      bool
 	tcpEnabled      bool
 	multiHop        []string
+	multiHopDepth   int
 	banMITM         bool
 	maxActiveRelays int
 	metadata        types.LeaseMetadata
@@ -48,8 +49,9 @@ type Exposure struct {
 }
 
 type ExposeConfig struct {
-	RelayURLs    []string
-	Discovery    bool
+	RelayURLs []string
+	Discovery bool
+
 	IdentityPath string
 	IdentityJSON string
 	Name         string
@@ -59,7 +61,10 @@ type ExposeConfig struct {
 	TCPEnabled   bool
 	// MultiHop is the caller-selected ordered relay URL path. The first URL is
 	// the public entry relay and the last URL is the exit relay the SDK registers with.
-	MultiHop        []string
+	MultiHop []string
+	// MultiHopDepth selects one automatic multi-hop route when >= 2. Values 0
+	// and 1 keep the automatic route selector in single-hop relay pool mode.
+	MultiHopDepth   int
 	BanMITM         bool
 	MaxActiveRelays int
 	Metadata        types.LeaseMetadata
@@ -74,28 +79,38 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 	}
 	var multiHop []string
 	for _, input := range cfg.MultiHop {
-		for _, part := range utils.SplitCSV(input) {
-			relayURL, err := utils.NormalizeRelayURL(part)
-			if err != nil {
-				return nil, fmt.Errorf("normalize multi-hop relay url: %w", err)
-			}
-			if slices.Contains(multiHop, relayURL) {
-				return nil, fmt.Errorf("multi-hop relay url repeated: %s", relayURL)
-			}
-			multiHop = append(multiHop, relayURL)
+		relayURL, err := utils.NormalizeRelayURL(input)
+		if err != nil {
+			return nil, fmt.Errorf("normalize multi-hop relay url: %w", err)
 		}
+		if slices.Contains(multiHop, relayURL) {
+			return nil, fmt.Errorf("multi-hop relay url repeated: %s", relayURL)
+		}
+		multiHop = append(multiHop, relayURL)
 	}
 	if len(multiHop) == 1 {
 		return nil, errors.New("multi-hop requires at least entry and exit relay urls")
 	}
-	if len(multiHop) > 0 && (cfg.UDPEnabled || cfg.TCPEnabled) {
+	if cfg.MultiHopDepth < 0 {
+		return nil, errors.New("multi-hop-depth cannot be negative")
+	}
+	if len(multiHop) > 0 && cfg.MultiHopDepth > 1 {
+		return nil, errors.New("explicit --multi-hop cannot be combined with automatic --multi-hop-depth")
+	}
+	if (len(multiHop) > 0 || cfg.MultiHopDepth > 1) && (cfg.UDPEnabled || cfg.TCPEnabled) {
 		return nil, errors.New("multi-hop currently supports only the default SNI TLS stream transport")
 	}
+
 	var listenerRelayURLs []string
 	var relaySetURLs []string
 	if len(multiHop) > 0 {
 		listenerRelayURLs = []string{multiHop[len(multiHop)-1]}
 		relaySetURLs = append([]string(nil), multiHop...)
+	} else if cfg.MultiHopDepth > 1 {
+		relaySetURLs, err = utils.ResolvePortalRelayURLs(ctx, explicitRelayURLs, cfg.Discovery)
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		listenerRelayURLs, err = utils.ResolvePortalRelayURLs(ctx, explicitRelayURLs, cfg.Discovery)
 		if err != nil {
@@ -141,16 +156,17 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 		udpEnabled:      cfg.UDPEnabled,
 		tcpEnabled:      cfg.TCPEnabled,
 		multiHop:        multiHop,
+		multiHopDepth:   cfg.MultiHopDepth,
 		banMITM:         cfg.BanMITM,
 		maxActiveRelays: cfg.MaxActiveRelays,
 		metadata:        cfg.Metadata,
-		accepted:        make(chan net.Conn, max(len(listenerRelayURLs)*defaultReadyTarget*2, 1)),
-		datagrams:       make(chan types.DatagramFrame, max(len(listenerRelayURLs)*32, 1)),
+		accepted:        make(chan net.Conn, max(initialRouteCapacity(listenerRelayURLs, cfg.MultiHopDepth)*defaultReadyTarget*2, 1)),
+		datagrams:       make(chan types.DatagramFrame, max(initialRouteCapacity(listenerRelayURLs, cfg.MultiHopDepth)*32, 1)),
 		relaySet:        discovery.NewRelaySet(relaySetURLs),
-		relayListeners:  make(map[string]*listener, len(listenerRelayURLs)),
+		relayListeners:  make(map[string]*listener, initialRouteCapacity(listenerRelayURLs, cfg.MultiHopDepth)),
 	}
 
-	if len(multiHop) > 0 {
+	if len(multiHop) > 0 || cfg.MultiHopDepth > 1 {
 		refresher := discovery.NewRefresher(exposure.relaySet, nil)
 		if err := refresher.Refresh(ctx, nil); err != nil {
 			_ = exposure.Close()
@@ -158,14 +174,14 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 		}
 	}
 
-	if len(listenerRelayURLs) > 0 {
+	if len(listenerRelayURLs) > 0 || cfg.MultiHopDepth > 1 {
 		if err := exposure.reconcileRelayListeners(true); err != nil {
 			_ = exposure.Close()
 			return nil, err
 		}
 	}
 
-	if cfg.Discovery || len(multiHop) > 0 {
+	if cfg.Discovery || len(multiHop) > 0 || cfg.MultiHopDepth > 1 {
 		go exposure.runDiscoveryLoop(exposureCtx)
 	}
 
@@ -175,6 +191,13 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 	}()
 
 	return exposure, nil
+}
+
+func initialRouteCapacity(listenerRelayURLs []string, multiHopDepth int) int {
+	if multiHopDepth > 1 {
+		return 1
+	}
+	return len(listenerRelayURLs)
 }
 
 func (e *Exposure) ActiveRelayURLs() []string {
@@ -411,13 +434,22 @@ func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
 	if len(e.multiHop) > 0 {
 		listenerRelayURLs = []string{e.multiHop[len(e.multiHop)-1]}
 		multiHop = append([]string(nil), e.multiHop...)
+	} else if e.multiHopDepth > 1 {
+		multiHop = e.relaySet.PriorityMultiHop(discovery.ClientState{
+			MultiHopDepth: e.multiHopDepth,
+			LocalAddress:  e.identity.Address,
+		})
+		if len(multiHop) < e.multiHopDepth {
+			return fmt.Errorf("multi-hop-depth %d requires %d overlay relay candidates, got %d", e.multiHopDepth, e.multiHopDepth, len(multiHop))
+		}
+		listenerRelayURLs = []string{multiHop[len(multiHop)-1]}
 	} else {
 		listenerRelayURLs = e.relaySet.PriorityRelays(discovery.ClientState{
-			ActiveRelayURLs:   e.ActiveRelayURLs(),
 			ExplicitRelayURLs: append([]string(nil), e.explicitRelays...),
 			MaxActiveRelays:   e.maxActiveRelays,
 			RequireUDP:        e.udpEnabled,
 			RequireTCP:        e.tcpEnabled,
+			LocalAddress:      e.identity.Address,
 		})
 	}
 
@@ -425,7 +457,7 @@ func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
 	staleRelayListeners := make(map[string]*listener)
 	removedRelayURLs := make([]string, 0)
 	for relayURL, listener := range e.relayListeners {
-		if slices.Contains(listenerRelayURLs, relayURL) {
+		if slices.Contains(listenerRelayURLs, relayURL) && slices.Equal(listener.multiHop, multiHop) {
 			continue
 		}
 		staleRelayListeners[relayURL] = listener
@@ -456,7 +488,7 @@ func (e *Exposure) reconcileRelayListeners(failOnError bool) error {
 	}
 	for _, relayURL := range missingRelayURLs {
 		retryCount := 10
-		if len(e.multiHop) > 0 || slices.Contains(e.explicitRelays, relayURL) {
+		if len(multiHop) > 0 || slices.Contains(e.explicitRelays, relayURL) {
 			retryCount = 0
 		}
 		listener, err := newListener(context.Background(), relayURL, listenerConfig{

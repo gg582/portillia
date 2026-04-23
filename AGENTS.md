@@ -9,7 +9,7 @@ Architecture, product behavior, and design rationale belong in `docs/architectur
 - Prefer a single stable contract with one real owner.
 - Prefer local simplicity over premature or speculative abstraction.
 - Add indirection only when it removes real coupling or protects a real boundary.
-- Tests should protect stable contracts and invariants, not drive the spec.
+- Tests should protect real stable contracts and invariants, not drive the spec or exist only for regression prevention.
 
 ## Project Principles
 

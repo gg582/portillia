@@ -72,6 +72,8 @@ portal expose --name myapp \
 - Routed HTTP mode automatically forwards `X-Forwarded-*`, rewrites upstream `Location` redirects back to the public route path, and strips loopback cookie domains while remapping cookie paths to the mounted route prefix.
 - `--name` is optional. When omitted, the CLI generates a name for that run.
 - `--relays` adds explicit relay API URLs for that run. Explicit relays are always kept connected and are not counted against `--max-active-relays`.
+- `--multi-hop` sets one ordered multi-hop relay path for that run.
+- `--multi-hop-depth` automatically selects one multi-hop relay path with that hop count.
 - `--discovery=false` disables the public registry seed list and the runtime relay discovery expansion loop for that run. With `--discovery=false`, only the explicit `--relays` values are used.
 - `--ban-mitm` enables strict rejection when the TLS self-probe detects termination in the path.
 - `--tcp` requests a dedicated TCP port on the relay for raw TCP services that do not use TLS (e.g., Minecraft, game servers).
@@ -81,6 +83,8 @@ Flags:
 
 ```text
 --relays          Portal relay API URLs (comma-separated, https only)
+--multi-hop       Ordered multi-hop relay API URLs, comma-separated
+--multi-hop-depth Automatically select one multi-hop route with this hop count; 0 or 1 disables multi-hop
 --discovery       Include public registry relays and discover additional relay bootstraps
 --max-active-relays  Maximum number of auto-selected relays; explicit --relays are always included
 --ban-mitm        Ban relay when the MITM self-probe detects TLS termination

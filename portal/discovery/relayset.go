@@ -46,7 +46,7 @@ type RelaySet struct {
 	mu       sync.RWMutex
 	relays   map[string]RelayState
 	keyIndex map[string]keyIndexEntry
-	policy   RelayPolicy
+	policy   MOLSRelayPolicy
 }
 
 // keyIndexEntry records the rollback anchor for a signing identity.
@@ -71,7 +71,7 @@ func NewRelaySet(bootstrapRelayURLs []string) *RelaySet {
 	set := &RelaySet{
 		relays:   make(map[string]RelayState),
 		keyIndex: make(map[string]keyIndexEntry),
-		policy:   DefaultRelayPolicy{},
+		policy:   MOLSRelayPolicy{},
 	}
 	set.SetBootstrapRelayURLs(bootstrapRelayURLs)
 	return set
@@ -154,9 +154,9 @@ func (s *RelaySet) upsertDescriptorLocked(record RelayState, now time.Time, allo
 	return upsertAccepted
 }
 
-func (s *RelaySet) SetRelayPolicy(policy RelayPolicy) {
-	if policy == nil {
-		policy = DefaultRelayPolicy{}
+func (s *RelaySet) SetRelayPolicy(policy MOLSRelayPolicy) {
+	if policy == (MOLSRelayPolicy{}) {
+		policy = MOLSRelayPolicy{}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -228,6 +228,18 @@ func (s *RelaySet) PriorityRelays(clientState ClientState) []string {
 	s.mu.RUnlock()
 
 	return policy.SelectPriority(states, clientState)
+}
+
+func (s *RelaySet) PriorityMultiHop(clientState ClientState) []string {
+	s.mu.RLock()
+	states := make([]RelayState, 0, len(s.relays))
+	for _, state := range s.relays {
+		states = append(states, state)
+	}
+	policy := s.policy
+	s.mu.RUnlock()
+
+	return policy.SelectMultiHop(states, clientState)
 }
 
 func (s *RelaySet) OverlayPeerStates() []RelayState {
