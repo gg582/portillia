@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"text/tabwriter"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -233,14 +234,16 @@ func runListCommand(args []string) error {
 	}
 	wg.Wait()
 
+	table := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "RELAY\tVERSION")
 	for i, relayURL := range relayURLs {
 		ver := versions[i]
 		if ver == "" {
 			ver = "unknown"
 		}
-		fmt.Printf("%s\t%s\n", relayURL, ver)
+		fmt.Fprintf(table, "%s\t%s\n", relayURL, ver)
 	}
-	return nil
+	return table.Flush()
 }
 
 func printRootUsage(w io.Writer) {
