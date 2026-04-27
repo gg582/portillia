@@ -284,6 +284,7 @@ func (r *leaseRegistry) RegisterHopRoute(route *types.HopRoute, now time.Time) (
 			Address: ownerKey,
 		},
 		Hostname:           matchHostname,
+		Metadata:           route.Metadata.Copy(),
 		ExpiresAt:          expiresAt,
 		hopToken:           matchToken,
 		hopNextOverlayIPv4: overlayIPv4,
@@ -514,9 +515,12 @@ func (r *leaseRegistry) PublicLeases(now time.Time) []types.Lease {
 		if record == nil || !record.isPublicEntry() || record.isExpired(now) {
 			continue
 		}
+		if record.Metadata.Hide {
+			continue
+		}
 		if record.stream != nil {
 			identityKey := record.Key()
-			if r.policy.IsIdentityBanned(identityKey) || r.policy.IsIdentityDenied(identityKey) || !r.policy.EffectiveApproval(identityKey) || record.Metadata.Hide {
+			if r.policy.IsIdentityBanned(identityKey) || r.policy.IsIdentityDenied(identityKey) || !r.policy.EffectiveApproval(identityKey) {
 				continue
 			}
 			since := time.Duration(0)

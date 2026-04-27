@@ -136,6 +136,7 @@ type HopRoute struct {
 	RelayURL       string          `json:"relay_url"`
 	MatchHostname  string          `json:"match_hostname,omitempty"`
 	MatchToken     string          `json:"match_token,omitempty"`
+	Metadata       LeaseMetadata   `json:"metadata,omitempty"`
 	ForwardRelay   RelayDescriptor `json:"forward_relay"`
 	ForwardToken   string          `json:"forward_token"`
 	ExpiresAt      time.Time       `json:"expires_at,omitempty"`

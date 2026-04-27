@@ -136,6 +136,7 @@ func (l *listener) registerLease(ctx context.Context, ttl time.Duration, udpEnab
 			}
 			if i == 0 {
 				route.MatchHostname = publicHostname
+				route.Metadata = l.metadata
 			} else {
 				route.MatchToken = previousHopToken
 			}
