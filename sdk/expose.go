@@ -112,11 +112,11 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 			return nil, err
 		}
 	} else {
-		listenerRelayURLs, err = utils.ResolvePortalRelayURLs(ctx, explicitRelayURLs, cfg.Discovery)
+		relaySetURLs, err = utils.ResolvePortalRelayURLs(ctx, explicitRelayURLs, cfg.Discovery)
 		if err != nil {
 			return nil, err
 		}
-		relaySetURLs = listenerRelayURLs
+		listenerRelayURLs = append([]string(nil), explicitRelayURLs...)
 	}
 
 	identity, createdIdentity, err := utils.ResolveListenerIdentity(
@@ -166,15 +166,15 @@ func Expose(ctx context.Context, cfg ExposeConfig) (*Exposure, error) {
 		relayListeners:  make(map[string]*listener, initialRouteCapacity(listenerRelayURLs, cfg.MultiHopDepth)),
 	}
 
-	if len(multiHop) > 0 || cfg.MultiHopDepth > 1 {
+	if cfg.Discovery || len(multiHop) > 0 || cfg.MultiHopDepth > 1 {
 		refresher := discovery.NewRefresher(exposure.relaySet, nil)
 		if err := refresher.Refresh(ctx, nil); err != nil {
 			_ = exposure.Close()
-			return nil, fmt.Errorf("discover multi-hop relays: %w", err)
+			return nil, fmt.Errorf("discover relays: %w", err)
 		}
 	}
 
-	if len(listenerRelayURLs) > 0 || cfg.MultiHopDepth > 1 {
+	if len(listenerRelayURLs) > 0 || cfg.Discovery || cfg.MultiHopDepth > 1 {
 		if err := exposure.reconcileRelayListeners(true); err != nil {
 			_ = exposure.Close()
 			return nil, err

@@ -118,7 +118,7 @@ func TestSelectPriorityCongestionInversion(t *testing.T) {
 	r1, r2 := "https://r1.net", "https://r2.net"
 	states := []RelayState{
 		confirmedPolicyRelayStateWithRTT(t, r1, 800*time.Millisecond),
-		confirmedPolicyRelayStateWithRTT(t, r2, 900*time.Millisecond),
+		confirmedPolicyRelayStateWithRTT(t, r2, 800*time.Millisecond),
 	}
 
 	selected := policy.SelectPriority(states, ClientState{LocalAddress: clientAddr})
@@ -164,24 +164,28 @@ func TestSelectPriorityFallbackPromotion(t *testing.T) {
 	}
 }
 
-func TestOnConfirmedResetsFailures(t *testing.T) {
+func TestOnActiveConfirmedResetsActiveFailures(t *testing.T) {
 	policy := MOLSRelayPolicy{}
 	state := RelayState{
-		consecutiveFailures: 5,
+		activeFailures:      5,
+		suppressActiveUntil: time.Now().UTC().Add(time.Minute),
 		Confirmed:           false,
 	}
 
-	state = policy.OnConfirmed(state)
+	state = policy.OnActiveConfirmed(state)
 
 	if !state.Confirmed {
 		t.Fatal("Confirmed should be true")
 	}
-	if state.consecutiveFailures != 0 {
-		t.Errorf("consecutiveFailures = %d, want 0", state.consecutiveFailures)
+	if state.activeFailures != 0 {
+		t.Errorf("activeFailures = %d, want 0", state.activeFailures)
+	}
+	if !state.suppressActiveUntil.IsZero() {
+		t.Errorf("suppressActiveUntil = %v, want zero", state.suppressActiveUntil)
 	}
 }
 
-func TestOnFailureBackoff(t *testing.T) {
+func TestOnDiscoveryFailureBackoff(t *testing.T) {
 	policy := MOLSRelayPolicy{}
 	state := confirmedPolicyRelayState(t, "https://error.io")
 	budget := 3
@@ -189,13 +193,34 @@ func TestOnFailureBackoff(t *testing.T) {
 	start := time.Now()
 	for i := 0; i < budget; i++ {
 		var backed bool
-		state, backed, _ = policy.OnFailure(state, errors.New("err"), budget)
+		state, backed, _ = policy.OnDiscoveryFailure(state, errors.New("err"), budget)
 		if i < budget-1 && backed {
 			t.Fatal("Premature backoff")
 		}
 	}
 
-	if !state.nextDirectRefreshAt.After(start) {
-		t.Fatal("Retry timer not scheduled")
+	if !state.nextDiscoveryRefreshAt.After(start) {
+		t.Fatal("discovery retry timer not scheduled")
+	}
+	if !state.suppressActiveUntil.IsZero() {
+		t.Fatalf("suppressActiveUntil = %v, want zero", state.suppressActiveUntil)
+	}
+}
+
+func TestOnActiveFailureBackoff(t *testing.T) {
+	policy := MOLSRelayPolicy{}
+	state := confirmedPolicyRelayState(t, "https://error.io")
+	start := time.Now()
+
+	var backed bool
+	state, backed, _ = policy.OnActiveFailure(state, errors.New("err"), 1)
+	if !backed {
+		t.Fatal("active failure should back off at budget")
+	}
+	if !state.suppressActiveUntil.After(start) {
+		t.Fatal("active suppression timer not scheduled")
+	}
+	if !state.nextDiscoveryRefreshAt.IsZero() {
+		t.Fatalf("nextDiscoveryRefreshAt = %v, want zero", state.nextDiscoveryRefreshAt)
 	}
 }

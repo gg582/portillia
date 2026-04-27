@@ -151,7 +151,7 @@ func (l *listener) run(ctx context.Context) {
 				relayURL := l.relayURL.String()
 				if l.relaySet != nil && relayURL != "" {
 					l.relaySet.UnconfirmRelayURL(relayURL)
-					l.relaySet.RecordRelayFailure(relayURL, err, 1)
+					l.relaySet.RecordActiveFailure(relayURL, err, 1)
 				}
 				log.Error().
 					Err(err).
@@ -839,7 +839,7 @@ func (l *listener) waitRetry(ctx context.Context, operation string, err error, r
 	if l.retryCount > 0 && retries > l.retryCount {
 		if l.relaySet != nil && relayURL != "" {
 			l.relaySet.UnconfirmRelayURL(relayURL)
-			l.relaySet.RecordRelayFailure(relayURL, err, 1)
+			l.relaySet.RecordActiveFailure(relayURL, err, 1)
 		}
 		logger.Error().
 			Err(err).

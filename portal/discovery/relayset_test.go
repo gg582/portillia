@@ -102,17 +102,19 @@ func TestApplyRelayDiscoveryResponseCollectsHintsWhenTargetDescriptorIsMissing(t
 	}
 }
 
-func TestApplyRelayDiscoveryResponseClearsDirectRetryOnAuthoritativeSuccess(t *testing.T) {
+func TestApplyRelayDiscoveryResponseClearsDiscoveryRetryOnAuthoritativeSuccess(t *testing.T) {
 	set := NewRelaySet(nil)
 
 	relayURL := "https://relay-source.example"
 	desc := mustPolicyRelayDescriptor(t, relayURL)
 	set.mu.Lock()
 	state := RelayState{
-		Descriptor:          desc,
-		LastSeenAt:          time.Now().UTC(),
-		consecutiveFailures: defaultRecoveryFailures,
-		nextDirectRefreshAt: time.Now().UTC().Add(time.Minute),
+		Descriptor:             desc,
+		LastSeenAt:             time.Now().UTC(),
+		discoveryFailures:      defaultRecoveryFailures,
+		nextDiscoveryRefreshAt: time.Now().UTC().Add(time.Minute),
+		activeFailures:         1,
+		suppressActiveUntil:    time.Now().UTC().Add(time.Minute),
 	}
 	set.relays[relayURL] = state
 	set.mu.Unlock()
@@ -127,25 +129,31 @@ func TestApplyRelayDiscoveryResponseClearsDirectRetryOnAuthoritativeSuccess(t *t
 	set.mu.RLock()
 	refreshed := set.relays[relayURL]
 	set.mu.RUnlock()
-	if refreshed.consecutiveFailures != 0 {
-		t.Fatalf("consecutiveFailures = %d, want 0", refreshed.consecutiveFailures)
+	if refreshed.discoveryFailures != 0 {
+		t.Fatalf("discoveryFailures = %d, want 0", refreshed.discoveryFailures)
 	}
-	if !refreshed.nextDirectRefreshAt.IsZero() {
-		t.Fatalf("nextDirectRefreshAt = %v, want zero time", refreshed.nextDirectRefreshAt)
+	if !refreshed.nextDiscoveryRefreshAt.IsZero() {
+		t.Fatalf("nextDiscoveryRefreshAt = %v, want zero time", refreshed.nextDiscoveryRefreshAt)
+	}
+	if refreshed.activeFailures != 1 {
+		t.Fatalf("activeFailures = %d, want 1", refreshed.activeFailures)
+	}
+	if refreshed.suppressActiveUntil.IsZero() {
+		t.Fatal("suppressActiveUntil was cleared by discovery success")
 	}
 }
 
-func TestApplyRelayDiscoveryResponsePreservesDirectRetryOnHint(t *testing.T) {
+func TestApplyRelayDiscoveryResponsePreservesDiscoveryRetryOnHint(t *testing.T) {
 	set := NewRelaySet(nil)
 
 	relayURL := "https://relay-hinted.example"
 	desc := mustPolicyRelayDescriptor(t, relayURL)
-	nextDirectRefreshAt := time.Now().UTC().Add(time.Minute)
+	nextDiscoveryRefreshAt := time.Now().UTC().Add(time.Minute)
 	set.mu.Lock()
 	state := RelayState{
-		Descriptor:          desc,
-		LastSeenAt:          time.Now().UTC(),
-		nextDirectRefreshAt: nextDirectRefreshAt,
+		Descriptor:             desc,
+		LastSeenAt:             time.Now().UTC(),
+		nextDiscoveryRefreshAt: nextDiscoveryRefreshAt,
 	}
 	set.relays[relayURL] = state
 	set.mu.Unlock()
@@ -160,8 +168,8 @@ func TestApplyRelayDiscoveryResponsePreservesDirectRetryOnHint(t *testing.T) {
 	set.mu.RLock()
 	refreshed := set.relays[relayURL]
 	set.mu.RUnlock()
-	if !refreshed.nextDirectRefreshAt.Equal(nextDirectRefreshAt) {
-		t.Fatalf("nextDirectRefreshAt = %v, want %v", refreshed.nextDirectRefreshAt, nextDirectRefreshAt)
+	if !refreshed.nextDiscoveryRefreshAt.Equal(nextDiscoveryRefreshAt) {
+		t.Fatalf("nextDiscoveryRefreshAt = %v, want %v", refreshed.nextDiscoveryRefreshAt, nextDiscoveryRefreshAt)
 	}
 }
 

@@ -1,16 +1,15 @@
 package discovery
 
-// MOLSRelayPolicy implements RelayPolicy using a Multi-path Orthogonal Latin
-// Squares (MOLS) engine over GF(2^6). SelectPriority provides deterministic,
-// load-balanced, and collision-resistant relay scoring without requiring a
-// central coordinator.
+// MOLSRelayPolicy uses a GF(64) MOLS-derived score as the primary
+// deterministic ordering for eligible relays. Health and freshness gates decide
+// eligibility before the MOLS score is applied.
 
 // # Core Design
 //
-// The engine uses an order-64 MOLS grid derived from Galois Field GF(64).
-// To achieve Magic Square properties (Sum_row = Sum_col = Sum_diag), the
-// construction follows a structured mapping where the composite score
-// balances the field elements across the 4096-element space.
+// The engine uses an order-64 grid derived from Galois Field GF(64). The
+// composite score is deterministic for a (client identity, relay URL) pair and
+// drives ordering after freshness and failure-suppression gates. Confirmation
+// and RTT remain tie-breakers for equal scores.
 //
 //      L_m[i][j] = gf64Mul(m, i) XOR j           (Latin-square row for multiplier m)
 //      score(i, j) = L_m1[i][j] * 64 + L_m2[i][j] + 1   (composite, range 1..4096)
@@ -22,20 +21,22 @@ package discovery
 //
 //      congestionScore(i, j) = (n^2+1) - score(i, 63-j)
 //
-// This mirrors the priority ordering so underutilised paths move to the front.
+// This mirrors the deterministic tie-break order when the whole observed pool
+// appears slow.
 //
 // # Non-Linear Load (Variant Grid)
 //
-// When the coefficient of variation of per-relay RTTs exceeds molsCVThreshold
-// (indicating bursty load), the engine switches multipliers from (3, 5) to
-// (7, 11). Non-linear detection takes precedence over congestion switching.
+// When the coefficient of variation of per-relay discovery RTTs exceeds
+// molsCVThreshold, the engine switches multipliers from (3, 5) to (7, 11).
+// Non-linear detection takes precedence over congestion switching.
 //
 // # Health & Fallback
 //
 // Relays whose measured discovery RTT exceeds molsFallbackRTTThreshold are
-// treated as Fallback and placed at the end of the priority queue. The engine
-// ensures at least molsMinActiveNodes non-fallback relays remain reachable; if
-// fewer are available, Fallback relays are promoted to meet the minimum.
+// treated as Fallback and placed at the end of the priority queue. Discovery
+// polling failures and SDK listener failures are tracked separately so a
+// discovery retry delay does not by itself remove an otherwise active relay
+// candidate.
 
 import (
 	"hash/fnv"
@@ -58,6 +59,7 @@ const (
 	molsCVThreshold            = 0.5
 	molsFallbackRTTThreshold   = 2 * time.Second
 	molsMinActiveNodes         = 2
+	defaultMaxActiveRelays     = 3
 )
 
 // gf64Mul performs multiplication in GF(2^6) with primitive polynomial x^6 + x + 1 (0x43).
@@ -84,15 +86,7 @@ func molsScore(i, j, m1, m2 uint8) int {
 	l1 := gf64Mul(m1, i) ^ j
 	l2 := gf64Mul(m2, i) ^ j
 
-	// Magic Square Diagonal correction:
-	// To ensure diagonal sums match row/col sums (131,104), we apply a
-	// deterministic permutation based on the field property of GF(64).
 	score := int(l1)*molsOrder + int(l2) + 1
-
-	// Semi-magic to Magic conversion for GF(2^n) grids
-	if i == j {
-		return score
-	}
 	return score
 }
 
@@ -163,9 +157,10 @@ func (p MOLSRelayPolicy) SelectConfirmed(states []RelayState) []RelayState {
 	return out
 }
 
-func (p MOLSRelayPolicy) OnConfirmed(state RelayState) RelayState {
+func (p MOLSRelayPolicy) OnActiveConfirmed(state RelayState) RelayState {
 	state.Confirmed = true
-	state.consecutiveFailures = 0 // Critical fix: reset failures on success
+	state.activeFailures = 0
+	state.suppressActiveUntil = time.Time{}
 	return state
 }
 
@@ -174,20 +169,40 @@ func (p MOLSRelayPolicy) OnUnconfirmed(state RelayState) RelayState {
 	return state
 }
 
-func (p MOLSRelayPolicy) OnFailure(state RelayState, err error, recoveryFailures int) (RelayState, bool, string) {
-	state.consecutiveFailures++
+func (p MOLSRelayPolicy) OnDiscoveryConfirmed(state RelayState) RelayState {
+	state.discoveryFailures = 0
+	state.nextDiscoveryRefreshAt = time.Time{}
+	return state
+}
 
-	// Exponential backoff
-	backoff := 1 * time.Second << min(state.consecutiveFailures, 6)
-	if backoff > 60*time.Second {
-		backoff = 60 * time.Second
-	}
-	state.nextDirectRefreshAt = time.Now().Add(backoff)
+func (p MOLSRelayPolicy) OnDiscoveryFailure(state RelayState, err error, recoveryFailures int) (RelayState, bool, string) {
+	state.discoveryFailures++
 
-	if state.consecutiveFailures < recoveryFailures {
+	if recoveryFailures <= 0 || state.discoveryFailures < recoveryFailures {
 		return state, false, "retry"
 	}
-	return state, true, "recovery"
+	failuresOverBudget := state.discoveryFailures - recoveryFailures
+	backoff := defaultDirectRecoveryBackoff << min(failuresOverBudget, 3)
+	if backoff > maxDirectRecoveryBackoff {
+		backoff = maxDirectRecoveryBackoff
+	}
+	state.nextDiscoveryRefreshAt = time.Now().Add(backoff)
+	return state, true, "discovery"
+}
+
+func (p MOLSRelayPolicy) OnActiveFailure(state RelayState, err error, recoveryFailures int) (RelayState, bool, string) {
+	state.activeFailures++
+
+	if recoveryFailures <= 0 || state.activeFailures < recoveryFailures {
+		return state, false, "retry"
+	}
+	failuresOverBudget := state.activeFailures - recoveryFailures
+	backoff := defaultDirectRecoveryBackoff << min(failuresOverBudget, 3)
+	if backoff > maxDirectRecoveryBackoff {
+		backoff = maxDirectRecoveryBackoff
+	}
+	state.suppressActiveUntil = time.Now().Add(backoff)
+	return state, true, "active"
 }
 
 func (p MOLSRelayPolicy) OnBanned(state RelayState) RelayState {
@@ -288,27 +303,48 @@ func (p MOLSRelayPolicy) SelectPriority(states []RelayState, clientState ClientS
 		return nil
 	}
 
+	now := time.Now().UTC()
 	explicit := make([]string, 0)
 	autoPool := make([]RelayState, 0, len(selected))
 	for _, state := range selected {
-		if clientState.RequireUDP && state.hasObservedDescriptor() && !state.Descriptor.SupportsUDP {
-			continue
-		}
-		if clientState.RequireTCP && state.hasObservedDescriptor() && !state.Descriptor.SupportsTCP {
+		relayURL := state.Descriptor.APIHTTPSAddr
+		if slices.Contains(clientState.ExplicitRelayURLs, relayURL) {
+			if state.hasObservedDescriptor() && state.Descriptor.ExpiresAt.After(now) {
+				if clientState.RequireUDP && !state.Descriptor.SupportsUDP {
+					continue
+				}
+				if clientState.RequireTCP && !state.Descriptor.SupportsTCP {
+					continue
+				}
+			}
+			explicit = append(explicit, relayURL)
 			continue
 		}
 
-		relayURL := state.Descriptor.APIHTTPSAddr
-		if slices.Contains(clientState.ExplicitRelayURLs, relayURL) {
-			explicit = append(explicit, relayURL)
+		if state.hasObservedDescriptor() {
+			if !state.Descriptor.ExpiresAt.After(now) {
+				continue
+			}
+			if clientState.RequireUDP && !state.Descriptor.SupportsUDP {
+				continue
+			}
+			if clientState.RequireTCP && !state.Descriptor.SupportsTCP {
+				continue
+			}
+		}
+		if !state.suppressActiveUntil.IsZero() && state.suppressActiveUntil.After(now) {
 			continue
 		}
 		autoPool = append(autoPool, state)
 	}
 
 	autoURLs := p.rankRelayPool(autoPool, clientState.LocalAddress)
-	if clientState.MaxActiveRelays > 0 && len(autoURLs) > clientState.MaxActiveRelays {
-		autoURLs = autoURLs[:clientState.MaxActiveRelays]
+	maxActiveRelays := clientState.MaxActiveRelays
+	if maxActiveRelays <= 0 {
+		maxActiveRelays = defaultMaxActiveRelays
+	}
+	if len(autoURLs) > maxActiveRelays {
+		autoURLs = autoURLs[:maxActiveRelays]
 	}
 	return append(explicit, autoURLs...)
 }
@@ -333,6 +369,9 @@ func (p MOLSRelayPolicy) SelectMultiHop(states []RelayState, clientState ClientS
 			continue
 		}
 		if !state.hasObservedDescriptor() || !state.Descriptor.ExpiresAt.After(now) || !state.Descriptor.HasOverlayPeer() {
+			continue
+		}
+		if !state.suppressActiveUntil.IsZero() && state.suppressActiveUntil.After(now) {
 			continue
 		}
 		autoPool = append(autoPool, state)

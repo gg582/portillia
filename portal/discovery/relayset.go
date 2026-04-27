@@ -175,7 +175,9 @@ func (s *RelaySet) SetBootstrapRelayURLs(inputs []string) {
 	for key, state := range s.relays {
 		_, bootstrap := keep[key]
 		state.Bootstrap = bootstrap
-		if !state.Bootstrap && !state.hasObservedDescriptor() && !state.Banned && state.consecutiveFailures == 0 {
+		if !state.Bootstrap && !state.hasObservedDescriptor() && !state.Banned &&
+			state.discoveryFailures == 0 && state.activeFailures == 0 &&
+			state.nextDiscoveryRefreshAt.IsZero() && state.suppressActiveUntil.IsZero() {
 			delete(s.relays, key)
 			continue
 		}
@@ -354,7 +356,7 @@ func (s *RelaySet) ConfirmRelayURL(relayURL string) {
 	if !ok {
 		state = newRelayState(relayURL)
 	}
-	state = s.policy.OnConfirmed(state)
+	state = s.policy.OnActiveConfirmed(state)
 	s.relays[relayURL] = state
 }
 
@@ -425,10 +427,14 @@ func (s *RelaySet) ApplyRelayDiscoveryResponse(targetURL string, resp types.Disc
 		record.Bootstrap = record.Bootstrap || existingAtURL.Bootstrap
 		record.Confirmed = record.Confirmed || existingAtURL.Confirmed
 		record.Banned = record.Banned || existingAtURL.Banned
-		if record.consecutiveFailures < existingAtURL.consecutiveFailures {
-			record.consecutiveFailures = existingAtURL.consecutiveFailures
+		if record.discoveryFailures < existingAtURL.discoveryFailures {
+			record.discoveryFailures = existingAtURL.discoveryFailures
 		}
-		record.nextDirectRefreshAt = existingAtURL.nextDirectRefreshAt
+		if record.activeFailures < existingAtURL.activeFailures {
+			record.activeFailures = existingAtURL.activeFailures
+		}
+		record.nextDiscoveryRefreshAt = existingAtURL.nextDiscoveryRefreshAt
+		record.suppressActiveUntil = existingAtURL.suppressActiveUntil
 		if record.DiscoveryRTTAt.IsZero() || (!existingAtURL.DiscoveryRTTAt.IsZero() && existingAtURL.DiscoveryRTTAt.After(record.DiscoveryRTTAt)) {
 			record.DiscoveryRTT = existingAtURL.DiscoveryRTT
 			record.DiscoveryRTTAt = existingAtURL.DiscoveryRTTAt
@@ -436,8 +442,7 @@ func (s *RelaySet) ApplyRelayDiscoveryResponse(targetURL string, resp types.Disc
 
 		isAuthoritativeTarget := !protocolMismatch && !missingTarget && authoritative && relayURL == targetURL
 		if isAuthoritativeTarget {
-			record.consecutiveFailures = 0
-			record.nextDirectRefreshAt = time.Time{}
+			record = s.policy.OnDiscoveryConfirmed(record)
 		}
 
 		if upsert := s.upsertDescriptorLocked(record, now, isAuthoritativeTarget); upsert != upsertAccepted {
@@ -448,9 +453,8 @@ func (s *RelaySet) ApplyRelayDiscoveryResponse(targetURL string, resp types.Disc
 			// authoritative target we should still credit it as alive on its
 			// existing URL slot.
 			if isAuthoritativeTarget && hasExistingAtURL {
-				if existingAtURL.consecutiveFailures != 0 || !existingAtURL.nextDirectRefreshAt.IsZero() {
-					existingAtURL.consecutiveFailures = 0
-					existingAtURL.nextDirectRefreshAt = time.Time{}
+				if existingAtURL.discoveryFailures != 0 || !existingAtURL.nextDiscoveryRefreshAt.IsZero() {
+					existingAtURL = s.policy.OnDiscoveryConfirmed(existingAtURL)
 					s.relays[relayURL] = existingAtURL
 					relaySetChanged = true
 				}
@@ -497,8 +501,9 @@ func (s *RelaySet) RecordDiscoveryRTT(relayURL string, rtt time.Duration, measur
 //     future) and not significantly clock-skewed (IssuedAt no further into
 //     the future than AnnounceClockSkewTolerance, validity window no longer
 //     than AnnounceMaxValidity).
-//  3. Local merge preserves Bootstrap, Confirmed, Banned, telemetry, and
-//     direct-refresh retry state from any pre-existing entry at the same URL.
+//  3. Local merge preserves Bootstrap, Confirmed, Banned, discovery retry
+//     state, active suppression state, and telemetry from any pre-existing
+//     entry at the same URL.
 //  4. The shared upsertDescriptorLocked method enforces the
 //     monotonic-IssuedAt-per-key rollback guard and the cross-identity
 //     URL-takeover guard. Announce never grants takeover authority; only
@@ -536,10 +541,14 @@ func (s *RelaySet) InsertAnnounced(desc types.RelayDescriptor, now time.Time) er
 		record.Bootstrap = record.Bootstrap || existing.Bootstrap
 		record.Confirmed = record.Confirmed || existing.Confirmed
 		record.Banned = record.Banned || existing.Banned
-		if record.consecutiveFailures < existing.consecutiveFailures {
-			record.consecutiveFailures = existing.consecutiveFailures
+		if record.discoveryFailures < existing.discoveryFailures {
+			record.discoveryFailures = existing.discoveryFailures
 		}
-		record.nextDirectRefreshAt = existing.nextDirectRefreshAt
+		if record.activeFailures < existing.activeFailures {
+			record.activeFailures = existing.activeFailures
+		}
+		record.nextDiscoveryRefreshAt = existing.nextDiscoveryRefreshAt
+		record.suppressActiveUntil = existing.suppressActiveUntil
 		if record.DiscoveryRTTAt.IsZero() || (!existing.DiscoveryRTTAt.IsZero() && existing.DiscoveryRTTAt.After(record.DiscoveryRTTAt)) {
 			record.DiscoveryRTT = existing.DiscoveryRTT
 			record.DiscoveryRTTAt = existing.DiscoveryRTTAt
@@ -625,7 +634,7 @@ func (s *RelaySet) enforceCapLocked() {
 	}
 }
 
-func (s *RelaySet) RecordRelayFailure(relayURL string, err error, recoveryFailures int) (backedOff bool, backoffReason string, consecutiveFailures int) {
+func (s *RelaySet) RecordDiscoveryFailure(relayURL string, err error, recoveryFailures int) (backedOff bool, backoffReason string, failureCount int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -633,7 +642,20 @@ func (s *RelaySet) RecordRelayFailure(relayURL string, err error, recoveryFailur
 	if !ok {
 		return false, "", 0
 	}
-	state, backedOff, backoffReason = s.policy.OnFailure(state, err, recoveryFailures)
+	state, backedOff, backoffReason = s.policy.OnDiscoveryFailure(state, err, recoveryFailures)
 	s.relays[relayURL] = state
-	return backedOff, backoffReason, state.consecutiveFailures
+	return backedOff, backoffReason, state.discoveryFailures
+}
+
+func (s *RelaySet) RecordActiveFailure(relayURL string, err error, recoveryFailures int) (backedOff bool, backoffReason string, failureCount int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, ok := s.relays[relayURL]
+	if !ok {
+		return false, "", 0
+	}
+	state, backedOff, backoffReason = s.policy.OnActiveFailure(state, err, recoveryFailures)
+	s.relays[relayURL] = state
+	return backedOff, backoffReason, state.activeFailures
 }
