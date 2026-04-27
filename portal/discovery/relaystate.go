@@ -39,8 +39,10 @@ type RelayState struct {
 	DiscoveryRTT   time.Duration
 	DiscoveryRTTAt time.Time
 
-	consecutiveFailures int
-	nextDirectRefreshAt time.Time
+	discoveryFailures      int
+	activeFailures         int
+	nextDiscoveryRefreshAt time.Time
+	suppressActiveUntil    time.Time
 }
 
 func newRelayState(relayURL string) RelayState {
@@ -57,10 +59,12 @@ func (state RelayState) hasObservedDescriptor() bool {
 
 type ClientState struct {
 	ExplicitRelayURLs []string
-	MaxActiveRelays   int
-	MultiHopDepth     int
-	RequireUDP        bool
-	RequireTCP        bool
+	// MaxActiveRelays caps auto-selected relays. Zero or negative values use
+	// the policy default of 3.
+	MaxActiveRelays int
+	MultiHopDepth   int
+	RequireUDP      bool
+	RequireTCP      bool
 	// LocalAddress is the ingress identity address used by MOLSRelayPolicy to
 	// derive a deterministic row index into the GF(64) MOLS grid.
 	LocalAddress string

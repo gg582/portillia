@@ -246,30 +246,35 @@ func (s *Server) handleRelayDiscoveryAnnounce(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	desc := req.Descriptor
+	desc, err := utils.NormalizeDescriptor(req.Descriptor)
+	if err != nil {
+		utils.WriteAPIError(w, http.StatusBadRequest, types.APIErrorCodeInvalidRequest, err.Error())
+		return
+	}
 	// Self-announce guard: the relay's own URL is established locally, not
-	// gossiped through the announce endpoint. Reject loopback / own-host
-	// announces to prevent self-amplification or misconfiguration loops.
-	announceURL, err := url.Parse(strings.TrimSpace(desc.APIHTTPSAddr))
-	if err == nil && announceURL != nil {
-		host := utils.NormalizeHostname(announceURL.Hostname())
-		if utils.IsLocalRelayHost(host) {
-			utils.WriteAPIError(w, http.StatusBadRequest, types.APIErrorCodeInvalidRequest,
-				fmt.Sprintf("self-announce rejected: host %q is local-only", host))
-			return
-		}
-		if selfURL, err := utils.NormalizeRelayURL(s.cfg.PortalURL); err == nil {
-			if announceRelayURL, err := utils.NormalizeRelayURL(desc.APIHTTPSAddr); err == nil && announceRelayURL == selfURL {
-				utils.WriteAPIError(w, http.StatusBadRequest, types.APIErrorCodeInvalidRequest,
-					fmt.Sprintf("self-announce rejected: %q matches receiving relay url", announceRelayURL))
-				return
-			}
-		}
-		if host != "" && host == utils.NormalizeHostname(s.identity.Name) {
-			utils.WriteAPIError(w, http.StatusBadRequest, types.APIErrorCodeInvalidRequest,
-				fmt.Sprintf("self-announce rejected: host %q matches receiving relay host", host))
-			return
-		}
+	// gossiped through the announce endpoint. Validate the normalized URL so
+	// scheme-less inputs are checked the same way signature verification will
+	// check them later.
+	announceURL, err := url.Parse(desc.APIHTTPSAddr)
+	if err != nil {
+		utils.WriteAPIError(w, http.StatusBadRequest, types.APIErrorCodeInvalidRequest, err.Error())
+		return
+	}
+	host := utils.NormalizeHostname(announceURL.Hostname())
+	if utils.IsLocalRelayHost(host) {
+		utils.WriteAPIError(w, http.StatusBadRequest, types.APIErrorCodeInvalidRequest,
+			fmt.Sprintf("self-announce rejected: host %q is local-only", host))
+		return
+	}
+	if selfURL, err := utils.NormalizeRelayURL(s.cfg.PortalURL); err == nil && desc.APIHTTPSAddr == selfURL {
+		utils.WriteAPIError(w, http.StatusBadRequest, types.APIErrorCodeInvalidRequest,
+			fmt.Sprintf("self-announce rejected: %q matches receiving relay url", desc.APIHTTPSAddr))
+		return
+	}
+	if host != "" && host == utils.NormalizeHostname(s.identity.Name) {
+		utils.WriteAPIError(w, http.StatusBadRequest, types.APIErrorCodeInvalidRequest,
+			fmt.Sprintf("self-announce rejected: host %q matches receiving relay host", host))
+		return
 	}
 
 	now := time.Now().UTC()

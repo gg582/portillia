@@ -43,6 +43,8 @@ interface KnownRelay {
   isCurrent: boolean;
 }
 
+type RelayReleaseVersions = Record<string, string | null>;
+
 const OFFICIAL_REGISTRY_SOURCE_URL =
   "https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json";
 const REPOSITORY_URL = "https://github.com/gosuda/portal-tunnel";
@@ -109,6 +111,17 @@ function normalizeKnownRelays(
   });
 
   return knownRelays;
+}
+
+function relayReleaseLabel(
+  versions: RelayReleaseVersions,
+  relayURL: string
+): string {
+  const version = versions[relayURL];
+  if (version === undefined || version === null) {
+    return "loading...";
+  }
+  return version || "offline";
 }
 
 interface ServerListViewProps {
@@ -201,7 +214,7 @@ export function ServerListView({
 }: ServerListViewProps) {
   const [showFilterModal, setShowFilterModal] = useState(false);
   const [relayReleaseVersions, setRelayReleaseVersions] = useState<
-    Record<string, string>
+    RelayReleaseVersions
   >({});
   const [knownRelays, setKnownRelays] = useState<KnownRelay[]>([]);
   const [relayDiscoveryLoading, setRelayDiscoveryLoading] = useState(
@@ -309,23 +322,32 @@ export function ServerListView({
         discoveryMessage = "Known relay data is unavailable on this relay.";
       }
 
-      const relayURLs = nextKnownRelays.map((relay) => relay.relayURL);
-      const uniqueRelayURLs = [...new Set(relayURLs)];
-      const versions = await Promise.all(
-        uniqueRelayURLs.map(async (relayURL) => [
-          relayURL,
-          await loadRelayReleaseVersion(relayURL),
-        ] as const)
-      );
-
       if (cancelled) {
         return;
       }
 
-      setRelayReleaseVersions(Object.fromEntries(versions));
       setKnownRelays(nextKnownRelays);
       setRelayDiscoveryLoading(false);
       setRelayDiscoveryMessage(discoveryMessage);
+
+      const relayURLs = nextKnownRelays.map((relay) => relay.relayURL);
+      const uniqueRelayURLs = [...new Set(relayURLs)];
+      setRelayReleaseVersions(
+        Object.fromEntries(uniqueRelayURLs.map((relayURL) => [relayURL, null]))
+      );
+
+      uniqueRelayURLs.forEach((relayURL) => {
+        void (async () => {
+          const version = await loadRelayReleaseVersion(relayURL);
+          if (cancelled) {
+            return;
+          }
+          setRelayReleaseVersions((prev) => ({
+            ...prev,
+            [relayURL]: version,
+          }));
+        })();
+      });
     })();
 
     return () => {
@@ -871,7 +893,10 @@ export function ServerListView({
                             </a>
                             <div className="flex shrink-0 items-center gap-2">
                               <span className="rounded-full bg-background px-2.5 py-1 font-mono text-[11px] font-medium text-text-muted ring-1 ring-border">
-                                {relayReleaseVersions[relay.relayURL] || "offline"}
+                                {relayReleaseLabel(
+                                  relayReleaseVersions,
+                                  relay.relayURL
+                                )}
                               </span>
                             </div>
                           </div>

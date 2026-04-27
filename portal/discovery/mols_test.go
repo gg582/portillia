@@ -460,6 +460,76 @@ func TestMOLSSelectPriorityMaxActiveRelaysLimitsAutoPool(t *testing.T) {
 	}
 }
 
+func TestMOLSSelectPriorityZeroMaxActiveRelaysUsesDefault(t *testing.T) {
+	policy := MOLSRelayPolicy{}
+
+	relays := make([]RelayState, 10)
+	for i := range relays {
+		relays[i] = confirmedPolicyRelayState(t, fmt.Sprintf("https://relay-default-%d.example", i))
+	}
+
+	selected := policy.SelectPriority(relays, ClientState{MaxActiveRelays: 0})
+	if len(selected) != defaultMaxActiveRelays {
+		t.Fatalf("len(selected) = %d, want %d", len(selected), defaultMaxActiveRelays)
+	}
+}
+
+func TestMOLSSelectPrioritySkipsExpiredAutoRelay(t *testing.T) {
+	policy := MOLSRelayPolicy{}
+	expired := confirmedPolicyRelayState(t, "https://relay-expired.example")
+	expired.Descriptor.ExpiresAt = time.Now().UTC().Add(-time.Minute)
+
+	if selected := policy.SelectPriority([]RelayState{expired}, ClientState{}); len(selected) != 0 {
+		t.Fatalf("SelectPriority(expired auto) = %v, want empty", selected)
+	}
+}
+
+func TestMOLSSelectPriorityKeepsExpiredExplicitRelay(t *testing.T) {
+	policy := MOLSRelayPolicy{}
+	relayURL := "https://relay-explicit-expired.example"
+	expired := confirmedPolicyRelayState(t, relayURL)
+	expired.Descriptor.ExpiresAt = time.Now().UTC().Add(-time.Minute)
+
+	selected := policy.SelectPriority([]RelayState{expired}, ClientState{
+		ExplicitRelayURLs: []string{relayURL},
+	})
+	if len(selected) != 1 || selected[0] != relayURL {
+		t.Fatalf("SelectPriority(expired explicit) = %v, want [%q]", selected, relayURL)
+	}
+}
+
+func TestMOLSSelectPrioritySkipsAutoRelayInBackoff(t *testing.T) {
+	policy := MOLSRelayPolicy{}
+	backingOff := confirmedPolicyRelayState(t, "https://relay-backoff.example")
+	backingOff.suppressActiveUntil = time.Now().UTC().Add(time.Minute)
+
+	if selected := policy.SelectPriority([]RelayState{backingOff}, ClientState{}); len(selected) != 0 {
+		t.Fatalf("SelectPriority(backing off auto) = %v, want empty", selected)
+	}
+}
+
+func TestMOLSSelectPriorityKeepsDiscoveryBackoffRelay(t *testing.T) {
+	policy := MOLSRelayPolicy{}
+	relayURL := "https://relay-discovery-backoff.example"
+	backingOff := confirmedPolicyRelayState(t, relayURL)
+	backingOff.nextDiscoveryRefreshAt = time.Now().UTC().Add(time.Minute)
+
+	selected := policy.SelectPriority([]RelayState{backingOff}, ClientState{})
+	if len(selected) != 1 || selected[0] != relayURL {
+		t.Fatalf("SelectPriority(discovery backoff) = %v, want [%q]", selected, relayURL)
+	}
+}
+
+func TestMOLSSelectPriorityKeepsUnobservedAutoSeed(t *testing.T) {
+	policy := MOLSRelayPolicy{}
+	relayURL := "https://relay-seed.example"
+
+	selected := policy.SelectPriority([]RelayState{bootstrapPolicyRelayState(relayURL)}, ClientState{})
+	if len(selected) != 1 || selected[0] != relayURL {
+		t.Fatalf("SelectPriority(unobserved seed) = %v, want [%q]", selected, relayURL)
+	}
+}
+
 // TestMOLSMagicRowSum verifies that each row of the base MOLS score grid sums
 // to the magic constant n*(n²+1)/2 = 131104.
 func TestMOLSMagicRowSum(t *testing.T) {

@@ -153,7 +153,7 @@ func (r *Refresher) refreshHTTPS(ctx context.Context) error {
 				continue
 			}
 		} else if !state.Bootstrap {
-			if !state.nextDirectRefreshAt.IsZero() && state.nextDirectRefreshAt.After(now) {
+			if !state.nextDiscoveryRefreshAt.IsZero() && state.nextDiscoveryRefreshAt.After(now) {
 				continue
 			}
 		}
@@ -209,6 +209,9 @@ func (r *Refresher) refreshOverlay(ctx context.Context) error {
 	}
 	relaySetChanged := false
 	for _, state := range states {
+		if !state.nextDiscoveryRefreshAt.IsZero() && state.nextDiscoveryRefreshAt.After(time.Now().UTC()) {
+			continue
+		}
 		relay := state.Descriptor
 		recoveryFailures := r.directRecoveryFailures
 		if state.Bootstrap {
@@ -249,7 +252,7 @@ func (r *Refresher) refreshOverlay(ctx context.Context) error {
 }
 
 func (r *Refresher) logDiscoveryFailure(targetRelayURL, sourceURL string, recoveryFailures int, err error) {
-	backedOff, backoffReason, consecutiveFailures := r.relaySet.RecordRelayFailure(targetRelayURL, err, recoveryFailures)
+	backedOff, backoffReason, failureCount := r.relaySet.RecordDiscoveryFailure(targetRelayURL, err, recoveryFailures)
 	if !backedOff {
 		return
 	}
@@ -259,8 +262,8 @@ func (r *Refresher) logDiscoveryFailure(targetRelayURL, sourceURL string, recove
 		Str("relay", sourceURL).
 		Bool("backed_off", true).
 		Str("reason", backoffReason)
-	if consecutiveFailures > 0 {
-		event = event.Int("consecutive_failures", consecutiveFailures)
+	if failureCount > 0 {
+		event = event.Int("discovery_failures", failureCount)
 	}
 	event.Msg("discovery source retry delayed")
 }
