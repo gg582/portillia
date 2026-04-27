@@ -6,8 +6,6 @@ import (
 	"strings"
 )
 
-const officialReleaseBaseURL = "https://github.com/gosuda/portal-tunnel/releases/latest/download"
-
 //go:embed install.sh
 var installShellScript string
 
@@ -43,18 +41,6 @@ func AssetFilename(slug string) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-func OfficialAssetURL(slug string, checksum bool) (string, bool) {
-	filename, ok := AssetFilename(slug)
-	if !ok {
-		return "", false
-	}
-	url := officialReleaseBaseURL + "/" + filename
-	if checksum {
-		url += ".sha256"
-	}
-	return url, true
 }
 
 func relayShellScript(portalURL, script string) string {
