@@ -443,6 +443,7 @@ func (r *leaseRegistry) RegisterHopRoute(route *types.HopRoute, now time.Time) (
 		},
 		Hostname:           matchHostname,
 		Metadata:           route.Metadata.Copy(),
+		FirstSeenAt:        route.FirstSeenAt.UTC(),
 		ExpiresAt:          expiresAt,
 		hopToken:           matchToken,
 		hopNextOverlayIPv4: overlayIPv4,

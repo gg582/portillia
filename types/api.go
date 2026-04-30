@@ -130,6 +130,7 @@ type HopRoute struct {
 	Metadata       LeaseMetadata   `json:"metadata,omitempty"`
 	ForwardRelay   RelayDescriptor `json:"forward_relay"`
 	ForwardToken   string          `json:"forward_token"`
+	FirstSeenAt    time.Time       `json:"first_seen_at,omitempty"`
 	ExpiresAt      time.Time       `json:"expires_at,omitempty"`
 	Signature      string          `json:"signature,omitempty"`
 }
@@ -148,6 +149,7 @@ func HopRouteBytes(method string, route HopRoute) ([]byte, error) {
 		MatchToken        string          `json:"match_token"`
 		ForwardRelay      json.RawMessage `json:"forward_relay"`
 		ForwardToken      string          `json:"forward_token"`
+		FirstSeenAtUnixNano int64           `json:"first_seen_at_unix_nano"`
 		ExpiresAtUnixNano int64           `json:"expires_at_unix_nano"`
 	}{
 		Purpose:           "portal hop route v1",
@@ -158,6 +160,7 @@ func HopRouteBytes(method string, route HopRoute) ([]byte, error) {
 		MatchToken:        strings.TrimSpace(route.MatchToken),
 		ForwardRelay:      json.RawMessage(forwardRelay),
 		ForwardToken:      strings.TrimSpace(route.ForwardToken),
+		FirstSeenAtUnixNano: route.FirstSeenAt.UTC().UnixNano(),
 		ExpiresAtUnixNano: route.ExpiresAt.UTC().UnixNano(),
 	}
 	return json.Marshal(payload)
