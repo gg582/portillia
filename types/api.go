@@ -141,27 +141,27 @@ func HopRouteBytes(method string, route HopRoute) ([]byte, error) {
 		return nil, err
 	}
 	payload := struct {
-		Purpose           string          `json:"purpose"`
-		Method            string          `json:"method"`
-		OwnerPublicKey    string          `json:"owner_public_key"`
-		RelayURL          string          `json:"relay_url"`
-		MatchHostname     string          `json:"match_hostname"`
-		MatchToken        string          `json:"match_token"`
-		ForwardRelay      json.RawMessage `json:"forward_relay"`
-		ForwardToken      string          `json:"forward_token"`
+		Purpose             string          `json:"purpose"`
+		Method              string          `json:"method"`
+		OwnerPublicKey      string          `json:"owner_public_key"`
+		RelayURL            string          `json:"relay_url"`
+		MatchHostname       string          `json:"match_hostname"`
+		MatchToken          string          `json:"match_token"`
+		ForwardRelay        json.RawMessage `json:"forward_relay"`
+		ForwardToken        string          `json:"forward_token"`
 		FirstSeenAtUnixNano int64           `json:"first_seen_at_unix_nano"`
-		ExpiresAtUnixNano int64           `json:"expires_at_unix_nano"`
+		ExpiresAtUnixNano   int64           `json:"expires_at_unix_nano"`
 	}{
-		Purpose:           "portal hop route v1",
-		Method:            strings.ToUpper(strings.TrimSpace(method)),
-		OwnerPublicKey:    strings.TrimSpace(route.OwnerPublicKey),
-		RelayURL:          strings.TrimSpace(route.RelayURL),
-		MatchHostname:     strings.TrimSpace(route.MatchHostname),
-		MatchToken:        strings.TrimSpace(route.MatchToken),
-		ForwardRelay:      json.RawMessage(forwardRelay),
-		ForwardToken:      strings.TrimSpace(route.ForwardToken),
+		Purpose:             "portal hop route v1",
+		Method:              strings.ToUpper(strings.TrimSpace(method)),
+		OwnerPublicKey:      strings.TrimSpace(route.OwnerPublicKey),
+		RelayURL:            strings.TrimSpace(route.RelayURL),
+		MatchHostname:       strings.TrimSpace(route.MatchHostname),
+		MatchToken:          strings.TrimSpace(route.MatchToken),
+		ForwardRelay:        json.RawMessage(forwardRelay),
+		ForwardToken:        strings.TrimSpace(route.ForwardToken),
 		FirstSeenAtUnixNano: route.FirstSeenAt.UTC().UnixNano(),
-		ExpiresAtUnixNano: route.ExpiresAt.UTC().UnixNano(),
+		ExpiresAtUnixNano:   route.ExpiresAt.UTC().UnixNano(),
 	}
 	return json.Marshal(payload)
 }
