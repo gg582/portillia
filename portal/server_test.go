@@ -13,6 +13,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,7 +89,7 @@ func writeManualRelayCertificate(t *testing.T, keyDir, baseDomain string) {
 	}
 }
 
-func TestNewServerInitializesRelaySetWhenDiscoveryEnabled(t *testing.T) {
+func TestRelayDiscoveryEnabledServesDiscoveryEnvelope(t *testing.T) {
 	t.Parallel()
 
 	server, err := NewServer(ServerConfig{
@@ -99,8 +100,20 @@ func TestNewServerInitializesRelaySetWhenDiscoveryEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
-	if server.relaySet == nil {
-		t.Fatal("relaySet = nil, want discovery relay set")
+
+	req := httptest.NewRequest(http.MethodGet, types.PathDiscovery, nil)
+	rec := httptest.NewRecorder()
+	server.handleRelayDiscovery(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET relay discovery status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var envelope types.APIEnvelope[types.DiscoveryResponse]
+	if err := json.NewDecoder(rec.Body).Decode(&envelope); err != nil {
+		t.Fatalf("json.Decode() error = %v", err)
+	}
+	if !envelope.OK || envelope.Data.ProtocolVersion != types.DiscoveryVersion {
+		t.Fatalf("discovery envelope = %+v, want ok discovery response", envelope)
 	}
 }
 
