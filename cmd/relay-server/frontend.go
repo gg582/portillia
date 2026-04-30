@@ -95,7 +95,14 @@ func (f *Frontend) Handler() *http.ServeMux {
 	mux.HandleFunc(types.PathAssetsPrefix, func(w http.ResponseWriter, r *http.Request) {
 		f.ServeAsset(w, r, strings.TrimPrefix(r.URL.Path, "/"), "")
 	})
-	for _, assetPath := range frontendRootAssetPaths() {
+	for _, assetPath := range []string{
+		"/favicon.ico",
+		"/favicon.svg",
+		"/favicon-96x96.png",
+		"/apple-touch-icon.png",
+		"/web-app-manifest-192x192.png",
+		"/web-app-manifest-512x512.png",
+	} {
 		mux.HandleFunc(assetPath, func(w http.ResponseWriter, r *http.Request) {
 			f.ServeAsset(w, r, strings.TrimPrefix(assetPath, "/"), "")
 		})
@@ -362,17 +369,6 @@ func getContentType(ext string) string {
 		return "application/json; charset=utf-8"
 	}
 	return ""
-}
-
-func frontendRootAssetPaths() []string {
-	return []string{
-		"/favicon.ico",
-		"/favicon.svg",
-		"/favicon-96x96.png",
-		"/apple-touch-icon.png",
-		"/web-app-manifest-192x192.png",
-		"/web-app-manifest-512x512.png",
-	}
 }
 
 func serveInstallBinary(w http.ResponseWriter, r *http.Request) {
