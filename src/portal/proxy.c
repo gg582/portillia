@@ -6,12 +6,9 @@
 #include <poll.h>
 
 /**
- * @brief Function portillia_proxy_stream
- * @param client_fd Parameter description
- * @param target_fd Parameter description
- * @return void result
+ * @brief Bridge two sockets.
  */
-void portillia_proxy_stream(int client_fd, int target_fd) {
+void portillia_proxy_bridge(int client_fd, int target_fd) {
     struct pollfd fds[2];
     fds[0].fd = client_fd;
     fds[0].events = POLLIN;
@@ -33,4 +30,6 @@ void portillia_proxy_stream(int client_fd, int target_fd) {
             write(client_fd, buf, n);
         }
     }
+    close(client_fd);
+    close(target_fd);
 }
