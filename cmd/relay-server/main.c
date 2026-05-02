@@ -98,7 +98,10 @@ static char *replace_str(const char *str, const char *old_str, const char *new_s
 
 void fallback_spa_handler_clean(cwist_http_request *req, cwist_http_response *res) {
     (void)req;
-    FILE *f = fopen("cmd/relay-server/dist/app/portal.html", "rb");
+    const char *static_dir = getenv("STATIC_DIR") ? getenv("STATIC_DIR") : "cmd/relay-server/dist/app";
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/portal.html", static_dir);
+    FILE *f = fopen(path, "rb");
     if (!f) {
         res->status_code = CWIST_HTTP_NOT_FOUND;
         cwist_sstring_assign(res->body, "Not Found");
@@ -175,7 +178,9 @@ int main(void) {
     cwist_app_get(app, "/portal.html", fallback_spa_handler_clean);
     extern void portillia_api_server_setup(cwist_app *app);
     portillia_api_server_setup(app);
-    cwist_app_static(app, "/", "cmd/relay-server/dist/app");
+    
+    const char *static_dir = getenv("STATIC_DIR") ? getenv("STATIC_DIR") : "cmd/relay-server/dist/app";
+    cwist_app_static(app, "/", static_dir);
     
     listener_args *sni_args = malloc(sizeof(listener_args));
     sni_args->sni_port = sni_port;

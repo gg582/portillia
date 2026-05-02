@@ -55,6 +55,7 @@ COPY --from=c-builder /src/bin/relay-server /usr/bin/relay-server
 COPY --from=c-builder /src/bin/portal-tunnel /usr/bin/portal-tunnel
 COPY --from=frontend-builder /src/cmd/relay-server/dist/app /app/dist
 
+ENV STATIC_DIR=/app/dist
 ENV TZ=UTC
 EXPOSE 8080
 ENTRYPOINT ["/usr/bin/relay-server"]
