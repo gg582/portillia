@@ -3,33 +3,45 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <poll.h>
+#include <pthread.h>
+#include <string.h>
+
+typedef struct {
+    int src;
+    int dst;
+} copy_args;
+
+void *copy_thread(void *arg) {
+    copy_args *args = (copy_args *)arg;
+    char buf[32768];
+    ssize_t n;
+    while ((n = read(args->src, buf, sizeof(buf))) > 0) {
+        if (write(args->dst, buf, n) < 0) break;
+    }
+    // Shutdown the write side of the destination
+    shutdown(args->dst, SHUT_WR);
+    free(args);
+    return NULL;
+}
 
 /**
  * @brief Bridge two sockets.
  */
 void portillia_proxy_bridge(int client_fd, int target_fd) {
-    struct pollfd fds[2];
-    fds[0].fd = client_fd;
-    fds[0].events = POLLIN;
-    fds[1].fd = target_fd;
-    fds[1].events = POLLIN;
+    pthread_t t1, t2;
+    copy_args *args1 = malloc(sizeof(copy_args));
+    args1->src = client_fd;
+    args1->dst = target_fd;
+    pthread_create(&t1, NULL, copy_thread, args1);
+    
+    copy_args *args2 = malloc(sizeof(copy_args));
+    args2->src = target_fd;
+    args2->dst = client_fd;
+    pthread_create(&t2, NULL, copy_thread, args2);
+    
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
 
-    char buf[4096];
-    while (1) {
-        int ret = poll(fds, 2, -1);
-        if (ret < 0) break;
-        if (fds[0].revents & POLLIN) {
-            ssize_t n = read(client_fd, buf, sizeof(buf));
-            if (n <= 0) break;
-            write(target_fd, buf, n);
-        }
-        if (fds[1].revents & POLLIN) {
-            ssize_t n = read(target_fd, buf, sizeof(buf));
-            if (n <= 0) break;
-            write(client_fd, buf, n);
-        }
-    }
     close(client_fd);
     close(target_fd);
 }

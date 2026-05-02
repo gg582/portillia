@@ -3,18 +3,10 @@
 #include <time.h>
 #include <stdarg.h>
 
-/**
- * @brief Function portillia_log
- * @param level Parameter description
- * @param fmt Parameter description
- * @param ... Parameter description
- * @return void result
- */
 void portillia_log(portillia_log_level level, const char *fmt, ...) {
     time_t now = time(NULL);
     struct tm *tm_info = localtime(&now);
     char time_str[20];
-    // Zerolog default console format is usually HH:MM:SS or similar
     strftime(time_str, sizeof(time_str), "%H:%M:%S", tm_info);
 
     const char *level_str = "INF";

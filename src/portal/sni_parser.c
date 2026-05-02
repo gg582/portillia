@@ -14,20 +14,32 @@
 
 // Returns dynamically allocated string or NULL
 char *get_sni_hostname(int client_fd) {
-    char buf[MAX_CLIENT_HELLO];
+    unsigned char buf[MAX_CLIENT_HELLO];
     
     // Wait for data (like defaultClientHelloWait in Go)
     struct pollfd pfd = { .fd = client_fd, .events = POLLIN };
-    if (poll(&pfd, 1, 2000) <= 0) return NULL;
+    if (poll(&pfd, 1, 2000) <= 0) {
+        LOG_INFO("SNI Parser: Timeout or error in poll");
+        return NULL;
+    }
 
     ssize_t n = recv(client_fd, buf, sizeof(buf), MSG_PEEK);
-    if (n < 43) return NULL; // Too small for ClientHello
+    if (n < 43) {
+        LOG_INFO("SNI Parser: Packet too small (%ld bytes)", n);
+        return NULL; 
+    }
 
     // Check TLS Handshake record (0x16)
-    if (buf[0] != 0x16) return NULL;
+    if (buf[0] != 0x16) {
+        LOG_INFO("SNI Parser: Not a TLS Handshake (0x%02x)", buf[0]);
+        return NULL;
+    }
     
     // Check ClientHello message type (0x01)
-    if (buf[5] != 0x01) return NULL;
+    if (buf[5] != 0x01) {
+        LOG_INFO("SNI Parser: Not a ClientHello (0x%02x)", buf[5]);
+        return NULL;
+    }
     
     // Parse length and skip headers
     int pos = 43; // skip fixed length headers
@@ -48,12 +60,15 @@ char *get_sni_hostname(int client_fd) {
     pos += 1 + comp_methods_len;
     
     // Parse Extensions
-    if (pos + 2 > n) return NULL;
+    if (pos + 2 > n) {
+        LOG_INFO("SNI Parser: No extensions area found (pos=%d, n=%ld)", pos, n);
+        return NULL;
+    }
     int ext_len = (buf[pos] << 8) | buf[pos + 1];
     pos += 2;
     
     int end = pos + ext_len;
-    if (end > n) end = n;
+    if (end > (int)n) end = (int)n;
     
     while (pos + 4 <= end) {
         int ext_type = (buf[pos] << 8) | buf[pos + 1];
@@ -74,5 +89,6 @@ char *get_sni_hostname(int client_fd) {
         pos += ext_len;
     }
     
+    LOG_INFO("SNI Parser: SNI extension not found in %ld bytes", n);
     return NULL;
 }
