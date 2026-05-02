@@ -230,9 +230,17 @@ int main(void) {
     sni_args->sni_port = sni_port;
     sni_args->api_port = api_port;
     
-    pthread_t sni_tid, wg_tid;
+    // Initialize discovery
+    discovery_config *disc_cfg = malloc(sizeof(discovery_config));
+    disc_cfg->relay_url = getenv("PORTAL_URL") ? strdup(getenv("PORTAL_URL")) : strdup("http://localhost:4017");
+    disc_cfg->bootstrap_urls = getenv("BOOTSTRAPS") ? strdup(getenv("BOOTSTRAPS")) : NULL;
+
+    pthread_t sni_tid, wg_tid, disc_tid;
     pthread_create(&sni_tid, NULL, sni_listener_thread, sni_args);
     pthread_create(&wg_tid, NULL, wg_listener_thread, &wg_port);
+    if (disc_cfg->bootstrap_urls) {
+        pthread_create(&disc_tid, NULL, discovery_maintenance_loop, disc_cfg);
+    }
     
     LOG_INFO("API server listening on port %d", api_port);
     cwist_app_listen(app, api_port);

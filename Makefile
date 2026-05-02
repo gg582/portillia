@@ -1,6 +1,7 @@
 CC ?= gcc
 CFLAGS = -Wall -Wextra -O2 -I./include -I./libs/cwist/include -I./libs/cwist/lib/cjson -pthread
-LDFLAGS = -L./libs/cwist -L./libs/cwist/lib/libttak/lib -L./libs/cwist/lib/cjson -lcwist -lssl -lcrypto -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread
+LDFLAGS = -L./libs/cwist -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -lcwist -lttak -lssl -lcrypto -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread
+CFLAGS = -I./include -I./libs/libttak/include -Wall -O3
 
 # Add cwist internal libs to include path
 CFLAGS += -I./libs/cwist/lib/libttak/include -I./libs/cwist/lib -I./libs/cwist/lib/sqlite3 -I./libs/cwist/lib/uriparser/include
