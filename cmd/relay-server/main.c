@@ -12,6 +12,7 @@
 #include <wireguard_proto.h>
 #include <arpa/inet.h>
 #include <string.h>
+#include <sys/stat.h>
 
 extern char *get_sni_hostname(int client_fd);
 
@@ -97,7 +98,7 @@ static char *replace_str(const char *str, const char *old_str, const char *new_s
 }
 
 void fallback_spa_handler_clean(cwist_http_request *req, cwist_http_response *res) {
-    (void)req;
+    LOG_INFO("Serving SPA fallback for %s", req->path->data);
     const char *static_dir = getenv("STATIC_DIR") ? getenv("STATIC_DIR") : "cmd/relay-server/dist/app";
     char path[1024];
     snprintf(path, sizeof(path), "%s/portal.html", static_dir);
@@ -111,28 +112,65 @@ void fallback_spa_handler_clean(cwist_http_request *req, cwist_http_response *re
     long fsize = ftell(f);
     fseek(f, 0, SEEK_SET);
     char *html = malloc(fsize + 1);
+    if (!html) { fclose(f); return; }
     fread(html, 1, fsize, f);
     fclose(f);
     html[fsize] = 0;
-    char *head_end = strstr(html, "</head>");
-    char *final_html = malloc(fsize + 4096);
+    
+    char *final_html = malloc(fsize + 8192); // Increased buffer
+    if (!final_html) { free(html); return; }
     final_html[0] = '\0';
+    
+    char *head_end = strstr(html, "</head>");
     if (head_end) {
-        strncat(final_html, html, head_end - html);
+        size_t head_len = head_end - html;
+        memcpy(final_html, html, head_len);
+        final_html[head_len] = '\0';
         strcat(final_html, "<script id=\"__SSR_DATA__\" type=\"application/json\">[]</script>\n</head>");
         strcat(final_html, head_end + 7);
     } else {
         strcpy(final_html, html);
     }
     free(html);
+    
     char *r1 = replace_str(final_html, "[%OG_TITLE%]", "Portal Proxy Gateway");
     char *r2 = replace_str(r1, "[%OG_DESCRIPTION%]", "Transform your local services into web-accessible endpoints. Instant access from anywhere.");
     char *r3 = replace_str(r2, "[%LANDING_PAGE_ENABLED%]", "true");
     char *r4 = replace_str(r3, "[%RELEASE_VERSION%]", "v2.1.8-c");
+    
     cwist_sstring_assign(res->body, r4);
     free(final_html); free(r1); free(r2); free(r3); free(r4);
+    
     cwist_http_header_add(&res->headers, "Content-Type", "text/html; charset=utf-8");
     cwist_http_header_add(&res->headers, "Cache-Control", "no-cache, must-revalidate");
+}
+
+void spa_error_handler(cwist_http_request *req, cwist_http_response *res, cwist_http_status_t status) {
+    if (status == CWIST_HTTP_NOT_FOUND && req->method == CWIST_HTTP_GET) {
+        const char *static_dir = getenv("STATIC_DIR") ? getenv("STATIC_DIR") : "cmd/relay-server/dist/app";
+        char fs_path[1024];
+        snprintf(fs_path, sizeof(fs_path), "%s%s", static_dir, req->path->data);
+        
+        struct stat st;
+        if (stat(fs_path, &st) == 0 && S_ISREG(st.st_mode)) {
+            // Serve static file manually if found on disk
+            cwist_http_response_send_file(res, fs_path, NULL, NULL);
+            res->status_code = CWIST_HTTP_OK;
+            return;
+        }
+
+        // Otherwise, fallback to SPA for non-asset paths
+        const char *dot = strrchr(req->path->data, '.');
+        if (dot && strchr(dot, '/') == NULL) {
+            // It has an extension but file not found -> real 404
+            res->status_code = CWIST_HTTP_NOT_FOUND;
+            cwist_sstring_assign(res->body, "404 Not Found");
+            return;
+        }
+        
+        fallback_spa_handler_clean(req, res);
+        res->status_code = CWIST_HTTP_OK;
+    }
 }
 
 int main(void) {
@@ -153,12 +191,14 @@ int main(void) {
         .aws_kms_key_arn = getenv("AWS_DNSSEC_KMS_KEY_ARN")
     };
 
-    int api_port = getenv("PORTAL_API_PORT") ? atoi(getenv("PORTAL_API_PORT")) : 4017;
-    int sni_port = getenv("PORTAL_SNI_PORT") ? atoi(getenv("PORTAL_SNI_PORT")) : 443;
-    int wg_port = getenv("PORTAL_WG_PORT") ? atoi(getenv("PORTAL_WG_PORT")) : 51820;
+    int api_port = getenv("PORTAL_API_PORT") ? atoi(getenv("PORTAL_API_PORT")) : (getenv("API_PORT") ? atoi(getenv("API_PORT")) : 4017);
+    int sni_port = getenv("PORTAL_SNI_PORT") ? atoi(getenv("PORTAL_SNI_PORT")) : (getenv("SNI_PORT") ? atoi(getenv("SNI_PORT")) : 443);
+    int wg_port = getenv("PORTAL_WG_PORT") ? atoi(getenv("PORTAL_WG_PORT")) : (getenv("WIREGUARD_PORT") ? atoi(getenv("WIREGUARD_PORT")) : 51820);
 
     LOG_INFO("configured relay server: release_version=%s, portal_url=%s, identity_path=%s, bootstraps=%s, discovery_enabled=%d, wireguard_port=%d, api_port=%d, sni_port=%d, trust_proxy_headers=%d, trusted_proxy_cidrs=%s, udp_enabled=%d, tcp_enabled=%d, min_port=%d, max_port=%d, landing_page_enabled=%d, headless_shell_enabled=%d, acme_dns_provider=%s, ens_gasless_enabled=%d",
              "v2.1.8-c", acme_cfg.base_domain ? acme_cfg.base_domain : "", acme_cfg.key_dir, "", 0, wg_port, api_port, sni_port, 0, "", 0, 0, 0, 0, 1, 0, acme_cfg.dns_provider_type ? acme_cfg.dns_provider_type : "", acme_cfg.ens_gasless_enabled);
+
+    cwist_app *app = cwist_app_create();
 
     if (acme_cfg.base_domain) {
         portillia_acme_manager *acme = portillia_acme_manager_new(acme_cfg);
@@ -166,6 +206,7 @@ int main(void) {
             char *cert_file = NULL, *key_file = NULL;
             if (portillia_acme_manager_ensure_certificate(acme, &cert_file, &key_file) == CWIST_SUCCESS) {
                 LOG_INFO("Using certificate: %s", cert_file);
+                cwist_app_use_https(app, cert_file, key_file);
                 free(cert_file); free(key_file);
             }
             portillia_acme_manager_sync_dns(acme);
@@ -173,14 +214,17 @@ int main(void) {
         }
     }
 
-    cwist_app *app = cwist_app_create();
     cwist_app_get(app, "/", fallback_spa_handler_clean);
     cwist_app_get(app, "/portal.html", fallback_spa_handler_clean);
+    cwist_app_set_error_handler(app, spa_error_handler);
+    
     extern void portillia_api_server_setup(cwist_app *app);
     portillia_api_server_setup(app);
     
     const char *static_dir = getenv("STATIC_DIR") ? getenv("STATIC_DIR") : "cmd/relay-server/dist/app";
-    cwist_app_static(app, "/", static_dir);
+    char assets_dir[1024];
+    snprintf(assets_dir, sizeof(assets_dir), "%s/assets", static_dir);
+    cwist_app_static(app, "/assets", assets_dir);
     
     listener_args *sni_args = malloc(sizeof(listener_args));
     sni_args->sni_port = sni_port;
