@@ -1,100 +1,64 @@
-.PHONY: help install fmt vet lint lint-auto test vuln tidy all run build build-frontend build-docs build-tunnel build-server clean
+CC ?= gcc
+CFLAGS = -Wall -Wextra -O2 -I./include -I./libs/cwist/include -pthread
+LDFLAGS = -L./libs/cwist -L./libs/cwist/lib/libttak/lib -L./libs/cwist/lib/cjson -lcwist -lssl -lcrypto -lcjson -lsqlite3 -lttak -ldl -lpthread
 
-.DEFAULT_GOAL := help
+# Add cwist internal libs to include path
+CFLAGS += -I./libs/cwist/lib/libttak/include -I./libs/cwist/lib -I./libs/cwist/lib/sqlite3 -I./libs/cwist/lib/uriparser/include
 
-GO_PACKAGES := ./cmd/... ./portal/... ./sdk/... ./types/...
-GO_TOOLCHAIN_VERSION := $(shell awk '/^go / { print "go" $$2; exit }' go.mod)
-GOIMPORTS_VERSION := v0.41.0
-GOLANGCI_LINT_VERSION := v2.11.1
-GOVULNCHECK_VERSION := v1.1.4
+SRC_TYPES = src/types/types.c
+SRC_UTILS = src/utils/crypto.c src/utils/network.c
+SRC_PORTAL = src/portal/server.c src/portal/api_server.c src/portal/proxy.c src/portal/sni_parser.c \
+             src/portal/transport/quic_backhaul.c src/portal/keyless/tls.c
+SRC_SDK = src/sdk/expose.c
 
-export GOTOOLCHAIN := $(GO_TOOLCHAIN_VERSION)
+ALL_SRCS = $(SRC_TYPES) $(SRC_UTILS) $(SRC_PORTAL) $(SRC_SDK)
+ALL_OBJS = $(ALL_SRCS:.c=.o)
+
+BIN_RELAY = bin/relay-server
+BIN_PORTAL = bin/portal-tunnel
+BIN_DEMO = bin/demo-app
+
+.PHONY: all help libs build build-frontend build-docs build-tunnel build-server build-demo clean
+
+all: build
 
 help:
 	@echo "Available targets:"
-	@echo "  make install           - Install Go developer tools used by this repo"
-	@echo "  make fmt               - Apply gofmt/goimports"
-	@echo "  make lint-auto         - Run autofix lint/format pipeline"
-	@echo "  make build             - Build everything (frontend, tunnel, server)"
-	@echo "  make build-frontend    - Build React frontend (Tailwind CSS 4)"
-	@echo "  make build-docs        - Build documentation site (SvelteKit)"
-	@echo "  make build-tunnel      - Build portal-tunnel binaries"
-	@echo "  make build-server      - Build Go relay server (frontend built separately)"
-	@echo "  make run               - Run relay server"
+	@echo "  make build             - Build everything (frontend, tunnel, server, demo)"
+	@echo "  make build-frontend    - Build React frontend"
+	@echo "  make build-docs        - Build documentation site"
+	@echo "  make build-tunnel      - Build portal-tunnel binaries (C implementation)"
+	@echo "  make build-server      - Build relay server (C implementation)"
+	@echo "  make build-demo        - Build demo app (C implementation)"
 	@echo "  make clean             - Remove build artifacts"
 
-install:
-	go install golang.org/x/tools/cmd/goimports@$(GOIMPORTS_VERSION)
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
-	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+libs:
+	$(MAKE) -C libs/cwist
 
-fmt:
-	gofmt -w .
-	goimports -w .
+build: build-frontend build-tunnel build-server build-demo
 
-vet:
-	go vet $(GO_PACKAGES)
-
-lint:
-	golangci-lint run $(GO_PACKAGES)
-
-lint-auto:
-	gofmt -w .
-	goimports -w .
-	golangci-lint run --fix $(GO_PACKAGES)
-
-test:
-	go test -v -coverprofile=coverage.out $(GO_PACKAGES)
-
-vuln:
-	govulncheck $(GO_PACKAGES)
-
-tidy:
-	go get -u ./...
-	go mod tidy
-	go mod verify
-
-all: fmt vet lint test vuln build
-
-run:
-	./bin/relay-server
-
-# Convenience target
-build: build-frontend build-tunnel build-server
-
-# Build React frontend with Tailwind CSS 4
 build-frontend:
-	@echo "[frontend] building React frontend..."
-	@mkdir -p cmd/relay-server/dist/app
-	@cd frontend && npm i && npm run build
-	@echo "[frontend] build complete"
+	cd frontend && npm install && npm run build
+	mkdir -p cmd/relay-server/dist
+	cp -r frontend/dist cmd/relay-server/dist/app
 
-# Build documentation site
-build-docs:
-	@echo "[docs] building documentation site..."
-	@cd docs && bun install --frozen-lockfile && bun run build
-	@echo "[docs] build complete"
+build-tunnel: libs cmd/portal-tunnel/main.o $(ALL_OBJS)
+	@mkdir -p bin
+	$(CC) -o $(BIN_PORTAL) cmd/portal-tunnel/main.o $(ALL_OBJS) $(LDFLAGS)
 
-# Build portal-tunnel binaries for installer distribution
-build-tunnel:
-	@echo "[tunnel] building portal-tunnel binaries..."
-	@mkdir -p cmd/relay-server/dist/tunnel
-	@for GOOS in linux darwin windows; do \
-		for GOARCH in amd64 arm64; do \
-			EXT=""; \
-			if [ "$${GOOS}" = "windows" ]; then EXT=".exe"; fi; \
-			OUT="cmd/relay-server/dist/tunnel/portal-$${GOOS}-$${GOARCH}$${EXT}"; \
-			echo " - $${OUT}"; \
-			CGO_ENABLED=0 GOOS=$${GOOS} GOARCH=$${GOARCH} go build -trimpath -ldflags "-s -w" -o "$${OUT}" ./cmd/portal-tunnel; \
-		done; \
-	done
+build-server: libs cmd/relay-server/main.o $(ALL_OBJS)
+	@mkdir -p bin
+	$(CC) -o $(BIN_RELAY) cmd/relay-server/main.o $(ALL_OBJS) $(LDFLAGS)
 
-# Build Go relay server
-build-server:
-	@echo "[server] building Go portal..."
-	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/relay-server ./cmd/relay-server
+build-demo: libs cmd/demo-app/main.o $(ALL_OBJS)
+	@mkdir -p bin
+	$(CC) -o $(BIN_DEMO) cmd/demo-app/main.o $(ALL_OBJS) $(LDFLAGS)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
 	rm -rf bin
+	rm -f $(ALL_OBJS) cmd/relay-server/main.o cmd/portal-tunnel/main.o cmd/demo-app/main.o
 	rm -rf cmd/relay-server/dist/app
-	rm -rf cmd/relay-server/dist/tunnel
+	# $(MAKE) -C libs/cwist clean
