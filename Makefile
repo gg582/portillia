@@ -1,16 +1,16 @@
 CC ?= gcc
-CFLAGS = -Wall -Wextra -O2 -I./include -I./libs/cwist/include -I./libs/cwist/lib/cjson -pthread
+CFLAGS = -Wall -Wextra -O3 -I./include -I./libs/cwist/include -I./libs/cwist/lib/cjson -I./libs/libttak/include -pthread
 LDFLAGS = -L./libs/cwist -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -lcwist -lttak -lssl -lcrypto -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread
-CFLAGS = -I./include -I./libs/libttak/include -Wall -O3
 
 # Add cwist internal libs to include path
 CFLAGS += -I./libs/cwist/lib/libttak/include -I./libs/cwist/lib -I./libs/cwist/lib/sqlite3 -I./libs/cwist/lib/uriparser/include
 
 SRC_TYPES = src/types/types.c
-SRC_UTILS = src/utils/crypto.c src/utils/network.c src/utils/log.c
+SRC_UTILS = src/utils/crypto.c src/utils/network.c src/utils/log.c src/utils/ttak_stubs.c
 SRC_PORTAL = src/portal/server.c src/portal/api_server.c src/portal/proxy.c src/portal/sni_parser.c \
              src/portal/transport/quic_backhaul.c src/portal/keyless/tls.c \
-             src/portal/acme/manager.c src/portal/acme/cloudflare/provider.c src/portal/acme/route53/provider.c src/portal/acme/gcloud/provider.c
+             src/portal/acme/manager.c src/portal/acme/cloudflare/provider.c src/portal/acme/route53/provider.c src/portal/acme/gcloud/provider.c \
+             src/portal/discovery/discovery.c
 SRC_SDK = src/sdk/expose.c
 
 ALL_SRCS = $(SRC_TYPES) $(SRC_UTILS) $(SRC_PORTAL) $(SRC_SDK)

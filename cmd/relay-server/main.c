@@ -3,6 +3,7 @@
 #include <portillia/types/types.h>
 #include <portillia/utils/log.h>
 #include <portillia/portal/acme/manager.h>
+#include <portillia/portal/discovery/discovery.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>

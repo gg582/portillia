@@ -22,17 +22,25 @@ static void check_multi_info(void) {
     }
 }
 
+void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descriptor *desc) {
+    // Placeholder for actual discovery announcement logic
+    LOG_INFO("Discovery: Announcing relay to %s", cfg->relay_url);
+}
+
 static void discovery_task(ttak_task_t *task, void *arg) {
     discovery_config *cfg = (discovery_config *)arg;
     
     portillia_relay_descriptor desc;
-    desc.api_https_addr = cwist_sstring_create_from_str(cfg->relay_url);
-    desc.version = cwist_sstring_create_from_str("v2.1.8-c");
+    desc.api_https_addr = cwist_sstring_create();
+    cwist_sstring_assign(desc.api_https_addr, (char *)cfg->relay_url);
+    desc.version = cwist_sstring_create();
+    cwist_sstring_assign(desc.version, (char *)"v2.1.8-c");
     desc.active_connections = 0; // Telemetry placeholder
     desc.tcp_bps = 0.0;          // Telemetry placeholder
 
     // Mock Signing Logic
-    desc.signature = cwist_sstring_create_from_str("mock_signature"); 
+    desc.signature = cwist_sstring_create(); 
+    cwist_sstring_assign(desc.signature, (char *)"mock_signature");
     
     // Announce
     portillia_discovery_announce(cfg, &desc);
