@@ -2,10 +2,10 @@
  * @brief Implementation of service exposure logic.
  */
 #include <portillia/types/types.h>
+#include <portillia/utils/log.h>
 #include <cwist/core/sstring/sstring.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <pthread.h>
 
 typedef struct portillia_exposure {
@@ -21,8 +21,9 @@ typedef struct portillia_exposure {
  * @return Allocated exposure context, or NULL on error.
  */
 portillia_exposure *portillia_expose(const char *target, const char *relay_url) {
-    printf("SDK: Exposing %s through %s\n", target, relay_url);
+    LOG_INFO("SDK: Exposing %s through %s", target, relay_url);
     portillia_exposure *e = malloc(sizeof(portillia_exposure));
+
     e->target_addr = cwist_sstring_create();
     cwist_sstring_assign(e->target_addr, (char *)target);
     e->running = true;

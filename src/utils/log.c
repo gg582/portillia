@@ -1,0 +1,36 @@
+#include <portillia/utils/log.h>
+#include <stdio.h>
+#include <time.h>
+#include <stdarg.h>
+
+/**
+ * @brief Function portillia_log
+ * @param level Parameter description
+ * @param fmt Parameter description
+ * @param ... Parameter description
+ * @return void result
+ */
+void portillia_log(portillia_log_level level, const char *fmt, ...) {
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char time_str[20];
+    // Zerolog default console format is usually HH:MM:SS or similar
+    strftime(time_str, sizeof(time_str), "%H:%M:%S", tm_info);
+
+    const char *level_str = "INF";
+    switch (level) {
+        case PORTILLIA_LOG_DEBUG: level_str = "DBG"; break;
+        case PORTILLIA_LOG_INFO:  level_str = "INF"; break;
+        case PORTILLIA_LOG_WARN:  level_str = "WRN"; break;
+        case PORTILLIA_LOG_ERROR: level_str = "ERR"; break;
+    }
+
+    fprintf(stderr, "%s %s ", time_str, level_str);
+    
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+    
+    fprintf(stderr, "\n");
+}

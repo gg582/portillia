@@ -1,4 +1,5 @@
 #include <portillia/types/types.h>
+#include <portillia/utils/log.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -33,7 +34,7 @@ int main(int argc, char **argv) {
             printf("Usage: portal-tunnel expose <target>\n");
             return 1;
         }
-        printf("Exposing %s...\n", argv[2]);
+        LOG_INFO("starting portal tunnel; target: %s", argv[2]);
         // TODO: Implement SDK expose logic
     } else {
         print_usage();

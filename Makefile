@@ -6,7 +6,7 @@ LDFLAGS = -L./libs/cwist -L./libs/cwist/lib/libttak/lib -L./libs/cwist/lib/cjson
 CFLAGS += -I./libs/cwist/lib/libttak/include -I./libs/cwist/lib -I./libs/cwist/lib/sqlite3 -I./libs/cwist/lib/uriparser/include
 
 SRC_TYPES = src/types/types.c
-SRC_UTILS = src/utils/crypto.c src/utils/network.c
+SRC_UTILS = src/utils/crypto.c src/utils/network.c src/utils/log.c
 SRC_PORTAL = src/portal/server.c src/portal/api_server.c src/portal/proxy.c src/portal/sni_parser.c \
              src/portal/transport/quic_backhaul.c src/portal/keyless/tls.c
 SRC_SDK = src/sdk/expose.c
