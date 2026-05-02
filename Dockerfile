@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     wget \
     unzip \
+    git \
     libssl-dev \
     libsqlite3-dev \
     pkg-config \
@@ -25,6 +26,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
+
+# Robustly handle missing cwist submodule (e.g. when built without local submodules initialized)
+RUN if [ ! -f libs/cwist/Makefile ]; then \
+        echo "cwist submodule missing, cloning..." && \
+        rm -rf libs/cwist && \
+        git clone --recursive https://github.com/religiya-serdtsa/cwist libs/cwist; \
+    fi
 
 # Ensure stubs are available for cwist
 RUN cp include/ttak_stubs.h libs/cwist/include/
