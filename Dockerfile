@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     libssl-dev \
     libsqlite3-dev \
+    libcurl4-openssl-dev \
     pkg-config \
     ca-certificates \
     doxygen \
@@ -46,6 +47,7 @@ FROM debian:12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     libsqlite3-0 \
+    libcurl4 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
