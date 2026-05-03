@@ -285,38 +285,6 @@ void handle_healthz(cwist_http_request *req, cwist_http_response *res) {
     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
 }
 
-#include <portillia/portal/discovery/discovery.h>
-
-extern discovery_config *global_disc_cfg;
-
-/**
- * @brief Function handle_discovery_announce
- */
-void handle_discovery_announce(cwist_http_request *req, cwist_http_response *res) {
-    if (req->body && req->body->size > 0) {
-        cJSON *root = cJSON_Parse(req->body->data);
-        if (root) {
-            cJSON *desc = cJSON_GetObjectItem(root, "descriptor");
-            if (desc && global_disc_cfg && global_disc_cfg->relay_set) {
-                cJSON *api_addr = cJSON_GetObjectItem(desc, "api_https_addr");
-                if (api_addr && api_addr->valuestring) {
-                    portillia_relay_descriptor d = {0};
-                    d.api_https_addr = cwist_sstring_create();
-                    cwist_sstring_assign(d.api_https_addr, api_addr->valuestring);
-                    d.expires_at = time(NULL) + 60;
-                    
-                    portillia_relay_set_upsert(global_disc_cfg->relay_set, d);
-                    
-                    cwist_sstring_assign(res->body, "{\"protocol_version\": \"7\", \"accepted\": true}");
-                    cwist_sstring_destroy(d.api_https_addr);
-                }
-            }
-            cJSON_Delete(root);
-        }
-    }
-    cwist_http_header_add(&res->headers, "Content-Type", "application/json");
-}
-
 #include <portillia/portal/settings.h>
 
 extern portillia_settings* portillia_server_get_settings();
@@ -330,7 +298,7 @@ static char *settings_path = NULL;
  * Routes granular lease management actions (ban, bps, approve).
  */
 void handle_admin_action(cwist_http_request *req, cwist_http_response *res) {
-    char *path_copy = strdup(req->path);
+    char *path_copy = strdup(req->path->data);
     portillia_settings *s = portillia_server_get_settings();
     if (!s) { res->status_code = CWIST_HTTP_INTERNAL_ERROR; free(path_copy); return; }
 
@@ -518,7 +486,6 @@ void portillia_api_server_setup(cwist_app *app) {
     cwist_app_post(app, "/sdk/unregister", handle_unregister);
     cwist_app_post(app, "/sdk/hop", handle_hop);
     cwist_app_get(app, "/discovery", handle_discovery);
-    cwist_app_post(app, "/discovery/announce", handle_discovery_announce);
     
     // Admin APIs
     cwist_app_get(app, "/admin/snapshot", handle_admin_snapshot);

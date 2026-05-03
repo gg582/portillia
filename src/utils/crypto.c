@@ -11,6 +11,7 @@
 #include <openssl/rand.h>
 #include <string.h>
 #include <portillia/utils/log.h>
+#include <portillia/utils/crypto.h>
 
 /**
  * @brief Keccak-256 implementation using OpenSSL EVP.
@@ -100,13 +101,12 @@ int portillia_crypto_generate_identity(char *out_priv, char *out_addr) {
  * @param signature 65-byte compact signature.
  * @param out_pubkey 65-byte buffer for uncompressed public key.
  */
-int portillia_crypto_recover_secp256k1_compact(const uint8_t *hash, const uint8_t *signature, uint8_t *out_pubkey) {
+int portillia_crypto_recover_secp256k1_compact(const uint8_t *hash, const uint8_t *signature, int recid, uint8_t *out_pubkey) {
     secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY);
     secp256k1_ecdsa_recoverable_signature sig;
     secp256k1_pubkey pubkey;
-    int recovery_id = signature[64];
 
-    if (!secp256k1_ecdsa_recoverable_signature_parse_compact(ctx, &sig, signature, recovery_id)) {
+    if (!secp256k1_ecdsa_recoverable_signature_parse_compact(ctx, &sig, signature, recid)) {
         secp256k1_context_destroy(ctx);
         return -1;
     }

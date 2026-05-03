@@ -24,4 +24,12 @@ int portillia_network_listen_tcp(const char *addr, uint16_t port);
  */
 int portillia_network_ip_in_cidr(const char *ip, const char *cidr);
 
+/**
+ * @brief Checks if a hostname matches a pattern (wildcard support).
+ * @param pattern Pattern with optional leading wildcard (e.g., "*.example.com" or "host.example.com").
+ * @param hostname Hostname to check.
+ * @return 1 if matches, 0 if not.
+ */
+int hostname_matches(const char *pattern, const char *hostname);
+
 #endif // PORTILLIA_UTILS_NETWORK_H

@@ -9,6 +9,7 @@
 
 #include <portillia/types/types.h>
 #include <portillia/utils/log.h>
+#include <portillia/utils/crypto.h>
 #include <cwist/core/sstring/sstring.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -158,8 +159,8 @@ portillia_exposure *portillia_expose(const char *target, const char *relay_url) 
     char priv_hex[65] = {0};
     char addr[43] = {0};
     if (portillia_crypto_generate_identity(priv_hex, addr) == 0) {
-        cwist_sstring_set(e->identity->address, addr);
-        cwist_sstring_set(e->identity->private_key, priv_hex);
+        cwist_sstring_assign(e->identity->address, addr);
+        cwist_sstring_assign(e->identity->private_key, priv_hex);
     } else {
         LOG_ERROR("SDK: Failed to generate identity");
         free(e->target_addr); free(e->relay_url); portillia_identity_destroy(e->identity); free(e);

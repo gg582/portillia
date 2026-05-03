@@ -9,6 +9,7 @@
 #include <time.h>
 #include <portillia/types/types.h>
 #include <portillia/utils/log.h>
+#include <portillia/utils/network.h>
 #include <portillia/portal/settings.h>
 #include <cjson/cJSON.h>
 

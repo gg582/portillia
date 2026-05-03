@@ -5,7 +5,8 @@
 #include <portillia/portal/acme/manager.h>
 #include <portillia/portal/discovery/discovery.h>
 #include <portillia/portal/settings.h>
-#include <cwist/sys/io/mux.h>
+#include <cwist/net/yamux.h>
+#include <portillia/portal/api_server_relay.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -74,10 +75,7 @@ void *hop_listener_thread(void *arg) {
         int client = accept(fd, NULL, NULL);
         if (client < 0) continue;
         
-        extern cwist_event_loop *global_event_loop;
-        if (global_event_loop) {
-            cwist_mux_session_create(global_event_loop, client, true);
-        }
+        cwist_yamux_session_create(client);
     }
     return NULL;
 }
@@ -282,11 +280,7 @@ int main(void) {
     portillia_server_setup(acme_cfg.base_domain ? acme_cfg.base_domain : "localhost", api_port, sni_port, settings);
 
     // Initialize Multiplexer
-    #include <cwist/sys/io/mux.h>
-    extern cwist_event_loop *global_event_loop;
-    if (global_event_loop) {
-        LOG_INFO("Core Yamux multiplexer system ready");
-    }
+    // No global event loop used after refactoring
 
     cwist_app *app = cwist_app_create();
 
@@ -315,6 +309,7 @@ int main(void) {
     
     extern void portillia_api_server_setup(cwist_app *app);
     portillia_api_server_setup(app);
+    portillia_api_server_relay_setup(app);
     
     const char *static_dir = getenv("STATIC_DIR") ? getenv("STATIC_DIR") : "cmd/relay-server/dist/app";
     char assets_dir[1024];

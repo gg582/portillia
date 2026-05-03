@@ -34,3 +34,22 @@ int portillia_network_listen_tcp(const char *addr, uint16_t port) {
     // Already handled in main.c and cwist
     return -1;
 }
+
+/**
+ * @brief Checks if a hostname matches a pattern (wildcard support).
+ * @param pattern Pattern with optional leading wildcard (e.g., "*.example.com" or "host.example.com").
+ * @param hostname Hostname to check.
+ * @return 1 if matches, 0 if not.
+ */
+int hostname_matches(const char *pattern, const char *hostname) {
+    if (!pattern || !hostname) return 0;
+
+    if (pattern[0] == '*') {
+        // Wildcard match: *.example.com should match host.example.com
+        if (strlen(hostname) < strlen(pattern)) return 0;
+        return strcmp(hostname + strlen(hostname) - (strlen(pattern) - 1), pattern + 1) == 0;
+    } else {
+        // Exact match
+        return strcmp(pattern, hostname) == 0;
+    }
+}

@@ -38,6 +38,13 @@ RUN if [ ! -f libs/cwist/Makefile ]; then \
         git clone --recursive https://github.com/religiya-serdtsa/cwist libs/cwist; \
     fi
 
+# Robustly handle missing secp256k1 submodule
+RUN if [ ! -f libs/secp256k1/autogen.sh ]; then \
+        echo "secp256k1 submodule missing, cloning..." && \
+        rm -rf libs/secp256k1 && \
+        git clone https://github.com/bitcoin-core/secp256k1.git libs/secp256k1; \
+    fi
+
 # Ensure stubs are available for cwist
 RUN cp include/ttak_stubs.h libs/cwist/include/
 

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 extern void* portillia_expose(const char *target, const char *relay_url);
 
