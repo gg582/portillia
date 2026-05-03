@@ -330,8 +330,9 @@ static char *settings_path = NULL;
  * Routes granular lease management actions (ban, bps, approve).
  */
 void handle_admin_action(cwist_http_request *req, cwist_http_response *res) {
+    char *path_copy = strdup(req->path);
     portillia_settings *s = portillia_server_get_settings();
-    if (!s) { res->status_code = CWIST_HTTP_INTERNAL_ERROR; return; }
+    if (!s) { res->status_code = CWIST_HTTP_INTERNAL_ERROR; free(path_copy); return; }
 
     char name_buf[256] = {0}, addr_buf[256] = {0}, action_buf[64] = {0};
     if (sscanf(path_copy + strlen("/admin/leases/"), "%[^/]/%[^/]/%s", name_buf, addr_buf, action_buf) == 3) {
@@ -346,9 +347,8 @@ void handle_admin_action(cwist_http_request *req, cwist_http_response *res) {
 
         // Use the actual path from the settings object
         char *settings_file_path = s->path;
-
         LOG_INFO("Admin: Action %s on identity %s", action_buf, identity_key);
-        
+
         if (strcmp(action_buf, "ban") == 0) {
             portillia_settings_ban_identity(s, identity_key);
             portillia_settings_save(settings_file_path, s);

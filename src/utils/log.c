@@ -11,10 +11,10 @@ void portillia_log(portillia_log_level level, const char *fmt, ...) {
 
     const char *level_str = "INF";
     switch (level) {
-        case PORTILLIA_LOG_DEBUG: level_str = "DBG"; break;
-        case PORTILLIA_LOG_INFO:  level_str = "INF"; break;
-        case PORTILLIA_LOG_WARN:  level_str = "WRN"; break;
-        case PORTILLIA_LOG_ERROR: level_str = "ERR"; break;
+        case LOG_LEVEL_DEBUG: level_str = "DBG"; break;
+        case LOG_LEVEL_INFO:  level_str = "INF"; break;
+        case LOG_LEVEL_WARN:  level_str = "WRN"; break;
+        case LOG_LEVEL_ERROR: level_str = "ERR"; break;
     }
 
     fprintf(stderr, "%s %s ", time_str, level_str);

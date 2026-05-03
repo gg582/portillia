@@ -425,11 +425,6 @@ void portillia_registry_register(const char *hostname, const char *identity_key,
     lease_registry_register(global_server->registry, hostname, identity_key, bps_limit);
 }
 
-void portillia_registry_register_hop(const char *hop_token, const char *next_ipv4, const char *next_token, const char *identity_key) {
-    if (!global_server) return;
-    lease_registry_register_hop(global_server->registry, hop_token, next_ipv4, next_token, identity_key);
-}
-
 char* portillia_registry_to_json() {
     if (!global_server) return strdup("[]");
     lease_registry *r = global_server->registry;
