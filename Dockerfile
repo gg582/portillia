@@ -38,6 +38,9 @@ RUN if [ ! -f libs/cwist/Makefile ]; then \
 # Ensure stubs are available for cwist
 RUN cp include/ttak_stubs.h libs/cwist/include/
 
+# Build secp256k1
+RUN cd libs/secp256k1 && ./autogen.sh && ./configure && make
+
 # Build cwist and portillia
 RUN make libs
 RUN make build-tunnel build-server build-demo
