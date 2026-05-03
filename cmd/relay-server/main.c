@@ -27,6 +27,9 @@ typedef struct {
     int api_port;
 } listener_args;
 
+#include <errno.h>
+#include <string.h>
+
 void *sni_listener_thread(void *arg) {
     listener_args *args = (listener_args *)arg;
     int port = args->sni_port;
@@ -35,15 +38,23 @@ void *sni_listener_thread(void *arg) {
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = INADDR_ANY };
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        LOG_ERROR("SNI router: Failed to bind to port %d", port);
+        LOG_ERROR("Unified listener: Failed to bind to port %d: %s", port, strerror(errno));
         return NULL;
     }
     listen(fd, 128);
-    LOG_INFO("SNI router started on port %d", port);
+    LOG_INFO("Unified listener started on port %d", port);
     
     while (1) {
         int client = accept(fd, NULL, NULL);
         if (client < 0) continue;
+        
+        // Peek at the first few bytes to determine if it's Hop Mux (Yamux) or SNI/TLS
+        char peek_buf[4];
+        ssize_t n = recv(client, peek_buf, sizeof(peek_buf), MSG_PEEK);
+        
+        // Yamux magic bytes or specific identification could be used here.
+        // For now, assuming if SNI isn't found, try Hop Mux (or use specific protocol headers).
+        // The original logic was: if SNI is found -> SNI handler, else -> Hop Mux.
         
         char *sni = get_sni_hostname(client);
         if (sni) {
@@ -52,30 +63,9 @@ void *sni_listener_thread(void *arg) {
             portillia_server_handle_connect(sni, client);
             free(sni);
         } else {
-            close(client);
+            LOG_INFO("No SNI found, falling back to Hop Mux (Yamux)");
+            cwist_yamux_session_create(client);
         }
-    }
-    return NULL;
-}
-
-void *hop_listener_thread(void *arg) {
-    int port = 443; 
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    int opt = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = INADDR_ANY };
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        LOG_ERROR("Hop Mux: Failed to bind to port %d", port);
-        return NULL;
-    }
-    listen(fd, 128);
-    LOG_INFO("Hop Mux listener started on port %d", port);
-    
-    while (1) {
-        int client = accept(fd, NULL, NULL);
-        if (client < 0) continue;
-        
-        cwist_yamux_session_create(client);
     }
     return NULL;
 }
@@ -326,10 +316,9 @@ int main(void) {
     disc_cfg->relay_set = portillia_relay_set_new();
     global_disc_cfg = disc_cfg;
 
-    pthread_t sni_tid, wg_tid, disc_tid, hop_tid;
+    pthread_t sni_tid, wg_tid, disc_tid;
     pthread_create(&sni_tid, NULL, sni_listener_thread, sni_args);
     pthread_create(&wg_tid, NULL, wg_listener_thread, &wg_port);
-    pthread_create(&hop_tid, NULL, hop_listener_thread, NULL);
     if (disc_cfg->bootstrap_urls) {
         pthread_create(&disc_tid, NULL, discovery_maintenance_loop, disc_cfg);
     }
