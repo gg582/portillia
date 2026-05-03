@@ -32,6 +32,7 @@ struct portillia_acme_manager {
     // Placeholder for lego client in C context
 };
 
+typedef struct portillia_acme_manager portillia_acme_manager;
 
 portillia_acme_manager* portillia_acme_manager_new(portillia_acme_config cfg);
 void portillia_acme_manager_destroy(portillia_acme_manager *m);
