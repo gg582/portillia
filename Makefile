@@ -11,8 +11,7 @@ SRC_PORTAL = src/portal/server.c src/portal/api_server.c src/portal/proxy.c src/
              src/portal/transport/quic_backhaul.c src/portal/keyless/tls.c \
              src/portal/acme/manager.c src/portal/acme/cloudflare/provider.c src/portal/acme/route53/provider.c src/portal/acme/gcloud/provider.c \
              src/portal/discovery/discovery.c src/portal/settings.c \
-             libs/cwist/src/sys/io/event_loop.c libs/cwist/src/sys/io/mux.c \
-             libs/cwist/src/security/jwt/jwt_es256k.c
+             libs/cwist/src/net/http/mux.c
 SRC_SDK = src/sdk/expose.c
 
 ALL_SRCS = $(SRC_TYPES) $(SRC_UTILS) $(SRC_PORTAL) $(SRC_SDK)
