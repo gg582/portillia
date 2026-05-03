@@ -24,6 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     doxygen \
     graphviz \
+    autoconf \
+    automake \
+    libtool \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
