@@ -4,6 +4,8 @@
 #include <portillia/utils/log.h>
 #include <portillia/portal/acme/manager.h>
 #include <portillia/portal/discovery/discovery.h>
+#include <portillia/portal/settings.h>
+#include <cwist/sys/io/mux.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -16,6 +18,8 @@
 #include <sys/stat.h>
 
 extern char *get_sni_hostname(int client_fd);
+discovery_config *global_disc_cfg = NULL;
+portillia_acme_manager *global_acme_manager = NULL;
 
 typedef struct {
     int sni_port;
@@ -25,7 +29,6 @@ typedef struct {
 void *sni_listener_thread(void *arg) {
     listener_args *args = (listener_args *)arg;
     int port = args->sni_port;
-    int api_port = args->api_port;
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -44,18 +47,36 @@ void *sni_listener_thread(void *arg) {
         char *sni = get_sni_hostname(client);
         if (sni) {
             LOG_INFO("SNI Hostname: %s", sni);
-            int target_fd = socket(AF_INET, SOCK_STREAM, 0);
-            struct sockaddr_in target = { .sin_family = AF_INET, .sin_port = htons(api_port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
-            if (connect(target_fd, (struct sockaddr *)&target, sizeof(target)) == 0) {
-                extern void portillia_proxy_bridge(int client_fd, int target_fd);
-                portillia_proxy_bridge(client, target_fd);
-            } else {
-                close(target_fd);
-                close(client);
-            }
+            extern void portillia_server_handle_connect(const char *hostname, int client_fd);
+            portillia_server_handle_connect(sni, client);
             free(sni);
         } else {
             close(client);
+        }
+    }
+    return NULL;
+}
+
+void *hop_listener_thread(void *arg) {
+    int port = 443; 
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = INADDR_ANY };
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        LOG_ERROR("Hop Mux: Failed to bind to port %d", port);
+        return NULL;
+    }
+    listen(fd, 128);
+    LOG_INFO("Hop Mux listener started on port %d", port);
+    
+    while (1) {
+        int client = accept(fd, NULL, NULL);
+        if (client < 0) continue;
+        
+        extern cwist_event_loop *global_event_loop;
+        if (global_event_loop) {
+            cwist_mux_session_create(global_event_loop, client, true);
         }
     }
     return NULL;
@@ -98,7 +119,16 @@ static char *replace_str(const char *str, const char *old_str, const char *new_s
     return result;
 }
 
+extern portillia_settings* portillia_server_get_settings();
+
 void fallback_spa_handler_clean(cwist_http_request *req, cwist_http_response *res) {
+    portillia_settings *settings = portillia_server_get_settings();
+    if (settings && !settings->landing_page_enabled) {
+        res->status_code = CWIST_HTTP_NOT_FOUND;
+        cwist_sstring_assign(res->body, "Landing page disabled");
+        return;
+    }
+
     LOG_INFO("Serving SPA fallback for %s", req->path->data);
     const char *static_dir = getenv("STATIC_DIR") ? getenv("STATIC_DIR") : "cmd/relay-server/dist/app";
     char path[1024];
@@ -118,7 +148,7 @@ void fallback_spa_handler_clean(cwist_http_request *req, cwist_http_response *re
     fclose(f);
     html[fsize] = 0;
     
-    char *final_html = malloc(fsize + 8192); // Increased buffer
+    char *final_html = malloc(fsize + 8192);
     if (!final_html) { free(html); return; }
     final_html[0] = '\0';
     
@@ -154,16 +184,13 @@ void spa_error_handler(cwist_http_request *req, cwist_http_response *res, cwist_
         
         struct stat st;
         if (stat(fs_path, &st) == 0 && S_ISREG(st.st_mode)) {
-            // Serve static file manually if found on disk
             cwist_http_response_send_file(res, fs_path, NULL, NULL);
             res->status_code = CWIST_HTTP_OK;
             return;
         }
 
-        // Otherwise, fallback to SPA for non-asset paths
         const char *dot = strrchr(req->path->data, '.');
         if (dot && strchr(dot, '/') == NULL) {
-            // It has an extension but file not found -> real 404
             res->status_code = CWIST_HTTP_NOT_FOUND;
             cwist_sstring_assign(res->body, "404 Not Found");
             return;
@@ -172,6 +199,28 @@ void spa_error_handler(cwist_http_request *req, cwist_http_response *res, cwist_
         fallback_spa_handler_clean(req, res);
         res->status_code = CWIST_HTTP_OK;
     }
+}
+
+void *acme_renewal_thread(void *arg) {
+    (void)arg;
+    LOG_INFO("ACME renewal thread started.");
+    while (1) {
+        sleep(24 * 60 * 60); // Check every 24 hours (Go's defaultRenewInterval)
+        if (global_acme_manager) {
+            char *cert_file = NULL, *key_file = NULL;
+            LOG_INFO("Attempting ACME certificate renewal.");
+            if (portillia_acme_manager_ensure_certificate(global_acme_manager, &cert_file, &key_file) == CWIST_SUCCESS) {
+                LOG_INFO("ACME certificate renewed successfully.");
+                // In a full implementation, we'd notify the API server to reload TLS configs
+                free(cert_file); free(key_file);
+            } else {
+                LOG_ERROR("ACME certificate renewal failed.");
+            }
+            portillia_acme_manager_sync_dns(global_acme_manager);
+            if (global_acme_manager->cfg.ens_gasless_enabled) portillia_acme_manager_sync_ens_gasless(global_acme_manager);
+        }
+    }
+    return NULL;
 }
 
 int main(void) {
@@ -200,11 +249,28 @@ int main(void) {
     LOG_INFO("configured relay server: release_version=%s, portal_url=%s, identity_path=%s, bootstraps=%s, discovery_enabled=%d, wireguard_port=%d, api_port=%d, sni_port=%d, trust_proxy_headers=%d, trusted_proxy_cidrs=%s, udp_enabled=%d, tcp_enabled=%d, min_port=%d, max_port=%d, landing_page_enabled=%d, headless_shell_enabled=%d, acme_dns_provider=%s, ens_gasless_enabled=%d",
              "v2.1.8-c", acme_cfg.base_domain ? acme_cfg.base_domain : "", acme_cfg.key_dir, "", 0, wg_port, api_port, sni_port, 0, "", 0, 0, 0, 0, 1, 0, acme_cfg.dns_provider_type ? acme_cfg.dns_provider_type : "", acme_cfg.ens_gasless_enabled);
 
+    char settings_path[1024];
+    snprintf(settings_path, sizeof(settings_path), "%s/settings.json", acme_cfg.key_dir);
+    portillia_settings *settings = portillia_settings_load(settings_path);
+
+    extern void portillia_server_setup(const char *root_hostname, int api_port, int sni_port, portillia_settings *s);
+    extern void portillia_proxy_init_telemetry();
+    portillia_proxy_init_telemetry();
+    portillia_server_setup(acme_cfg.base_domain ? acme_cfg.base_domain : "localhost", api_port, sni_port, settings);
+
+    // Initialize Multiplexer
+    #include <cwist/sys/io/mux.h>
+    extern cwist_event_loop *global_event_loop;
+    if (global_event_loop) {
+        LOG_INFO("Core Yamux multiplexer system ready");
+    }
+
     cwist_app *app = cwist_app_create();
 
     if (acme_cfg.base_domain) {
         portillia_acme_manager *acme = portillia_acme_manager_new(acme_cfg);
         if (acme) {
+            global_acme_manager = acme;
             char *cert_file = NULL, *key_file = NULL;
             if (portillia_acme_manager_ensure_certificate(acme, &cert_file, &key_file) == CWIST_SUCCESS) {
                 LOG_INFO("Using certificate: %s", cert_file);
@@ -213,6 +279,10 @@ int main(void) {
             }
             portillia_acme_manager_sync_dns(acme);
             if (acme_cfg.ens_gasless_enabled) portillia_acme_manager_sync_ens_gasless(acme);
+
+            pthread_t acme_tid;
+            pthread_create(&acme_tid, NULL, acme_renewal_thread, NULL);
+            pthread_detach(acme_tid);
         }
     }
 
@@ -232,19 +302,24 @@ int main(void) {
     sni_args->sni_port = sni_port;
     sni_args->api_port = api_port;
     
-    // Initialize discovery
     discovery_config *disc_cfg = malloc(sizeof(discovery_config));
     disc_cfg->relay_url = getenv("PORTAL_URL") ? strdup(getenv("PORTAL_URL")) : strdup("http://localhost:4017");
     disc_cfg->bootstrap_urls = getenv("BOOTSTRAPS") ? strdup(getenv("BOOTSTRAPS")) : NULL;
+    disc_cfg->relay_set = portillia_relay_set_new();
+    global_disc_cfg = disc_cfg;
 
-    pthread_t sni_tid, wg_tid, disc_tid;
+    pthread_t sni_tid, wg_tid, disc_tid, hop_tid;
     pthread_create(&sni_tid, NULL, sni_listener_thread, sni_args);
     pthread_create(&wg_tid, NULL, wg_listener_thread, &wg_port);
+    pthread_create(&hop_tid, NULL, hop_listener_thread, NULL);
     if (disc_cfg->bootstrap_urls) {
         pthread_create(&disc_tid, NULL, discovery_maintenance_loop, disc_cfg);
     }
     
     LOG_INFO("API server listening on port %d", api_port);
+    extern void portillia_quic_backhaul_start(int port);
+    portillia_quic_backhaul_start(api_port);
+    
     cwist_app_listen(app, api_port);
     return 0;
 }

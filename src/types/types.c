@@ -7,7 +7,6 @@
 
 /**
  * @brief Creates a new identity structure.
- * @return Allocated portillia_identity pointer or NULL on failure.
  */
 portillia_identity *portillia_identity_create(void) {
     portillia_identity *id = cwist_alloc(sizeof(portillia_identity));
@@ -21,7 +20,6 @@ portillia_identity *portillia_identity_create(void) {
 
 /**
  * @brief Frees an identity structure.
- * @param id The identity pointer to destroy.
  */
 void portillia_identity_destroy(portillia_identity *id) {
     if (!id) return;
@@ -30,4 +28,33 @@ void portillia_identity_destroy(portillia_identity *id) {
     cwist_sstring_destroy(id->public_key);
     cwist_sstring_destroy(id->private_key);
     cwist_free(id);
+}
+
+/**
+ * @brief Creates a new lease structure.
+ */
+portillia_lease *portillia_lease_create(void) {
+    portillia_lease *l = cwist_alloc(sizeof(portillia_lease));
+    if (!l) return NULL;
+    l->name = cwist_sstring_create();
+    l->hostname = cwist_sstring_create();
+    l->tcp_addr = cwist_sstring_create();
+    l->hop_token = cwist_sstring_create();
+    l->hop_next_overlay_ipv4 = cwist_sstring_create();
+    l->hop_next_token = cwist_sstring_create();
+    return l;
+}
+
+/**
+ * @brief Frees a lease structure.
+ */
+void portillia_lease_destroy(portillia_lease *l) {
+    if (!l) return;
+    cwist_sstring_destroy(l->name);
+    cwist_sstring_destroy(l->hostname);
+    cwist_sstring_destroy(l->tcp_addr);
+    cwist_sstring_destroy(l->hop_token);
+    cwist_sstring_destroy(l->hop_next_overlay_ipv4);
+    cwist_sstring_destroy(l->hop_next_token);
+    cwist_free(l);
 }

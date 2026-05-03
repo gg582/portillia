@@ -1,26 +1,31 @@
-#ifndef PORTILLIA_LOG_H
-#define PORTILLIA_LOG_H
+/**
+ * @file log.h
+ * @brief Thread-safe logging utilities for Portillia.
+ */
+
+#ifndef PORTILLIA_UTILS_LOG_H
+#define PORTILLIA_UTILS_LOG_H
 
 #include <stdio.h>
 
+/**
+ * @brief Log levels.
+ */
 typedef enum {
-    PORTILLIA_LOG_DEBUG,
-    PORTILLIA_LOG_INFO,
-    PORTILLIA_LOG_WARN,
-    PORTILLIA_LOG_ERROR
+    LOG_LEVEL_INFO,
+    LOG_LEVEL_WARN,
+    LOG_LEVEL_ERROR,
+    LOG_LEVEL_DEBUG
 } portillia_log_level;
 
 /**
- * @brief Logs a message to stderr in a format similar to Go's zerolog ConsoleWriter.
- * @param level The log level (DEBUG, INFO, WARN, ERROR).
- * @param fmt The format string.
- * @param ... Additional arguments for the format string.
+ * @brief Logs a message with a specific level.
  */
 void portillia_log(portillia_log_level level, const char *fmt, ...);
 
-#define LOG_DEBUG(...) portillia_log(PORTILLIA_LOG_DEBUG, __VA_ARGS__)
-#define LOG_INFO(...)  portillia_log(PORTILLIA_LOG_INFO, __VA_ARGS__)
-#define LOG_WARN(...)  portillia_log(PORTILLIA_LOG_WARN, __VA_ARGS__)
-#define LOG_ERROR(...) portillia_log(PORTILLIA_LOG_ERROR, __VA_ARGS__)
+#define LOG_INFO(...) portillia_log(LOG_LEVEL_INFO, __VA_ARGS__)
+#define LOG_WARN(...) portillia_log(LOG_LEVEL_WARN, __VA_ARGS__)
+#define LOG_ERROR(...) portillia_log(LOG_LEVEL_ERROR, __VA_ARGS__)
+#define LOG_DEBUG(...) portillia_log(LOG_LEVEL_DEBUG, __VA_ARGS__)
 
-#endif // PORTILLIA_LOG_H
+#endif // PORTILLIA_UTILS_LOG_H

@@ -2,25 +2,17 @@
 #include <portillia/utils/log.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
-/**
- * @brief Function print_usage
- * @return void result
- */
+extern void* portillia_expose(const char *target, const char *relay_url);
+
 void print_usage() {
     printf("portal-tunnel <command> [args]\n");
     printf("Commands:\n");
-    printf("  expose <target>\n");
-    printf("  list\n");
+    printf("  expose <target> --relays <url>\n");
     printf("  version\n");
 }
 
-/**
- * @brief Function main
- * @param argc Parameter description
- * @param argv Parameter description
- * @return int result
- */
 int main(int argc, char **argv) {
     if (argc < 2) {
         print_usage();
@@ -28,14 +20,26 @@ int main(int argc, char **argv) {
     }
 
     if (strcmp(argv[1], "version") == 0) {
-        printf("Portillia %s\n", PORTILLIA_RELEASE_VERSION);
+        printf("Portillia %s (C implementation)\n", PORTILLIA_RELEASE_VERSION);
     } else if (strcmp(argv[1], "expose") == 0) {
         if (argc < 3) {
-            printf("Usage: portal-tunnel expose <target>\n");
+            printf("Usage: portal-tunnel expose <target> [--relays <url>]\n");
             return 1;
         }
-        LOG_INFO("starting portal tunnel; target: %s", argv[2]);
-        // TODO: Implement SDK expose logic
+        const char *target = argv[2];
+        const char *relay = "http://localhost:4017";
+        
+        for (int i = 3; i < argc; i++) {
+            if (strcmp(argv[i], "--relays") == 0 && i + 1 < argc) {
+                relay = argv[i+1];
+            }
+        }
+
+        LOG_INFO("SDK: Starting portal tunnel; target: %s, relay: %s", target, relay);
+        portillia_expose(target, relay);
+        
+        // Keep main alive
+        while(1) sleep(60);
     } else {
         print_usage();
         return 1;

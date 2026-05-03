@@ -52,6 +52,11 @@ typedef struct portillia_lease {
     cwist_sstring *tcp_addr;    /**< Public TCP port address */
     portillia_lease_metadata metadata; /**< Associated lease metadata */
     int ready;                  /**< Readiness status flag */
+    
+    // Multi-hop fields
+    cwist_sstring *hop_token;             /**< Token to match for this hop */
+    cwist_sstring *hop_next_overlay_ipv4; /**< Next hop overlay address */
+    cwist_sstring *hop_next_token;        /**< Token to send to next hop */
 } portillia_lease;
 
 /**
@@ -86,6 +91,13 @@ typedef struct portillia_datagram_frame {
     cwist_sstring *relay_url;   /**< Originating relay */
     cwist_sstring *udp_addr;    /**< Source UDP address */
 } portillia_datagram_frame;
+
+#ifndef CWIST_SUCCESS
+#define CWIST_SUCCESS 0
+#endif
+#ifndef CWIST_FAILURE
+#define CWIST_FAILURE -1
+#endif
 
 // Identity functions
 portillia_identity *portillia_identity_create(void);

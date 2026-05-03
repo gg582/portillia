@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <curl/curl.h>
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 #include <cwist/core/mem/alloc.h>
 #include <portillia/utils/log.h>
 

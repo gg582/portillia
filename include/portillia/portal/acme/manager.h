@@ -23,7 +23,15 @@ typedef struct {
     char *aws_kms_key_arn;
 } portillia_acme_config;
 
-typedef struct portillia_acme_manager portillia_acme_manager;
+struct portillia_acme_manager {
+    portillia_acme_config cfg;
+    portillia_dns_provider *dns;
+    // ACME Account details
+    char *acme_account_key_path;
+    char *acme_email;
+    // Placeholder for lego client in C context
+};
+
 
 portillia_acme_manager* portillia_acme_manager_new(portillia_acme_config cfg);
 void portillia_acme_manager_destroy(portillia_acme_manager *m);

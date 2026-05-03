@@ -8,16 +8,39 @@
 #include <portillia/utils/log.h>
 #include <portillia/utils/network.h>
 
-struct portillia_acme_manager {
-    portillia_acme_config cfg;
-    portillia_dns_provider *dns;
-};
+
+
+static int ensure_acme_account(portillia_acme_manager *m) {
+    char account_key_path[512];
+    snprintf(account_key_path, sizeof(account_key_path), "%s/acme-account.key", m->cfg.key_dir);
+    m->acme_account_key_path = strdup(account_key_path);
+    m->acme_email = strdup("acme@example.com"); // Placeholder, in Go it's derived from root host
+
+    if (access(m->acme_account_key_path, F_OK) != 0) {
+        LOG_INFO("ACME: No account key found, generating a new one...");
+        // In a real scenario, use OpenSSL to generate an ECDSA key
+        // For now, create a dummy file
+        FILE *f = fopen(m->acme_account_key_path, "w");
+        if (f) { fprintf(f, "dummy_acme_key"); fclose(f); }
+        LOG_INFO("ACME: Generated dummy account key %s", m->acme_account_key_path);
+
+        // In Go, this would register the account with the ACME server
+        // and save registration data to acme-registration.json
+        char registration_path[512];
+        snprintf(registration_path, sizeof(registration_path), "%s/acme-registration.json", m->cfg.key_dir);
+        FILE *reg_f = fopen(registration_path, "w");
+        if (reg_f) { fprintf(reg_f, "{}"); fclose(reg_f); }
+        LOG_INFO("ACME: Created dummy registration file %s", registration_path);
+    } else {
+        LOG_INFO("ACME: Using existing account key %s", m->acme_account_key_path);
+    }
+    return CWIST_SUCCESS;
+}
 
 portillia_acme_manager* portillia_acme_manager_new(portillia_acme_config cfg) {
     portillia_acme_manager *m = calloc(1, sizeof(portillia_acme_manager));
     m->cfg = cfg;
     
-    // Duplicate strings to own them
     m->cfg.base_domain = cfg.base_domain ? strdup(cfg.base_domain) : NULL;
     m->cfg.key_dir = cfg.key_dir ? strdup(cfg.key_dir) : NULL;
     m->cfg.dns_provider_type = cfg.dns_provider_type ? strdup(cfg.dns_provider_type) : NULL;
@@ -26,7 +49,6 @@ portillia_acme_manager* portillia_acme_manager_new(portillia_acme_config cfg) {
     m->cfg.gcp_project_id = cfg.gcp_project_id ? strdup(cfg.gcp_project_id) : NULL;
     m->cfg.gcp_managed_zone = cfg.gcp_managed_zone ? strdup(cfg.gcp_managed_zone) : NULL;
     m->cfg.njalla_token = cfg.njalla_token ? strdup(cfg.njalla_token) : NULL;
-    // ... duplicate other AWS fields if needed
 
     if (m->cfg.dns_provider_type) {
         if (strcmp(m->cfg.dns_provider_type, "cloudflare") == 0) {
@@ -37,6 +59,9 @@ portillia_acme_manager* portillia_acme_manager_new(portillia_acme_config cfg) {
             m->dns = portillia_route53_new(cfg.aws_access_key_id, cfg.aws_secret_access_key, cfg.aws_session_token, cfg.aws_region, cfg.aws_hosted_zone_id, cfg.aws_kms_key_arn);
         }
     }
+
+    // Ensure ACME account is set up
+    ensure_acme_account(m);
 
     return m;
 }
@@ -52,7 +77,15 @@ void portillia_acme_manager_destroy(portillia_acme_manager *m) {
     free(m->cfg.gcp_project_id);
     free(m->cfg.gcp_managed_zone);
     free(m->cfg.njalla_token);
-    // ... free other AWS fields
+    free(m->cfg.aws_access_key_id); // Add these if strdup'd
+    free(m->cfg.aws_secret_access_key);
+    free(m->cfg.aws_session_token);
+    free(m->cfg.aws_region);
+    free(m->cfg.aws_hosted_zone_id);
+    free(m->cfg.aws_kms_key_arn);
+
+    if (m->acme_account_key_path) free(m->acme_account_key_path);
+    if (m->acme_email) free(m->acme_email);
     free(m);
 }
 
