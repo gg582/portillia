@@ -1,3 +1,6 @@
 [submodule "libs/cwist"]
 	path = libs/cwist
 	url = https://github.com/religiya-serdtsa/cwist
+[submodule "libs/secp256k1"]
+	path = libs/secp256k1
+	url = https://github.com/bitcoin-core/secp256k1.git

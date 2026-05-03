@@ -54,54 +54,71 @@ int portillia_crypto_derive_overlay_ipv4(const char *pubkey_b64, char *out_ipv4)
     return 0;
 }
 
+#include <secp256k1.h>
+#include <secp256k1_recovery.h>
+
 /**
- * @brief Generates a new Secp256k1 identity.
- * @param out_priv Base64 encoded private key.
- * @param out_addr Ethereum address (0x...).
+ * @brief Generates a new Secp256k1 identity using libsecp256k1.
  */
 int portillia_crypto_generate_identity(char *out_priv, char *out_addr) {
-    EC_KEY *key = EC_KEY_new_by_curve_name(NID_secp256k1);
-    if (!key) return -1;
-    
-    if (!EC_KEY_generate_key(key)) {
-        EC_KEY_free(key);
+    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+    uint8_t seckey[32];
+    secp256k1_pubkey pubkey;
+
+    // Generate random private key
+    do {
+        if (RAND_bytes(seckey, 32) != 1) {
+            secp256k1_context_destroy(ctx);
+            return -1;
+        }
+    } while (!secp256k1_ec_seckey_verify(ctx, seckey));
+
+    // Derive public key
+    if (!secp256k1_ec_pubkey_create(ctx, &pubkey, seckey)) {
+        secp256k1_context_destroy(ctx);
         return -1;
     }
 
-    // Address derivation
-    size_t pub_len = i2o_ECPublicKey(key, NULL);
-    uint8_t *pub_buf = malloc(pub_len);
-    uint8_t *p = pub_buf;
-    i2o_ECPublicKey(key, &p);
-    portillia_crypto_pubkey_to_address(pub_buf, pub_len, out_addr);
-    
-    // Private key extraction (simplified to dummy for now)
-    strcpy(out_priv, "dummy_private_key");
+    // Serialize public key (uncompressed for address)
+    size_t pub_len = 65;
+    uint8_t pub_buf[65];
+    secp256k1_ec_pubkey_serialize(ctx, pub_buf, &pub_len, &pubkey, SECP256K1_EC_UNCOMPRESSED);
 
-    free(pub_buf);
-    EC_KEY_free(key);
+    // Derive Address
+    portillia_crypto_pubkey_to_address(pub_buf, pub_len, out_addr);
+
+    // Encode private key as hex (simplified)
+    for(int i = 0; i < 32; i++) sprintf(out_priv + i*2, "%02x", seckey[i]);
+
+    secp256k1_context_destroy(ctx);
     return 0;
 }
 
 /**
- * @brief Verifies a Secp256k1 signature.
+ * @brief Recovers Secp256k1 public key from a 65-byte compact signature (r, s, v).
+ * @param payload SHA-256 hash of the signed data.
+ * @param signature 65-byte compact signature.
+ * @param out_pubkey 65-byte buffer for uncompressed public key.
  */
-int portillia_crypto_verify_secp256k1(const uint8_t *payload, size_t payload_len, 
-                                      const uint8_t *signature, size_t sig_len,
-                                      const uint8_t *pubkey, size_t pubkey_len) {
-    uint8_t hash[SHA256_DIGEST_LENGTH];
-    SHA256(payload, payload_len, hash);
+int portillia_crypto_recover_secp256k1_compact(const uint8_t *hash, const uint8_t *signature, uint8_t *out_pubkey) {
+    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY);
+    secp256k1_ecdsa_recoverable_signature sig;
+    secp256k1_pubkey pubkey;
+    int recovery_id = signature[64];
 
-    EC_KEY *key = EC_KEY_new_by_curve_name(NID_secp256k1);
-    if (!key) return -1;
-
-    const uint8_t *p = pubkey;
-    if (!o2i_ECPublicKey(&key, &p, pubkey_len)) {
-        EC_KEY_free(key);
+    if (!secp256k1_ecdsa_recoverable_signature_parse_compact(ctx, &sig, signature, recovery_id)) {
+        secp256k1_context_destroy(ctx);
         return -1;
     }
 
-    int ret = ECDSA_verify(0, hash, SHA256_DIGEST_LENGTH, signature, sig_len, key);
-    EC_KEY_free(key);
-    return (ret == 1) ? 0 : -1;
+    if (!secp256k1_ecdsa_recover(ctx, &pubkey, &sig, hash)) {
+        secp256k1_context_destroy(ctx);
+        return -1;
+    }
+
+    size_t pub_len = 65;
+    secp256k1_ec_pubkey_serialize(ctx, out_pubkey, &pub_len, &pubkey, SECP256K1_EC_UNCOMPRESSED);
+
+    secp256k1_context_destroy(ctx);
+    return 0;
 }

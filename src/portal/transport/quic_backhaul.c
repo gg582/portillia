@@ -15,23 +15,45 @@ typedef struct {
 
 extern void portillia_registry_offer_conn(const char *hostname, int sdk_fd);
 
-void handle_quic_data_pump(int quic_fd, struct sockaddr_in *target_addr) {
-    int udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
-    LOG_INFO("QUIC: Starting data pump for UDP tunnel");
-    
-    // In Go, this is handled by datagram_relay.go.
-    // We bridge the QUIC "connection" (logical) with a real local UDP socket.
-    
+#include <poll.h>
+#include <cwist/net/yamux.h>
+
+void handle_quic_data_pump(int quic_fd, int target_udp_fd, struct sockaddr_in *target_addr, cwist_yamux_session_t *session) {
+    struct pollfd fds[2];
+    fds[0].fd = quic_fd;
+    fds[0].events = POLLIN;
+    fds[1].fd = target_udp_fd;
+    fds[1].events = POLLIN;
+
     uint8_t buf[4096];
+    LOG_INFO("QUIC: Starting multiplexed data pump");
+    
     while (1) {
-        // Mock: Forward received quic_fd data to local UDP port
-        ssize_t n = read(quic_fd, buf, sizeof(buf));
-        if (n <= 0) break;
-        sendto(udp_fd, buf, n, 0, (struct sockaddr *)target_addr, sizeof(*target_addr));
-        
-        // And vice-versa
+        int ret = poll(fds, 2, -1);
+        if (ret < 0) break;
+
+        // Receive from QUIC (to local UDP)
+        if (fds[0].revents & POLLIN) {
+            ssize_t n = read(quic_fd, buf, sizeof(buf));
+            if (n > 0) {
+                // Yamux de-encapsulation (simplified)
+                sendto(target_udp_fd, buf, n, 0, (struct sockaddr *)target_addr, sizeof(*target_addr));
+                // Update window if needed
+                cwist_yamux_send_window_update(session, 1, n);
+            }
+        }
+
+        // Receive from Local UDP (to QUIC)
+        if (fds[1].revents & POLLIN) {
+            ssize_t n = recvfrom(target_udp_fd, buf, sizeof(buf), 0, NULL, NULL);
+            if (n > 0) {
+                // Yamux encapsulation
+                yamux_header_t hdr = { .type = YAMUX_TYPE_DATA, .stream_id = 1, .length = (uint32_t)n };
+                write(quic_fd, &hdr, sizeof(hdr));
+                write(quic_fd, buf, n);
+            }
+        }
     }
-    close(udp_fd);
 }
 
 void handle_quic_control(const uint8_t *payload, size_t len, struct sockaddr_in *client_addr) {

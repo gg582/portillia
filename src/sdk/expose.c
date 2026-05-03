@@ -153,6 +153,18 @@ portillia_exposure *portillia_expose(const char *target, const char *relay_url) 
     e->target_addr = strdup(target);
     e->relay_url = strdup(relay_url);
     e->running = true;
+    e->identity = portillia_identity_create();
+
+    char priv_hex[65] = {0};
+    char addr[43] = {0};
+    if (portillia_crypto_generate_identity(priv_hex, addr) == 0) {
+        cwist_sstring_set(e->identity->address, addr);
+        cwist_sstring_set(e->identity->private_key, priv_hex);
+    } else {
+        LOG_ERROR("SDK: Failed to generate identity");
+        free(e->target_addr); free(e->relay_url); portillia_identity_destroy(e->identity); free(e);
+        return NULL;
+    }
 
     // Registration
     CURL *curl = curl_easy_init();
@@ -162,7 +174,7 @@ portillia_exposure *portillia_expose(const char *target, const char *relay_url) 
         
         cJSON *root = cJSON_CreateObject();
         cJSON_AddStringToObject(root, "name", "c-sdk-tunnel");
-        cJSON_AddStringToObject(root, "identity", "0x696f866A45155f9E7f3747A95029D81b67f16866"); // Simulated addr
+        cJSON_AddStringToObject(root, "identity", e->identity->address->data);
         char *json = cJSON_PrintUnformatted(root);
 
         char *response = malloc(1);

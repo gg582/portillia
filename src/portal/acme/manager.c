@@ -89,6 +89,21 @@ void portillia_acme_manager_destroy(portillia_acme_manager *m) {
     free(m);
 }
 
+#include <resolv.h>
+#include <arpa/nameser.h>
+
+/**
+ * @brief Simple DNS TXT record check.
+ */
+static bool check_dns_txt(const char *domain, const char *expected_value) {
+    unsigned char nsbuf[4096];
+    int len = res_query(domain, C_IN, T_TXT, nsbuf, sizeof(nsbuf));
+    if (len < 0) return false;
+
+    // Very simplified parser for TXT response
+    return strstr((char *)nsbuf, expected_value) != NULL;
+}
+
 int portillia_acme_fulfill_challenge(portillia_acme_manager *m, const char *domain, const char *key_auth, bool create) {
     if (!m->dns) return CWIST_FAILURE;
 
@@ -100,14 +115,15 @@ int portillia_acme_fulfill_challenge(portillia_acme_manager *m, const char *doma
         int res = m->dns->ensure_txt_record(m->dns, challenge_domain, key_auth);
         
         // Propagation check: Poll until record is visible
-        for (int i = 0; i < 10; i++) {
-            sleep(10); // Wait for DNS propagation
-            // In real world, use a resolver query here (e.g., res_query or dig)
-            // Assuming successful propagation for now or simple check
-            LOG_INFO("Verifying DNS propagation for %s (attempt %d)...", challenge_domain, i+1);
-            if (res == CWIST_SUCCESS) return CWIST_SUCCESS;
+        for (int i = 0; i < 20; i++) {
+            if (check_dns_txt(challenge_domain, key_auth)) {
+                LOG_INFO("Verified DNS propagation for %s", challenge_domain);
+                return CWIST_SUCCESS;
+            }
+            sleep(5);
+            LOG_INFO("Waiting for DNS propagation for %s (attempt %d)...", challenge_domain, i+1);
         }
-        return res;
+        return CWIST_FAILURE;
     } else {
         LOG_INFO("Cleaning up ACME DNS challenge: removing TXT for %s", challenge_domain);
         return m->dns->delete_txt_records(m->dns, challenge_domain, key_auth);

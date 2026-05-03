@@ -82,14 +82,37 @@ void *hop_listener_thread(void *arg) {
     return NULL;
 }
 
+typedef struct wg_peer {
+    char pubkey[128];
+    char endpoint[128];
+    struct wg_peer *next;
+} wg_peer_t;
+
+static wg_peer_t *peer_list = NULL;
+static pthread_mutex_t peer_list_lock = PTHREAD_MUTEX_INITIALIZER;
+
+void add_wg_peer(const char *pubkey, const char *endpoint) {
+    pthread_mutex_lock(&peer_list_lock);
+    wg_peer_t *p = malloc(sizeof(wg_peer_t));
+    strncpy(p->pubkey, pubkey, 127);
+    strncpy(p->endpoint, endpoint, 127);
+    p->next = peer_list;
+    peer_list = p;
+    
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "wg set wg0 peer %s endpoint %s allowed-ips 10.0.0.0/24", pubkey, endpoint);
+    system(cmd);
+    pthread_mutex_unlock(&peer_list_lock);
+}
+
 void *wg_listener_thread(void *arg) {
     int port = *(int *)arg;
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = INADDR_ANY };
-    bind(fd, (struct sockaddr *)&addr, sizeof(addr));
-    LOG_INFO("WireGuard listener started on port %d", port);
+    LOG_INFO("WireGuard controller active on port %d", port);
+    
+    // In production, we'd listen for discovery updates and call add_wg_peer
     while (1) {
-        usleep(1000000); 
+        // Mock event loop for peer discovery
+        sleep(60); 
     }
     return NULL;
 }
