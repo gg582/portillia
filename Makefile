@@ -39,7 +39,7 @@ help:
 
 libs:
 	$(MAKE) -C libs/cwist
-	cd libs/secp256k1 && ./autogen.sh && ./configure --enable-module-recovery --disable-shared && make
+	cd libs/secp256k1 && ./autogen.sh && ./configure --enable-module-recovery --disable-shared && make clean && make
 
 build: build-frontend build-tunnel build-server build-demo
 
