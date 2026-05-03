@@ -42,7 +42,7 @@ Choose one of these modes:
   - Set `ACME_DNS_PROVIDER`.
   - Portal keeps the manual certificate files, skips ACME certificate issuance, and still uses the provider for DNSSEC + ENS TXT automation.
 - Managed ACME mode
-  - Set `ACME_DNS_PROVIDER` to `cloudflare`, `gcloud`, or `route53`.
+  - Set `ACME_DNS_PROVIDER` to `cloudflare`, `gcloud`, `route53`, or `njalla`.
   - Portal manages root/wildcard A records and certificate renewal.
   - If ENS gasless is enabled, Portal also manages DNSSEC.
 
@@ -57,6 +57,7 @@ Set `ACME_DNS_PROVIDER` to one of:
 - `cloudflare`
 - `gcloud`
 - `route53`
+- `njalla`
 
 ### 3.2 Cloudflare setup
 
@@ -147,6 +148,14 @@ Optional environment variables:
 - `GCP_PROJECT_ID`
 - `GCP_MANAGED_ZONE`
 - `GOOGLE_APPLICATION_CREDENTIALS`
+
+### 3.5 Njalla setup
+
+Provide your Njalla API token via the `NJALLA_TOKEN` environment variable.
+
+Njalla automation uses [lego](https://go-acme.github.io/lego/) internally for DNS-01 certificate issuance.
+
+- `NJALLA_TOKEN`
 
 Equivalent relay flags:
 

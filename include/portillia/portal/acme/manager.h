@@ -14,6 +14,7 @@ typedef struct {
     char *cloudflare_token;
     char *gcp_project_id;
     char *gcp_managed_zone;
+    char *njalla_token;
     char *aws_access_key_id;
     char *aws_secret_access_key;
     char *aws_session_token;

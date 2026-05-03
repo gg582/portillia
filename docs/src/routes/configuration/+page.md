@@ -49,7 +49,7 @@ The relay server (`relay-server`) reads configuration from environment variables
 
 | Variable | Default | Type | Description |
 |----------|---------|------|-------------|
-| `ACME_DNS_PROVIDER` | `""` | string | ACME DNS provider for managed DNS-01/A-record sync and ENS gasless DNSSEC/TXT automation (`cloudflare` \| `gcloud` \| `route53`); leave empty to use manual `fullchain.pem`/`privatekey.pem` from `IDENTITY_PATH` |
+| `ACME_DNS_PROVIDER` | `""` | string | ACME DNS provider for managed DNS-01/A-record sync and ENS gasless DNSSEC/TXT automation (`cloudflare` \| `gcloud` \| `route53` \| `njalla`); leave empty to use manual `fullchain.pem`/`privatekey.pem` from `IDENTITY_PATH` |
 | `ENS_GASLESS_ENABLED` | `false` | bool | Enable ENS gasless DNS import automation for the managed DNS zone and lease hostnames |
 
 ### Admin
@@ -71,6 +71,12 @@ The relay server (`relay-server`) reads configuration from environment variables
 | `GCP_PROJECT_ID` | `GOOGLE_CLOUD_PROJECT`, `GCLOUD_PROJECT`, `GCE_PROJECT` | | string | Google Cloud project ID for Cloud DNS automation; auto-detected from ADC or GCE metadata when omitted |
 | `GCP_MANAGED_ZONE` | `GCP_ZONE`, `GCE_ZONE_ID` | | string | Explicit Google Cloud DNS managed zone name or numeric ID override |
 | `GOOGLE_APPLICATION_CREDENTIALS` | | | string | Path to GCP service account key file (standard ADC; used by the GCP client library) |
+
+### Njalla
+
+| Variable | Default | Type | Description |
+|----------|---------|------|-------------|
+| `NJALLA_TOKEN` | | string | Njalla DNS API token; required when `ACME_DNS_PROVIDER=njalla` |
 
 ### AWS
 

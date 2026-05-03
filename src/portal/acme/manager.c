@@ -25,6 +25,7 @@ portillia_acme_manager* portillia_acme_manager_new(portillia_acme_config cfg) {
     m->cfg.cloudflare_token = cfg.cloudflare_token ? strdup(cfg.cloudflare_token) : NULL;
     m->cfg.gcp_project_id = cfg.gcp_project_id ? strdup(cfg.gcp_project_id) : NULL;
     m->cfg.gcp_managed_zone = cfg.gcp_managed_zone ? strdup(cfg.gcp_managed_zone) : NULL;
+    m->cfg.njalla_token = cfg.njalla_token ? strdup(cfg.njalla_token) : NULL;
     // ... duplicate other AWS fields if needed
 
     if (m->cfg.dns_provider_type) {
@@ -50,6 +51,7 @@ void portillia_acme_manager_destroy(portillia_acme_manager *m) {
     free(m->cfg.cloudflare_token);
     free(m->cfg.gcp_project_id);
     free(m->cfg.gcp_managed_zone);
+    free(m->cfg.njalla_token);
     // ... free other AWS fields
     free(m);
 }
@@ -91,17 +93,47 @@ int portillia_acme_manager_ensure_certificate(portillia_acme_manager *m, char **
         return CWIST_SUCCESS;
     }
     
-    LOG_INFO("Certificates missing. Provisioning via uacme...");
-    // uacme will now use an internal mechanism or we call it as a binary but 
-    // we have replaced the shell script hook with an internal C handler if uacme supports it.
-    // Given the constraints, we now call uacme passing direct values.
+    LOG_INFO("Certificates missing. Provisioning via lego...");
     
     char cmd[2048];
+    const char *lego_dns = "";
+    if (strcmp(m->cfg.dns_provider_type, "cloudflare") == 0) {
+        lego_dns = "cloudflare";
+        if (m->cfg.cloudflare_token) setenv("CLOUDFLARE_DNS_API_TOKEN", m->cfg.cloudflare_token, 1);
+    } else if (strcmp(m->cfg.dns_provider_type, "gcloud") == 0) {
+        lego_dns = "gcloud";
+        if (m->cfg.gcp_project_id) setenv("GCE_PROJECT", m->cfg.gcp_project_id, 1);
+    } else if (strcmp(m->cfg.dns_provider_type, "route53") == 0) {
+        lego_dns = "route53";
+        if (m->cfg.aws_hosted_zone_id) setenv("AWS_HOSTED_ZONE_ID", m->cfg.aws_hosted_zone_id, 1);
+    } else if (strcmp(m->cfg.dns_provider_type, "njalla") == 0) {
+        lego_dns = "njalla";
+        if (m->cfg.njalla_token) setenv("NJALLA_TOKEN", m->cfg.njalla_token, 1);
+    } else {
+        LOG_ERROR("Unsupported DNS provider for lego: %s", m->cfg.dns_provider_type);
+        return CWIST_FAILURE;
+    }
+
+    // Ensure the internal lego state directory exists within the persistent volume
+    char acme_home[512];
+    snprintf(acme_home, sizeof(acme_home), "%s/.lego", m->cfg.key_dir);
+    mkdir(acme_home, 0700);
+
     snprintf(cmd, sizeof(cmd), 
-             "uacme -c %s issue %s '*.%s'", 
-             m->cfg.key_dir, m->cfg.base_domain, m->cfg.base_domain);
+             "lego --accept-tos --email portal@%s --dns %s --domains %s --domains '*.%s' --path %s run", 
+             m->cfg.base_domain, lego_dns, m->cfg.base_domain, m->cfg.base_domain, acme_home);
     
     int ret = system(cmd);
+    
+    if (ret == 0) {
+        // Copy generated files to standard fullchain.pem and privatekey.pem paths
+        char cp_cmd[2048];
+        snprintf(cp_cmd, sizeof(cp_cmd), "cp %s/certificates/%s.crt %s && cp %s/certificates/%s.key %s", 
+                 acme_home, m->cfg.base_domain, cert_path, 
+                 acme_home, m->cfg.base_domain, key_path);
+        system(cp_cmd);
+    }
+
     
     if (ret == 0 && access(cert_path, F_OK) == 0 && access(key_path, F_OK) == 0) {
         *cert_file = strdup(cert_path);

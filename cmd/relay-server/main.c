@@ -184,6 +184,7 @@ int main(void) {
         .cloudflare_token = getenv("CLOUDFLARE_TOKEN"),
         .gcp_project_id = getenv("GCP_PROJECT_ID"),
         .gcp_managed_zone = getenv("GCP_MANAGED_ZONE"),
+        .njalla_token = getenv("NJALLA_TOKEN"),
         .aws_access_key_id = getenv("AWS_ACCESS_KEY_ID"),
         .aws_secret_access_key = getenv("AWS_SECRET_ACCESS_KEY"),
         .aws_session_token = getenv("AWS_SESSION_TOKEN"),
