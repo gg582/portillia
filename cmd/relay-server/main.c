@@ -17,6 +17,7 @@
 #include <arpa/inet.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <ctype.h>
 
 extern char *get_sni_hostname(int client_fd);
 discovery_config *global_disc_cfg = NULL;
@@ -42,15 +43,12 @@ void *sni_listener_thread(void *arg) {
         return NULL;
     }
     listen(fd, 128);
-    LOG_INFO("Unified listener started on port %d", port);
-    
     while (1) {
         int client = accept(fd, NULL, NULL);
         if (client < 0) continue;
         
         char *sni = get_sni_hostname(client);
         if (sni) {
-            LOG_INFO("SNI Hostname: %s", sni);
             extern void portillia_server_handle_connect(const char *hostname, int client_fd);
             portillia_server_handle_connect(sni, client);
             free(sni);
@@ -85,8 +83,7 @@ void add_wg_peer(const char *pubkey, const char *endpoint) {
 }
 
 void *wg_listener_thread(void *arg) {
-    int port = *(int *)arg;
-    LOG_INFO("WireGuard controller active on port %d", port);
+    (void)arg;
     
     // In production, we'd listen for discovery updates and call add_wg_peer
     while (1) {
@@ -225,12 +222,98 @@ void *acme_renewal_thread(void *arg) {
     return NULL;
 }
 
+static const char *env_str_or_default(const char *name, const char *default_value) {
+    const char *value = getenv(name);
+    if (!value || strlen(value) == 0) {
+        return default_value;
+    }
+    return value;
+}
+
+static int env_int_or_default(const char *name, int default_value) {
+    const char *value = getenv(name);
+    if (!value || strlen(value) == 0) {
+        return default_value;
+    }
+    return atoi(value);
+}
+
+static bool env_bool_or_default(const char *name, bool default_value) {
+    const char *value = getenv(name);
+    if (!value || strlen(value) == 0) {
+        return default_value;
+    }
+    char buf[16];
+    size_t i = 0;
+    for (; value[i] != '\0' && i < sizeof(buf) - 1; i++) {
+        buf[i] = (char)tolower((unsigned char)value[i]);
+    }
+    buf[i] = '\0';
+    if (strcmp(buf, "1") == 0 || strcmp(buf, "true") == 0 || strcmp(buf, "yes") == 0 || strcmp(buf, "on") == 0) {
+        return true;
+    }
+    if (strcmp(buf, "0") == 0 || strcmp(buf, "false") == 0 || strcmp(buf, "no") == 0 || strcmp(buf, "off") == 0) {
+        return false;
+    }
+    return default_value;
+}
+
+static const char *bool_str(bool value) {
+    return value ? "true" : "false";
+}
+
+static char *portal_root_hostname(const char *portal_url) {
+    if (!portal_url) {
+        return strdup("localhost");
+    }
+    const char *start = strstr(portal_url, "://");
+    start = start ? start + 3 : portal_url;
+    const char *end = strpbrk(start, ":/");
+    size_t length = end ? (size_t)(end - start) : strlen(start);
+    if (length == 0) {
+        return strdup("localhost");
+    }
+    while (length > 0 && start[length - 1] == '.') {
+        length--;
+    }
+    if (length == 0) {
+        return strdup("localhost");
+    }
+    char *host = calloc(length + 1, 1);
+    for (size_t i = 0; i < length; i++) {
+        host[i] = (char)tolower((unsigned char)start[i]);
+    }
+    host[length] = '\0';
+    return host;
+}
+
 int main(void) {
+    const char *portal_url = env_str_or_default("PORTAL_URL", "https://localhost:4017");
+    const char *identity_path = env_str_or_default("IDENTITY_PATH", "./.portal-certs");
+    const char *bootstraps = env_str_or_default("BOOTSTRAPS", "");
+    const bool discovery_enabled = env_bool_or_default("DISCOVERY", false);
+    int api_port = env_int_or_default("API_PORT", 4017);
+    int sni_port = env_int_or_default("SNI_PORT", 443);
+    int wg_port = env_int_or_default("WIREGUARD_PORT", 51820);
+    int min_port = env_int_or_default("MIN_PORT", 0);
+    int max_port = env_int_or_default("MAX_PORT", 0);
+    const bool udp_enabled = env_bool_or_default("UDP_ENABLED", false);
+    const bool tcp_enabled = env_bool_or_default("TCP_ENABLED", false);
+    const bool landing_page_enabled = env_bool_or_default("LANDING_PAGE_ENABLED", false);
+    const bool trust_proxy_headers = env_bool_or_default("TRUST_PROXY_HEADERS", false);
+    const bool pprof_enabled = env_bool_or_default("PPROF_ENABLED", false);
+    const char *pprof_addr = env_str_or_default("PPROF_ADDR", "127.0.0.1:6060");
+    const char *trusted_proxy_cidrs = env_str_or_default("TRUSTED_PROXY_CIDRS", "");
+    const char *headless_shell_url = env_str_or_default("HEADLESS_SHELL_URL", "");
+    const char *acme_dns_provider = env_str_or_default("ACME_DNS_PROVIDER", "");
+    const bool ens_gasless_enabled = env_bool_or_default("ENS_GASLESS_ENABLED", false);
+    char *root_hostname = portal_root_hostname(portal_url);
+
     portillia_acme_config acme_cfg = {
-        .base_domain = getenv("PORTAL_DOMAIN"),
-        .key_dir = getenv("IDENTITY_PATH") ? getenv("IDENTITY_PATH") : ".portal-certs",
-        .dns_provider_type = getenv("ACME_DNS_PROVIDER"),
-        .ens_gasless_enabled = getenv("ENS_GASLESS_ENABLED") && strcmp(getenv("ENS_GASLESS_ENABLED"), "true") == 0,
+        .base_domain = root_hostname,
+        .key_dir = (char *)identity_path,
+        .dns_provider_type = (char *)acme_dns_provider,
+        .ens_gasless_enabled = ens_gasless_enabled,
         .ens_gasless_address = getenv("ENS_GASLESS_ADDRESS"),
         .cloudflare_token = getenv("CLOUDFLARE_TOKEN"),
         .gcp_project_id = getenv("GCP_PROJECT_ID"),
@@ -244,28 +327,49 @@ int main(void) {
         .aws_kms_key_arn = getenv("AWS_DNSSEC_KMS_KEY_ARN")
     };
 
-    int api_port = getenv("PORTAL_API_PORT") ? atoi(getenv("PORTAL_API_PORT")) : (getenv("API_PORT") ? atoi(getenv("API_PORT")) : 4017);
-    int sni_port = getenv("PORTAL_SNI_PORT") ? atoi(getenv("PORTAL_SNI_PORT")) : (getenv("SNI_PORT") ? atoi(getenv("SNI_PORT")) : 443);
-    int wg_port = getenv("PORTAL_WG_PORT") ? atoi(getenv("PORTAL_WG_PORT")) : (getenv("WIREGUARD_PORT") ? atoi(getenv("WIREGUARD_PORT")) : 51820);
-
-    LOG_INFO("configured relay server: release_version=%s, portal_url=%s, identity_path=%s, bootstraps=%s, discovery_enabled=%d, wireguard_port=%d, api_port=%d, sni_port=%d, trust_proxy_headers=%d, trusted_proxy_cidrs=%s, udp_enabled=%d, tcp_enabled=%d, min_port=%d, max_port=%d, landing_page_enabled=%d, headless_shell_enabled=%d, acme_dns_provider=%s, ens_gasless_enabled=%d",
-             "v2.1.8-c", acme_cfg.base_domain ? acme_cfg.base_domain : "", acme_cfg.key_dir, "", 0, wg_port, api_port, sni_port, 0, "", 0, 0, 0, 0, 1, 0, acme_cfg.dns_provider_type ? acme_cfg.dns_provider_type : "", acme_cfg.ens_gasless_enabled);
+    LOG_INFO(
+        "configured relay server acme_dns_provider=%s api_port=%d bootstraps=%s discovery_enabled=%s ens_gasless_enabled=%s headless_shell_enabled=%s identity_path=%s landing_page_enabled=%s max_port=%d min_port=%d portal_url=%s pprof_addr=%s pprof_enabled=%s release_version=%s sni_port=%d tcp_enabled=%s trust_proxy_headers=%s trusted_proxy_cidrs=%s udp_enabled=%s wireguard_port=%d",
+        acme_dns_provider,
+        api_port,
+        bootstraps,
+        bool_str(discovery_enabled),
+        bool_str(ens_gasless_enabled),
+        bool_str(strlen(headless_shell_url) > 0),
+        identity_path,
+        bool_str(landing_page_enabled),
+        max_port,
+        min_port,
+        portal_url,
+        pprof_addr,
+        bool_str(pprof_enabled),
+        PORTILLIA_RELEASE_VERSION,
+        sni_port,
+        bool_str(tcp_enabled),
+        bool_str(trust_proxy_headers),
+        trusted_proxy_cidrs,
+        bool_str(udp_enabled),
+        wg_port
+    );
 
     char settings_path[1024];
-    snprintf(settings_path, sizeof(settings_path), "%s/settings.json", acme_cfg.key_dir);
+    snprintf(settings_path, sizeof(settings_path), "%s/settings.json", identity_path);
     portillia_settings *settings = portillia_settings_load(settings_path);
+    settings->landing_page_enabled = landing_page_enabled;
+    settings->trust_proxy_headers = trust_proxy_headers;
+    settings->udp_enabled = udp_enabled;
+    settings->tcp_port_enabled = tcp_enabled;
 
     extern void portillia_server_setup(const char *root_hostname, int api_port, int sni_port, portillia_settings *s);
     extern void portillia_proxy_init_telemetry();
     portillia_proxy_init_telemetry();
-    portillia_server_setup(acme_cfg.base_domain ? acme_cfg.base_domain : "localhost", api_port, sni_port, settings);
+    portillia_server_setup(root_hostname, api_port, sni_port, settings);
 
     // Initialize Multiplexer
     // No global event loop used after refactoring
 
     cwist_app *app = cwist_app_create();
 
-    if (acme_cfg.base_domain) {
+    if (strlen(root_hostname) > 0) {
         portillia_acme_manager *acme = portillia_acme_manager_new(acme_cfg);
         if (acme) {
             global_acme_manager = acme;
@@ -302,19 +406,49 @@ int main(void) {
     sni_args->api_port = api_port;
     
     discovery_config *disc_cfg = malloc(sizeof(discovery_config));
-    disc_cfg->relay_url = getenv("PORTAL_URL") ? strdup(getenv("PORTAL_URL")) : strdup("http://localhost:4017");
-    disc_cfg->bootstrap_urls = getenv("BOOTSTRAPS") ? strdup(getenv("BOOTSTRAPS")) : NULL;
+    disc_cfg->relay_url = strdup(portal_url);
+    disc_cfg->bootstrap_urls = strlen(bootstraps) > 0 ? strdup(bootstraps) : NULL;
     disc_cfg->relay_set = portillia_relay_set_new();
     global_disc_cfg = disc_cfg;
 
     pthread_t sni_tid, wg_tid, disc_tid;
     pthread_create(&sni_tid, NULL, sni_listener_thread, sni_args);
     pthread_create(&wg_tid, NULL, wg_listener_thread, &wg_port);
-    if (disc_cfg->bootstrap_urls) {
+    if (discovery_enabled) {
         pthread_create(&disc_tid, NULL, discovery_maintenance_loop, disc_cfg);
     }
-    
-    LOG_INFO("API server listening on port %d", api_port);
+
+    if (udp_enabled) {
+        LOG_INFO(
+            "relay server started acme_dns_provider=%s api_addr=127.0.0.1:%d discovery_enabled=%s internal_quic_backhaul_addr=[::]:%d max_port=%d min_port=%d multihop_enabled=true pprof_enabled=%s root_host=%s sni_addr=[::]:%d tcp_enabled=%s udp_enabled=%s wireguard_enabled=true",
+            acme_dns_provider,
+            api_port,
+            bool_str(discovery_enabled),
+            sni_port,
+            max_port,
+            min_port,
+            bool_str(pprof_enabled),
+            root_hostname,
+            sni_port,
+            bool_str(tcp_enabled),
+            bool_str(udp_enabled)
+        );
+    } else {
+        LOG_INFO(
+            "relay server started acme_dns_provider=%s api_addr=127.0.0.1:%d discovery_enabled=%s max_port=%d min_port=%d multihop_enabled=true pprof_enabled=%s root_host=%s sni_addr=[::]:%d tcp_enabled=%s udp_enabled=%s wireguard_enabled=true",
+            acme_dns_provider,
+            api_port,
+            bool_str(discovery_enabled),
+            max_port,
+            min_port,
+            bool_str(pprof_enabled),
+            root_hostname,
+            sni_port,
+            bool_str(tcp_enabled),
+            bool_str(udp_enabled)
+        );
+    }
+
     extern void portillia_quic_backhaul_start(int port);
     portillia_quic_backhaul_start(api_port);
     

@@ -8,8 +8,6 @@
 #include <portillia/utils/log.h>
 #include <unistd.h>
 
-static CURLM *multi_handle = NULL;
-
 extern char* portillia_registry_to_json();
 
 portillia_relay_set* portillia_relay_set_new() {
@@ -133,7 +131,18 @@ void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descrip
                 curl_easy_setopt(curl, CURLOPT_URL, announce_url);
                 curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json);
                 curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
-                curl_easy_perform(curl);
+                CURLcode code = curl_easy_perform(curl);
+                if (code == CURLE_OK) {
+                    long status = 0;
+                    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+                    if (status >= 200 && status < 300) {
+                        LOG_INFO("relay discovery announce succeeded relay=%s", token);
+                    } else {
+                        LOG_WARN("relay discovery announce failed error=\"http status %ld\" relay=%s", status, token);
+                    }
+                } else {
+                    LOG_WARN("relay discovery announce failed error=\"%s\" relay=%s", curl_easy_strerror(code), token);
+                }
                 
                 free(json);
                 cJSON_Delete(root);
@@ -149,13 +158,17 @@ extern int64_t portillia_proxy_get_active_conns();
 extern double portillia_proxy_get_current_bps();
 
 static void discovery_task(ttak_task_t *task, void *arg) {
+    (void)task;
     discovery_config *cfg = (discovery_config *)arg;
-    
+    if (!cfg || !cfg->relay_url) {
+        return;
+    }
+
     portillia_relay_descriptor desc;
     desc.api_https_addr = cwist_sstring_create();
     cwist_sstring_assign(desc.api_https_addr, (char *)cfg->relay_url);
     desc.version = cwist_sstring_create();
-    cwist_sstring_assign(desc.version, (char *)"v2.1.8-c");
+    cwist_sstring_assign(desc.version, (char *)PORTILLIA_RELEASE_VERSION);
     
     desc.active_connections = portillia_proxy_get_active_conns();
     desc.tcp_bps = portillia_proxy_get_current_bps();
@@ -175,15 +188,13 @@ static void discovery_task(ttak_task_t *task, void *arg) {
     cwist_sstring_destroy(desc.version);
     cwist_sstring_destroy(desc.signature);
 
-    ttak_sleep(30000);
-    ttak_schedule(discovery_task, arg);
 }
 
 void *discovery_maintenance_loop(void *arg) {
-    ttak_init();
-    multi_handle = curl_multi_init();
-    ttak_schedule(discovery_task, arg);
-    ttak_run();
-    curl_multi_cleanup(multi_handle);
+    discovery_config *cfg = (discovery_config *)arg;
+    while (1) {
+        discovery_task(NULL, cfg);
+        sleep(30);
+    }
     return NULL;
 }

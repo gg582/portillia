@@ -2,12 +2,16 @@
 #include <stdio.h>
 #include <time.h>
 #include <stdarg.h>
+#include <string.h>
 
 void portillia_log(portillia_log_level level, const char *fmt, ...) {
     time_t now = time(NULL);
     struct tm *tm_info = localtime(&now);
     char time_str[20];
-    strftime(time_str, sizeof(time_str), "%H:%M:%S", tm_info);
+    strftime(time_str, sizeof(time_str), "%I:%M%p", tm_info);
+    if (time_str[0] == '0') {
+        memmove(time_str, time_str + 1, strlen(time_str));
+    }
 
     const char *level_str = "INF";
     switch (level) {

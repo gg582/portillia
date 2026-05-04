@@ -81,8 +81,6 @@ void *quic_listener_thread(void *arg) {
         return NULL;
     }
 
-    LOG_INFO("QUIC Backhaul listener active on port %d", port);
-    
     while (1) {
         uint8_t buf[4096];
         struct sockaddr_in client_addr;

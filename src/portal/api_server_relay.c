@@ -14,6 +14,7 @@ extern discovery_config *global_disc_cfg;
  * @brief Function handle_discovery_announce
  */
 void handle_discovery_announce(cwist_http_request *req, cwist_http_response *res) {
+    cwist_sstring_assign(res->body, "{\"protocol_version\": \"7\", \"accepted\": false}");
     if (req->body && req->body->size > 0) {
         cJSON *root = cJSON_Parse(req->body->data);
         if (root) {
@@ -27,6 +28,12 @@ void handle_discovery_announce(cwist_http_request *req, cwist_http_response *res
                     d.expires_at = time(NULL) + 60;
                     
                     portillia_relay_set_upsert(global_disc_cfg->relay_set, d);
+
+                    char *source_ip = cwist_http_header_get(req->headers, "X-Real-IP");
+                    if (!source_ip || source_ip[0] == '\0') {
+                        source_ip = "127.0.0.1";
+                    }
+                    LOG_INFO("relay discovery announce accepted relay=%s source_ip=%s", api_addr->valuestring, source_ip);
                     
                     cwist_sstring_assign(res->body, "{\"protocol_version\": \"7\", \"accepted\": true}");
                     cwist_sstring_destroy(d.api_https_addr);
@@ -44,4 +51,3 @@ void handle_discovery_announce(cwist_http_request *req, cwist_http_response *res
 void portillia_api_server_relay_setup(cwist_app *app) {
     cwist_app_post(app, "/discovery/announce", handle_discovery_announce);
 }
-

@@ -108,12 +108,12 @@ relay_stream *relay_stream_new() {
     return s;
 }
 
-void relay_stream_offer(relay_stream *s, int fd) {
+int relay_stream_offer(relay_stream *s, int fd) {
     pthread_mutex_lock(&s->mu);
     if (s->count >= READY_LIMIT) {
         close(fd);
         pthread_mutex_unlock(&s->mu);
-        return;
+        return -1;
     }
     relay_session *sess = calloc(1, sizeof(relay_session));
     sess->fd = fd;
@@ -125,8 +125,10 @@ void relay_stream_offer(relay_stream *s, int fd) {
         s->ready_head = s->ready_tail = sess;
     }
     s->count++;
+    int ready_count = s->count;
     pthread_cond_signal(&s->cond);
     pthread_mutex_unlock(&s->mu);
+    return ready_count;
 }
 
 int relay_stream_claim(relay_stream *s) {
@@ -410,15 +412,16 @@ void portillia_server_handle_hop(int hop_fd) {
     }
 }
 
-void portillia_registry_offer_conn(const char *hostname, int sdk_fd) {
-    if (!global_server) { close(sdk_fd); return; }
+int portillia_registry_offer_conn(const char *hostname, int sdk_fd) {
+    if (!global_server) { close(sdk_fd); return -1; }
     lease_record *rec = lease_registry_lookup(global_server->registry, hostname);
     if (rec) {
         rec->last_seen_at = time(NULL);
-        relay_stream_offer(rec->stream, sdk_fd);
+        return relay_stream_offer(rec->stream, sdk_fd);
     } else {
         close(sdk_fd);
     }
+    return -1;
 }
 
 void portillia_registry_register(const char *hostname, const char *identity_key, int64_t bps_limit) {

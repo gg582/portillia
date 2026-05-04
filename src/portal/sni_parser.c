@@ -12,55 +12,19 @@
 #include <arpa/inet.h>
 #include <poll.h>
 #include <time.h>
-#include <portillia/utils/log.h>
 
 #define TLS_RECORD_HEADER_LEN 5
 #define TLS_HANDSHAKE_TYPE_CLIENT_HELLO 1
 #define TLS_CONTENT_TYPE_HANDSHAKE 22
 #define EXT_SERVER_NAME 0
 #define MAX_TLS_RECORD_BODY 65535
+#define MAX_CLIENT_HELLO_LEN (1 << 20)
 #define CLIENT_HELLO_WAIT_MS 2000L
 
 static long monotonic_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
-}
-
-static ssize_t peek_full_before(int fd, unsigned char *buf, size_t want, long deadline_ms) {
-    while (1) {
-        int available = 0;
-        if (ioctl(fd, FIONREAD, &available) == 0 && available >= (int)want) {
-            ssize_t n;
-            do {
-                n = recv(fd, buf, want, MSG_PEEK);
-            } while (n < 0 && errno == EINTR);
-            return n;
-        }
-        long remaining_ms = deadline_ms - monotonic_ms();
-        if (remaining_ms <= 0) {
-            ssize_t n;
-            do {
-                n = recv(fd, buf, want, MSG_PEEK);
-            } while (n < 0 && errno == EINTR);
-            return n;
-        }
-
-        if (available > 0) {
-            long sleep_us = remaining_ms > 10 ? 10000L : remaining_ms * 1000L;
-            usleep((useconds_t)sleep_us);
-            continue;
-        }
-
-        struct pollfd pfd = { .fd = fd, .events = POLLIN };
-        int rc;
-        do {
-            rc = poll(&pfd, 1, (int)remaining_ms);
-        } while (rc < 0 && errno == EINTR);
-        if (rc < 0) {
-            return -1;
-        }
-    }
 }
 
 static char *normalize_server_name(const unsigned char *name, int name_len) {
@@ -199,45 +163,139 @@ static char *parse_client_hello_record(const unsigned char *record_body, int rec
     return NULL;
 }
 
+static char *parse_client_hello_stream(const unsigned char *stream, size_t stream_len, int *need_more) {
+    size_t pos = 0;
+    unsigned char *hello = NULL;
+    size_t hello_have = 0;
+    size_t hello_total = 0;
+    int started = 0;
+    *need_more = 0;
+
+    while (pos + TLS_RECORD_HEADER_LEN <= stream_len) {
+        int content_type = stream[pos];
+        int record_len = (stream[pos + 3] << 8) | stream[pos + 4];
+        size_t record_body = pos + TLS_RECORD_HEADER_LEN;
+        size_t record_end = record_body + (size_t)record_len;
+        if (record_len <= 0 || record_len > MAX_TLS_RECORD_BODY) {
+            break;
+        }
+        if (record_end > stream_len) {
+            *need_more = 1;
+            break;
+        }
+        if (content_type != TLS_CONTENT_TYPE_HANDSHAKE) {
+            if (!started) {
+                break;
+            }
+            pos = record_end;
+            continue;
+        }
+
+        const unsigned char *payload = stream + record_body;
+        size_t payload_len = (size_t)record_len;
+
+        if (!started) {
+            if (payload_len < 4) {
+                *need_more = 1;
+                break;
+            }
+            if (payload[0] != TLS_HANDSHAKE_TYPE_CLIENT_HELLO) {
+                break;
+            }
+            int msg_len = (payload[1] << 16) | (payload[2] << 8) | payload[3];
+            if (msg_len <= 0 || msg_len > MAX_CLIENT_HELLO_LEN) {
+                break;
+            }
+
+            hello_total = (size_t)msg_len + 4;
+            hello = malloc(hello_total);
+            if (!hello) {
+                return NULL;
+            }
+            size_t first = payload_len < hello_total ? payload_len : hello_total;
+            memcpy(hello, payload, first);
+            hello_have = first;
+            started = 1;
+            if (hello_have >= hello_total) {
+                char *hostname = parse_client_hello_record(hello, (int)hello_total);
+                free(hello);
+                return hostname;
+            }
+            pos = record_end;
+            continue;
+        }
+
+        size_t remaining = hello_total - hello_have;
+        size_t to_copy = payload_len < remaining ? payload_len : remaining;
+        memcpy(hello + hello_have, payload, to_copy);
+        hello_have += to_copy;
+        if (hello_have >= hello_total) {
+            char *hostname = parse_client_hello_record(hello, (int)hello_total);
+            free(hello);
+            return hostname;
+        }
+
+        pos = record_end;
+    }
+
+    if (hello) {
+        free(hello);
+    }
+    if (started) {
+        *need_more = 1;
+    } else if (stream_len < TLS_RECORD_HEADER_LEN) {
+        *need_more = 1;
+    }
+    return NULL;
+}
+
 // Returns dynamically allocated, Go-normalized SNI hostname or NULL.
 char *get_sni_hostname(int client_fd) {
-    unsigned char header[TLS_RECORD_HEADER_LEN];
     long deadline_ms = monotonic_ms() + CLIENT_HELLO_WAIT_MS;
+    while (1) {
+        int available = 0;
+        if (ioctl(client_fd, FIONREAD, &available) != 0 || available <= 0) {
+            long remaining_ms = deadline_ms - monotonic_ms();
+            if (remaining_ms <= 0) {
+                return NULL;
+            }
+            struct pollfd pfd = { .fd = client_fd, .events = POLLIN };
+            int rc;
+            do {
+                rc = poll(&pfd, 1, (int)remaining_ms);
+            } while (rc < 0 && errno == EINTR);
+            if (rc <= 0) {
+                return NULL;
+            }
+            continue;
+        }
 
-    ssize_t n = peek_full_before(client_fd, header, sizeof(header), deadline_ms);
-    if (n != TLS_RECORD_HEADER_LEN) {
-        LOG_INFO("SNI Parser: Could not read TLS record header (%ld bytes)", n);
-        return NULL;
+        unsigned char *peeked = malloc((size_t)available);
+        if (!peeked) {
+            return NULL;
+        }
+        ssize_t n;
+        do {
+            n = recv(client_fd, peeked, (size_t)available, MSG_PEEK);
+        } while (n < 0 && errno == EINTR);
+        if (n <= 0) {
+            free(peeked);
+            return NULL;
+        }
+        int need_more = 0;
+        char *hostname = parse_client_hello_stream(peeked, (size_t)n, &need_more);
+        free(peeked);
+        if (hostname) {
+            return hostname;
+        }
+        if (!need_more) {
+            return NULL;
+        }
+        long remaining_ms = deadline_ms - monotonic_ms();
+        if (remaining_ms <= 0) {
+            return NULL;
+        }
+        long sleep_us = remaining_ms > 10 ? 10000L : remaining_ms * 1000L;
+        usleep((useconds_t)sleep_us);
     }
-    if (header[0] != TLS_CONTENT_TYPE_HANDSHAKE) {
-        LOG_INFO("SNI Parser: Not a TLS handshake record (0x%02x)", header[0]);
-        return NULL;
-    }
-
-    int record_len = (header[3] << 8) | header[4];
-    if (record_len <= 0 || record_len > MAX_TLS_RECORD_BODY) {
-        LOG_INFO("SNI Parser: Invalid ClientHello record length (%d)", record_len);
-        return NULL;
-    }
-
-    size_t total_len = TLS_RECORD_HEADER_LEN + (size_t)record_len;
-    unsigned char *record = malloc(total_len);
-    if (!record) {
-        return NULL;
-    }
-
-    n = peek_full_before(client_fd, record, total_len, deadline_ms);
-    if (n != (ssize_t)total_len) {
-        LOG_INFO("SNI Parser: Incomplete ClientHello record (%ld/%zu bytes)", n, total_len);
-        free(record);
-        return NULL;
-    }
-
-    char *hostname = parse_client_hello_record(record + TLS_RECORD_HEADER_LEN, record_len);
-    free(record);
-
-    if (!hostname) {
-        LOG_INFO("SNI Parser: SNI extension not found or ClientHello invalid");
-    }
-    return hostname;
 }

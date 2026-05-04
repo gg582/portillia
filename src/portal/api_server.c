@@ -11,7 +11,7 @@
 
 extern void portillia_registry_register(const char *hostname, const char *identity_key, int64_t bps_limit);
 extern void portillia_registry_register_hop(const char *hop_token, const char *next_ipv4, const char *next_token, const char *identity_key);
-extern void portillia_registry_offer_conn(const char *hostname, int sdk_fd);
+extern int portillia_registry_offer_conn(const char *hostname, int sdk_fd);
 extern char* portillia_registry_to_json();
 extern portillia_settings* portillia_server_get_settings();
 
@@ -107,7 +107,14 @@ void handle_connect(cwist_http_request *req, cwist_http_response *res) {
     const char *resp = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n";
     send(req->client_fd, resp, strlen(resp), 0);
     req->upgraded = true;
-    portillia_registry_offer_conn(host, req->client_fd);
+    char *remote_addr = extract_client_ip(req);
+    int ready = portillia_registry_offer_conn(host, req->client_fd);
+    if (ready > 0) {
+        LOG_INFO("sdk reverse connected address=%s lease_name=%s ready=%d remote_addr=%s", host, host, ready, remote_addr);
+    } else {
+        LOG_WARN("sdk reverse rejected address=%s lease_name=%s remote_addr=%s", host, host, remote_addr);
+    }
+    free(remote_addr);
 }
 
 /**

@@ -9,7 +9,7 @@
 #include <stdint.h>
 #include <time.h>
 
-#define PORTILLIA_RELEASE_VERSION "v2.1.8"
+#define PORTILLIA_RELEASE_VERSION "v2.1.9"
 #define PORTILLIA_SDK_VERSION "6"
 #define PORTILLIA_DISCOVERY_VERSION "7"
 
