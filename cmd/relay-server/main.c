@@ -48,14 +48,6 @@ void *sni_listener_thread(void *arg) {
         int client = accept(fd, NULL, NULL);
         if (client < 0) continue;
         
-        // Peek at the first few bytes to determine if it's Hop Mux (Yamux) or SNI/TLS
-        char peek_buf[4];
-        ssize_t n = recv(client, peek_buf, sizeof(peek_buf), MSG_PEEK);
-        
-        // Yamux magic bytes or specific identification could be used here.
-        // For now, assuming if SNI isn't found, try Hop Mux (or use specific protocol headers).
-        // The original logic was: if SNI is found -> SNI handler, else -> Hop Mux.
-        
         char *sni = get_sni_hostname(client);
         if (sni) {
             LOG_INFO("SNI Hostname: %s", sni);
@@ -63,8 +55,7 @@ void *sni_listener_thread(void *arg) {
             portillia_server_handle_connect(sni, client);
             free(sni);
         } else {
-            LOG_INFO("No SNI found, falling back to Hop Mux (Yamux)");
-            cwist_yamux_session_create(client);
+            close(client);
         }
     }
     return NULL;
