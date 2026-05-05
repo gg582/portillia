@@ -123,7 +123,8 @@ static const char* store_register_challenge(
     const char *siwe_message,
     bool udp_enabled,
     bool tcp_enabled,
-    time_t expires_at
+    time_t expires_at,
+    const char *challenge_id
 ) {
     int slot = -1;
     for (int i = 0; i < MAX_REGISTER_CHALLENGES; i++) {
@@ -136,7 +137,7 @@ static const char* store_register_challenge(
     register_challenge_entry *entry = &g_register_challenges[slot];
     memset(entry, 0, sizeof(*entry));
     entry->in_use = true;
-    random_token("rch_", entry->challenge_id, sizeof(entry->challenge_id));
+    snprintf(entry->challenge_id, sizeof(entry->challenge_id), "%s", challenge_id ? challenge_id : "");
     snprintf(entry->siwe_message, sizeof(entry->siwe_message), "%s", siwe_message ? siwe_message : "");
     snprintf(entry->identity_name, sizeof(entry->identity_name), "%s", identity_name ? identity_name : "");
     snprintf(entry->identity_address, sizeof(entry->identity_address), "%s", identity_address ? identity_address : "");
@@ -230,7 +231,6 @@ static bool verify_siwe_signature_address(const char *siwe_message, const char *
 
     uint8_t hash[32];
     portillia_crypto_keccak256(payload, payload_len, hash);
-    free(payload);
 
     // SIGN | VERIFY context is required for secp256k1_ecdsa_recover on some builds
     secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
@@ -247,7 +247,14 @@ static bool verify_siwe_signature_address(const char *siwe_message, const char *
     secp256k1_pubkey pubkey;
     bool ok = false;
 
+    LOG_DEBUG("SIWE verify: msg=%s", siwe_message);
     LOG_DEBUG("SIWE verify: msg_len=%zu expected=%s", strlen(siwe_message), expected_address);
+    char payload_hex[101];
+    for (size_t i = 0; i < payload_len && i < 50; i++) {
+        sprintf(payload_hex + i * 2, "%02x", payload[i]);
+    }
+    payload_hex[payload_len < 50 ? payload_len * 2 : 100] = '\0';
+    LOG_DEBUG("SIWE verify: payload=%s", payload_hex);
     LOG_DEBUG("SIWE verify: hash=%02x%02x%02x%02x...%02x%02x%02x%02x",
               hash[0], hash[1], hash[2], hash[3], hash[28], hash[29], hash[30], hash[31]);
     LOG_DEBUG("SIWE verify: r=%02x%02x...%02x s=%02x%02x...%02x v=%d",
@@ -284,6 +291,7 @@ static bool verify_siwe_signature_address(const char *siwe_message, const char *
         }
     }
     secp256k1_context_destroy(ctx);
+    free(payload);
     if (!ok) {
         LOG_WARN("SIWE verify: all 4 recids failed for expected=%s", expected_address);
     }
@@ -702,19 +710,33 @@ void handle_register_challenge(cwist_http_request *req, cwist_http_response *res
                 time_t exp = now + ttl;
                 format_time_rfc3339(now, issued_at, sizeof(issued_at));
                 format_time_rfc3339(exp, expires_at, sizeof(expires_at));
+                char challenge_id[64];
+                random_token("rch_", challenge_id, sizeof(challenge_id));
+
+                char nonce[17];
+                const char *charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+                for (int i = 0; i < 16; i++) {
+                    nonce[i] = charset[rand() % 62];
+                }
+                nonce[16] = '\0';
+
+                char req_uri[256];
+                snprintf(req_uri, sizeof(req_uri), "https://%s%s", domain, req->path && req->path->data ? req->path->data : "/sdk/register");
+
                 char msg[2048];
                 snprintf(
                     msg,
                     sizeof(msg),
-                    "%s wants you to sign in with your Ethereum account:\n%s\n\nRegister a portal lease\n\nURI: https://%s/sdk/register\nVersion: 1\nChain ID: 1\nNonce: %u\nIssued At: %s\nExpiration Time: %s",
+                    "%s wants you to sign in with your Ethereum account:\n%s\n\nRegister a portal lease\n\nURI: %s\nVersion: 1\nChain ID: 1\nNonce: %s\nIssued At: %s\nRequest ID: %s\nExpiration Time: %s",
                     domain,
                     addr,
-                    domain,
-                    (unsigned int)rand(),
+                    req_uri,
+                    nonce,
                     issued_at,
+                    challenge_id,
                     expires_at
                 );
-                const char *challenge_id = store_register_challenge(name, addr, msg, udp, tcp, exp);
+                store_register_challenge(name, addr, msg, udp, tcp, exp, challenge_id);
                 cJSON *root = cJSON_CreateObject();
                 cJSON *data = cJSON_CreateObject();
                 cJSON_AddStringToObject(data, "challenge_id", challenge_id);
