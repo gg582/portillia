@@ -481,7 +481,7 @@ extern portillia_settings* portillia_server_get_settings();
 static void discovery_task(ttak_task_t *task, void *arg) {
     (void)task;
     discovery_config *cfg = (discovery_config *)arg;
-    if (!cfg || !cfg->relay_url) {
+    if (!cfg || !cfg->relay_url || !cfg->advertise_url) {
         return;
     }
 
@@ -489,7 +489,7 @@ static void discovery_task(ttak_task_t *task, void *arg) {
     ensure_descriptor_identity();
     LOG_INFO("DISCOVERY_IDENTITY priv=%s addr=%s", g_desc_priv_hex, g_desc_addr);
     desc.address = strdup(g_desc_addr);
-    desc.api_https_addr = strdup(cfg->relay_url);
+    desc.api_https_addr = strdup(cfg->advertise_url);
     desc.version = strdup("7");
     desc.wireguard_public_key = strdup("");
     desc.signature = strdup("");

@@ -42,7 +42,8 @@ typedef struct {
  * @brief Configuration for the discovery maintenance loop.
  */
 typedef struct {
-    char *relay_url; /**< This relay's own API URL */
+    char *relay_url; /**< This relay's own public relay URL */
+    char *advertise_url; /**< Public relay URL advertised in descriptors */
     char *bootstrap_urls; /**< Comma-separated list of bootstrap URLs */
     portillia_relay_set *relay_set; /**< The set to manage */
 } discovery_config;

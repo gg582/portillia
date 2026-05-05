@@ -434,8 +434,26 @@ static char *portal_root_hostname(const char *portal_url) {
     return host;
 }
 
+static char *portal_public_url(const char *portal_url) {
+    char *host = portal_root_hostname(portal_url);
+    if (!host || !host[0]) {
+        if (host) free(host);
+        return strdup("https://localhost");
+    }
+    size_t len = strlen(host);
+    char *url = calloc(len + 9, 1);
+    if (!url) {
+        free(host);
+        return NULL;
+    }
+    snprintf(url, len + 9, "https://%s", host);
+    free(host);
+    return url;
+}
+
 int main(void) {
     const char *portal_url = env_str_or_default("PORTAL_URL", "https://localhost:4017");
+    const char *advertise_url_env = env_str_or_default("ADVERTISE_URL", "");
     const char *identity_path = env_str_or_default("IDENTITY_PATH", "./.portal-certs");
     const char *bootstraps = env_str_or_default("BOOTSTRAPS", "");
     const bool discovery_enabled = env_bool_or_default("DISCOVERY", false);
@@ -455,6 +473,9 @@ int main(void) {
     const char *acme_dns_provider = env_str_or_default("ACME_DNS_PROVIDER", "");
     const bool ens_gasless_enabled = env_bool_or_default("ENS_GASLESS_ENABLED", false);
     char *root_hostname = portal_root_hostname(portal_url);
+    char *public_relay_url = (advertise_url_env && advertise_url_env[0])
+        ? strdup(advertise_url_env)
+        : portal_public_url(portal_url);
 
     portillia_acme_config acme_cfg = {
         .base_domain = root_hostname,
@@ -619,8 +640,9 @@ int main(void) {
     sni_args->api_port = api_port;
     
     discovery_config *disc_cfg = malloc(sizeof(discovery_config));
-    disc_cfg->relay_url = strdup(portal_url);
-    char *resolved_bootstraps = resolve_portal_relay_urls(bootstraps, discovery_enabled, portal_url);
+    disc_cfg->relay_url = strdup(public_relay_url ? public_relay_url : portal_url);
+    disc_cfg->advertise_url = strdup(public_relay_url ? public_relay_url : portal_url);
+    char *resolved_bootstraps = resolve_portal_relay_urls(bootstraps, discovery_enabled, public_relay_url ? public_relay_url : portal_url);
     disc_cfg->bootstrap_urls = resolved_bootstraps;
     disc_cfg->relay_set = portillia_relay_set_new();
     global_disc_cfg = disc_cfg;
@@ -636,6 +658,10 @@ int main(void) {
     pthread_create(&wg_tid, NULL, wg_listener_thread, &wg_port);
     if (discovery_enabled) {
         pthread_create(&disc_tid, NULL, discovery_maintenance_loop, disc_cfg);
+    }
+
+    if (public_relay_url) {
+        free(public_relay_url);
     }
 
     if (udp_enabled) {
