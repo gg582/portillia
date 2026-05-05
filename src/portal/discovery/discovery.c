@@ -153,6 +153,15 @@ void ensure_descriptor_identity() {
         if (portillia_crypto_generate_identity(priv_hex, addr) == 0) {
             snprintf(g_desc_priv_hex, sizeof(g_desc_priv_hex), "%s", priv_hex);
             snprintf(g_desc_addr, sizeof(g_desc_addr), "%s", addr);
+            if (identity_path && identity_path[0]) {
+                char identity_file[1024];
+                snprintf(identity_file, sizeof(identity_file), "%s/identity.json", identity_path);
+                FILE *f = fopen(identity_file, "wb");
+                if (f) {
+                    fprintf(f, "{\"private_key\":\"%s\"}\n", priv_hex);
+                    fclose(f);
+                }
+            }
         }
     }
 }
