@@ -1,116 +1,422 @@
 /** @file types.h
- * @brief Core Portillia data structures.
+ * @brief Core Portillia data structures — 1:1 C port of portal-tunnel types package.
+ *
+ * All heap-embedded pointers are owned by the global EpochGC.
+ * Use portillia_gc_alloc / portillia_gc_free_later for lifecycle management.
  */
 #ifndef PORTILLIA_TYPES_H
 #define PORTILLIA_TYPES_H
 
-#include <cwist/core/sstring/sstring.h>
+#include <portillia/mem/gc.h>
+#include <openssl/ssl.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
 
-#define PORTILLIA_RELEASE_VERSION "v2.1.9"
-#define PORTILLIA_SDK_VERSION "6"
-#define PORTILLIA_DISCOVERY_VERSION "7"
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-/**
- * @struct portillia_identity
- * @brief Represents a unique service identity in the portal network.
- */
+/* ---------- Version constants ---------- */
+#define PORTILLIA_RELEASE_VERSION         "v2.1.9-c"
+#define PORTILLIA_SDK_VERSION             "6"
+#define PORTILLIA_DISCOVERY_VERSION       "7"
+#define PORTILLIA_PORTAL_RELAY_REGISTRY_URL "https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json"
+#define PORTILLIA_OFFICIAL_RELEASE_BASE_URL "https://github.com/gosuda/portal-tunnel/releases"
+
+#define PORTILLIA_HEADER_ACCESS_TOKEN     "X-Portal-Access-Token"
+#define PORTILLIA_MARKER_KEEPALIVE        0x00
+#define PORTILLIA_MARKER_RAW_START        0x01
+#define PORTILLIA_MARKER_TLS_START        0x02
+
+/* ---------- Net address ---------- */
+
+typedef struct portillia_net_addr {
+    char network[16];
+    char address[256];
+} portillia_net_addr_t;
+
+/* ---------- Net connection ---------- */
+
+typedef struct portillia_net_conn {
+    int fd;
+    SSL *ssl;          /**< inner TLS (claimed session) */
+    SSL *outer_ssl;    /**< outer TLS (reverse transport) */
+    bool owns_ssl;
+    portillia_net_addr_t local;
+    portillia_net_addr_t remote;
+    bool closed;
+} portillia_net_conn_t;
+
+/* ---------- Identity ---------- */
+
 typedef struct portillia_identity {
-    cwist_sstring *name;        /**< Name label */
-    cwist_sstring *address;     /**< Unique network address */
-    cwist_sstring *public_key;  /**< Ed25519 public key */
-    cwist_sstring *private_key; /**< Ed25519 private key */
-} portillia_identity;
+    char *name;        /**< may be NULL */
+    char *address;     /**< EVM address, e.g. 0x... */
+    char *public_key;  /**< json:"-"  — excluded from serialization */
+    char *private_key; /**< json:"-"  — excluded from serialization */
+} portillia_identity_t;
 
-/**
- * @struct portillia_lease_metadata
- * @brief Metadata for a public service lease.
- */
+typedef struct portillia_relay_identity {
+    portillia_identity_t base;
+    char *admin_secret_key;       /**< json:"-" */
+    char *wireguard_public_key;   /**< json:"-" */
+    char *wireguard_private_key;  /**< json:"-" */
+} portillia_relay_identity_t;
+
+/* ---------- Lease & Metadata ---------- */
+
 typedef struct portillia_lease_metadata {
-    cwist_sstring *description; /**< Service description */
-    cwist_sstring *owner;       /**< Owner contact/identifier */
-    cwist_sstring *thumbnail;   /**< Service thumbnail URL */
-    cwist_sstring **tags;       /**< Array of searchable tags */
-    size_t tags_count;          /**< Number of tags */
-    bool hide;                  /**< Hide from public listings */
-} portillia_lease_metadata;
+    char *description;
+    char *owner;
+    char *thumbnail;
+    char **tags;
+    size_t tags_count;
+    bool hide;
+} portillia_lease_metadata_t;
 
-/**
- * @struct portillia_lease
- * @brief Active lease information.
- */
 typedef struct portillia_lease {
-    cwist_sstring *name;        /**< Lease name */
-    time_t expires_at;          /**< Expiration timestamp */
-    time_t first_seen_at;       /**< Creation timestamp */
-    time_t last_seen_at;        /**< Last heartbeat timestamp */
-    cwist_sstring *hostname;    /**< Public hostname */
-    bool udp_enabled;           /**< Is UDP supported */
-    bool tcp_enabled;           /**< Is raw TCP supported */
-    cwist_sstring *tcp_addr;    /**< Public TCP port address */
-    portillia_lease_metadata metadata; /**< Associated lease metadata */
-    int ready;                  /**< Readiness status flag */
-    
-    // Multi-hop fields
-    cwist_sstring *hop_token;             /**< Token to match for this hop */
-    cwist_sstring *hop_next_overlay_ipv4; /**< Next hop overlay address */
-    cwist_sstring *hop_next_token;        /**< Token to send to next hop */
-} portillia_lease;
+    char *name;
+    char *hostname;
+    time_t expires_at;
+    time_t first_seen_at;
+    time_t last_seen_at;
+    bool udp_enabled;
+    bool tcp_enabled;
+    char *tcp_addr;
+    portillia_lease_metadata_t metadata;
+    int ready;
 
-/**
- * @struct portillia_relay_descriptor
- * @brief Relay node capabilities and registration info.
- */
+    /* Multi-hop fields */
+    char *hop_token;
+    char *hop_next_overlay_ipv4;
+    char *hop_next_token;
+} portillia_lease_t;
+
+typedef struct portillia_admin_lease {
+    portillia_lease_t base;
+    char *identity_key;
+    char *address;
+    int64_t bps;
+    char *client_ip;
+    char *reported_ip;
+    bool is_approved;
+    bool is_banned;
+    bool is_denied;
+    bool is_ip_banned;
+} portillia_admin_lease_t;
+
+/* ---------- Relay Descriptor ---------- */
+
 typedef struct portillia_relay_descriptor {
-    cwist_sstring *address;     /**< Relay public address */
-    cwist_sstring *version;     /**< Relay binary version */
-    time_t issued_at;           /**< Descriptor issuance */
-    time_t expires_at;          /**< Descriptor validity */
-    cwist_sstring *api_https_addr; /**< HTTPS API endpoint */
-    cwist_sstring *wireguard_public_key; /**< Relay WG public key */
-    int wireguard_port;         /**< WG listen port */
-    bool supports_overlay;      /**< Supports overlay routing */
-    bool supports_udp;          /**< Supports UDP relaying */
-    bool supports_tcp;          /**< Supports raw TCP relaying */
-    int64_t active_connections; /**< Concurrent connection count */
-    double tcp_bps;             /**< Throughput in bits per second */
-    cwist_sstring *signature;   /**< Descriptor signature */
-} portillia_relay_descriptor;
+    char *address;
+    char *version;
+    time_t issued_at;
+    time_t expires_at;
+    char *api_https_addr;
+    char *wireguard_public_key;
+    int wireguard_port;
+    bool supports_overlay;
+    bool supports_udp;
+    bool supports_tcp;
+    int64_t active_connections;
+    double tcp_bps;
+    char *signature;
+} portillia_relay_descriptor_t;
 
-/**
- * @struct portillia_datagram_frame
- * @brief Encapsulates a relayed datagram.
- */
+typedef struct portillia_relay_descriptor portillia_relay_descriptor;
+
+/* ---------- Transport ---------- */
+
 typedef struct portillia_datagram_frame {
-    uint32_t flow_id;           /**< Unique flow identifier */
-    uint8_t *payload;           /**< Datagram content */
-    size_t payload_len;         /**< Content length */
-    cwist_sstring *address;     /**< Destination address */
-    cwist_sstring *relay_url;   /**< Originating relay */
-    cwist_sstring *udp_addr;    /**< Source UDP address */
-} portillia_datagram_frame;
+    uint32_t flow_id;
+    uint8_t *payload;
+    size_t payload_len;
+    char *address;
+    char *relay_url;
+    char *udp_addr;
+} portillia_datagram_frame_t;
 
-#ifndef CWIST_SUCCESS
-#define CWIST_SUCCESS 0
+/* ---------- API Envelope ---------- */
+
+typedef struct portillia_api_error {
+    char *code;
+    char *message;
+} portillia_api_error_t;
+
+typedef struct portillia_api_request_error {
+    int status_code;
+    char *code;
+    char *message;
+} portillia_api_request_error_t;
+
+#define PORTILLIA_API_ENVELOPE_DECL(T, name) \
+    typedef struct portillia_api_envelope_##name { \
+        T data; \
+        portillia_api_error_t *error; \
+        bool ok; \
+    } portillia_api_envelope_##name##_t
+
+/* ---------- API Request / Response structs ---------- */
+
+typedef struct portillia_register_request {
+    char *challenge_id;
+    char *siwe_message;
+    char *siwe_signature;
+    char *reported_ip;
+} portillia_register_request_t;
+
+typedef struct portillia_register_challenge_request {
+    portillia_identity_t identity;
+    portillia_lease_metadata_t metadata;
+    int ttl;
+    bool udp_enabled;
+    bool tcp_enabled;
+    char *hop_token;
+} portillia_register_challenge_request_t;
+
+typedef struct portillia_register_challenge_response {
+    char *challenge_id;
+    time_t expires_at;
+    char *siwe_message;
+} portillia_register_challenge_response_t;
+
+typedef struct portillia_register_response {
+    portillia_identity_t identity;
+    time_t expires_at;
+    char *hostname;
+    char *access_token;
+    char *keyless_url;
+    int sni_port;
+    char *udp_addr;
+    bool udp_enabled;
+    char *tcp_addr;
+    bool tcp_enabled;
+} portillia_register_response_t;
+
+typedef struct portillia_renew_request {
+    char *access_token;
+    int ttl;
+    char *reported_ip;
+} portillia_renew_request_t;
+
+typedef struct portillia_renew_response {
+    time_t expires_at;
+    char *access_token;
+} portillia_renew_response_t;
+
+typedef struct portillia_unregister_request {
+    char *access_token;
+} portillia_unregister_request_t;
+
+typedef struct portillia_hop_route {
+    char *owner_public_key;
+    char *relay_url;
+    char *match_hostname;
+    char *match_token;
+    portillia_lease_metadata_t metadata;
+    portillia_relay_descriptor_t forward_relay;
+    char *forward_token;
+    time_t first_seen_at;
+    time_t expires_at;
+    char *signature;
+} portillia_hop_route_t;
+
+typedef struct portillia_discovery_response {
+    char *protocol_version;
+    time_t generated_at;
+    portillia_relay_descriptor_t *relays;
+    size_t relays_count;
+} portillia_discovery_response_t;
+
+typedef struct portillia_discovery_announce_request {
+    char *protocol_version;
+    portillia_relay_descriptor_t descriptor;
+} portillia_discovery_announce_request_t;
+
+typedef struct portillia_discovery_announce_response {
+    char *protocol_version;
+    bool accepted;
+} portillia_discovery_announce_response_t;
+
+/* ---------- Agent Status ---------- */
+
+typedef struct portillia_agent_relay_status {
+    char *relay_url;
+    char *public_url;
+    bool connecting;
+    bool bootstrap;
+    bool banned;
+    bool supports_overlay;
+    bool supports_udp;
+    bool supports_tcp;
+} portillia_agent_relay_status_t;
+
+typedef struct portillia_agent_tunnel_status {
+    char *id;
+    char *name;
+    char *state;
+    char *target_addr;
+    char *last_error;
+    char **multi_hop;
+    size_t multi_hop_count;
+    portillia_agent_relay_status_t *relays;
+    size_t relays_count;
+} portillia_agent_tunnel_status_t;
+
+typedef struct portillia_agent_status_response {
+    char *control_addr;
+    portillia_agent_tunnel_status_t *tunnels;
+    size_t tunnels_count;
+} portillia_agent_status_response_t;
+
+typedef struct portillia_agent_tunnel_request {
+    char *id;
+    char *name;
+    char *target_addr;
+    char **relay_urls;
+    size_t relay_urls_count;
+} portillia_agent_tunnel_request_t;
+
+typedef struct portillia_agent_relay_request {
+    char *relay_url;
+} portillia_agent_relay_request_t;
+
+typedef struct portillia_agent_multi_hop_request {
+    char **relays;
+    size_t relays_count;
+} portillia_agent_multi_hop_request_t;
+
+/* ---------- Admin API types ---------- */
+
+typedef struct portillia_domain_response {
+    char *protocol_version;
+    char *sdk_version;
+    char *discovery_version;
+} portillia_domain_response_t;
+
+typedef struct portillia_tunnel_status_response {
+    char *target_addr;
+    char *hostname;
+    time_t expires_at;
+    bool ready;
+} portillia_tunnel_status_response_t;
+
+typedef struct portillia_admin_login_request {
+    char *password;
+} portillia_admin_login_request_t;
+
+typedef struct portillia_admin_login_response {
+    char *token;
+    time_t expires_at;
+} portillia_admin_login_response_t;
+
+typedef struct portillia_admin_auth_status_response {
+    bool authenticated;
+    char *username;
+} portillia_admin_auth_status_response_t;
+
+typedef struct portillia_admin_snapshot_response {
+    portillia_admin_lease_t *leases;
+    size_t leases_count;
+} portillia_admin_snapshot_response_t;
+
+typedef struct portillia_admin_approval_mode_request {
+    bool manual_approval;
+} portillia_admin_approval_mode_request_t;
+
+typedef struct portillia_admin_approval_mode_response {
+    bool manual_approval;
+} portillia_admin_approval_mode_response_t;
+
+typedef struct portillia_admin_landing_page_settings_request {
+    bool enabled;
+    char *title;
+    char *description;
+} portillia_admin_landing_page_settings_request_t;
+
+typedef struct portillia_admin_landing_page_settings_response {
+    bool enabled;
+    char *title;
+    char *description;
+} portillia_admin_landing_page_settings_response_t;
+
+typedef struct portillia_admin_bps_request {
+    char *address;
+    int64_t bps;
+} portillia_admin_bps_request_t;
+
+typedef struct portillia_admin_udp_settings_request {
+    bool enabled;
+    int min_port;
+    int max_port;
+} portillia_admin_udp_settings_request_t;
+
+typedef struct portillia_admin_udp_settings_response {
+    bool enabled;
+    int min_port;
+    int max_port;
+} portillia_admin_udp_settings_response_t;
+
+typedef struct portillia_admin_tcp_port_settings_request {
+    bool enabled;
+    int min_port;
+    int max_port;
+} portillia_admin_tcp_port_settings_request_t;
+
+typedef struct portillia_admin_tcp_port_settings_response {
+    bool enabled;
+    int min_port;
+    int max_port;
+} portillia_admin_tcp_port_settings_response_t;
+
+/* ---------- Lifecycle helpers ---------- */
+
+void portillia_identity_init(portillia_identity_t *id);
+void portillia_identity_cleanup(portillia_identity_t *id);
+void portillia_identity_copy(portillia_identity_t *dst, const portillia_identity_t *src);
+
+void portillia_relay_identity_init(portillia_relay_identity_t *id);
+void portillia_relay_identity_cleanup(portillia_relay_identity_t *id);
+
+void portillia_lease_metadata_init(portillia_lease_metadata_t *m);
+void portillia_lease_metadata_cleanup(portillia_lease_metadata_t *m);
+void portillia_lease_metadata_copy(portillia_lease_metadata_t *dst, const portillia_lease_metadata_t *src);
+
+void portillia_lease_init(portillia_lease_t *l);
+void portillia_lease_cleanup(portillia_lease_t *l);
+void portillia_lease_copy(portillia_lease_t *dst, const portillia_lease_t *src);
+
+void portillia_relay_descriptor_init(portillia_relay_descriptor_t *d);
+void portillia_relay_descriptor_cleanup(portillia_relay_descriptor_t *d);
+void portillia_relay_descriptor_copy(portillia_relay_descriptor_t *dst, const portillia_relay_descriptor_t *src);
+
+void portillia_datagram_frame_init(portillia_datagram_frame_t *f);
+void portillia_datagram_frame_cleanup(portillia_datagram_frame_t *f);
+void portillia_datagram_frame_copy(portillia_datagram_frame_t *dst, const portillia_datagram_frame_t *src);
+
+void portillia_hop_route_init(portillia_hop_route_t *r);
+void portillia_hop_route_cleanup(portillia_hop_route_t *r);
+void portillia_hop_route_copy(portillia_hop_route_t *dst, const portillia_hop_route_t *src);
+
+void portillia_agent_relay_status_init(portillia_agent_relay_status_t *s);
+void portillia_agent_relay_status_cleanup(portillia_agent_relay_status_t *s);
+
+void portillia_agent_tunnel_status_init(portillia_agent_tunnel_status_t *s);
+void portillia_agent_tunnel_status_cleanup(portillia_agent_tunnel_status_t *s);
+
+void portillia_net_conn_init(portillia_net_conn_t *c);
+void portillia_net_conn_cleanup(portillia_net_conn_t *c);
+
+void portillia_discovery_response_init(portillia_discovery_response_t *r);
+void portillia_discovery_response_cleanup(portillia_discovery_response_t *r);
+void portillia_domain_response_cleanup(portillia_domain_response_t *r);
+void portillia_register_challenge_response_cleanup(portillia_register_challenge_response_t *r);
+void portillia_register_response_cleanup(portillia_register_response_t *r);
+void portillia_renew_response_cleanup(portillia_renew_response_t *r);
+
+#ifdef __cplusplus
+}
 #endif
-#ifndef CWIST_FAILURE
-#define CWIST_FAILURE -1
-#endif
 
-// Identity functions
-portillia_identity *portillia_identity_create(void);
-void portillia_identity_destroy(portillia_identity *id);
-portillia_identity *portillia_identity_copy(const portillia_identity *id);
-
-// Metadata functions
-void portillia_lease_metadata_init(portillia_lease_metadata *m);
-void portillia_lease_metadata_cleanup(portillia_lease_metadata *m);
-void portillia_lease_metadata_copy(portillia_lease_metadata *dst, const portillia_lease_metadata *src);
-
-// Lease functions
-portillia_lease *portillia_lease_create(void);
-void portillia_lease_destroy(portillia_lease *l);
-
-#endif // PORTILLIA_TYPES_H
+#endif /* PORTILLIA_TYPES_H */

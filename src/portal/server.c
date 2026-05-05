@@ -214,7 +214,9 @@ void lease_registry_register(lease_registry *r, const char *hostname, const char
     pthread_mutex_unlock(&r->mu);
 }
 
-void portillia_registry_register_hop(lease_registry *r, const char *hop_token, const char *next_ipv4, const char *next_token, const char *identity_key) {
+void portillia_registry_register_hop(const char *hop_token, const char *next_ipv4, const char *next_token, const char *identity_key) {
+    if (!global_server || !global_server->registry) return;
+    lease_registry *r = global_server->registry;
     pthread_mutex_lock(&r->mu);
     time_t now = time(NULL);
     if (r->count < MAX_RECORDS) {
@@ -455,4 +457,14 @@ char* portillia_registry_to_json() {
 
 portillia_settings* portillia_server_get_settings() {
     return global_server ? global_server->settings : NULL;
+}
+
+const char* portillia_server_root_hostname() {
+    if (!global_server || !global_server->registry) return NULL;
+    return global_server->registry->root_hostname;
+}
+
+int portillia_server_sni_port() {
+    if (!global_server) return 443;
+    return global_server->sni_port;
 }

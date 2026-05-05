@@ -56,6 +56,7 @@ void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descrip
  * @brief Main loop for discovery maintenance (polling and announcing).
  */
 void *discovery_maintenance_loop(void *arg);
+void portillia_discovery_publish_self(discovery_config *cfg);
 
 /**
  * @brief Creates a new relay set.
@@ -65,7 +66,7 @@ portillia_relay_set* portillia_relay_set_new();
 /**
  * @brief Frees a relay set and all its descriptors.
  */
-void portillia_relay_set_free(portillia_relay_set *set);
+void portillia_discovery_relay_set_free(portillia_relay_set *set);
 
 /**
  * @brief Updates or inserts a relay descriptor into the set.

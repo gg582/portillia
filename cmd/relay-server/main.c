@@ -166,7 +166,7 @@ void fallback_spa_handler_clean(cwist_http_request *req, cwist_http_response *re
     char *r1 = replace_str(final_html, "[%OG_TITLE%]", "Portal Proxy Gateway");
     char *r2 = replace_str(r1, "[%OG_DESCRIPTION%]", "Transform your local services into web-accessible endpoints. Instant access from anywhere.");
     char *r3 = replace_str(r2, "[%LANDING_PAGE_ENABLED%]", "true");
-    char *r4 = replace_str(r3, "[%RELEASE_VERSION%]", "v2.1.8-c");
+    char *r4 = replace_str(r3, "[%RELEASE_VERSION%]", PORTILLIA_RELEASE_VERSION);
     
     cwist_sstring_assign(res->body, r4);
     free(final_html); free(r1); free(r2); free(r3); free(r4);
@@ -410,6 +410,7 @@ int main(void) {
     disc_cfg->bootstrap_urls = strlen(bootstraps) > 0 ? strdup(bootstraps) : NULL;
     disc_cfg->relay_set = portillia_relay_set_new();
     global_disc_cfg = disc_cfg;
+    portillia_discovery_publish_self(disc_cfg);
 
     pthread_t sni_tid, wg_tid, disc_tid;
     pthread_create(&sni_tid, NULL, sni_listener_thread, sni_args);

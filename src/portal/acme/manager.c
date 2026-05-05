@@ -7,14 +7,54 @@
 #include <sys/stat.h>
 #include <portillia/utils/log.h>
 #include <portillia/utils/network.h>
+#include <curl/curl.h>
 
+static size_t curl_write_cb(void *contents, size_t size, size_t nmemb, void *userp) {
+    size_t total = size * nmemb;
+    char **buf = (char **)userp;
+    size_t old_len = *buf ? strlen(*buf) : 0;
+    char *next = realloc(*buf, old_len + total + 1);
+    if (!next) return 0;
+    memcpy(next + old_len, contents, total);
+    next[old_len + total] = '\0';
+    *buf = next;
+    return total;
+}
 
+static char *fetch_public_ip(void) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+    char *buf = NULL;
+    curl_easy_setopt(curl, CURLOPT_URL, "https://ifconfig.me/ip");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    CURLcode rc = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+    if (rc != CURLE_OK || !buf) {
+        free(buf);
+        return NULL;
+    }
+    /* Trim whitespace */
+    size_t len = strlen(buf);
+    while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r' || buf[len-1] == ' ' || buf[len-1] == '\t')) {
+        buf[--len] = '\0';
+    }
+    if (len == 0) {
+        free(buf);
+        return NULL;
+    }
+    return buf;
+}
 
 static int ensure_acme_account(portillia_acme_manager *m) {
     char account_key_path[512];
     snprintf(account_key_path, sizeof(account_key_path), "%s/acme-account.key", m->cfg.key_dir);
     m->acme_account_key_path = strdup(account_key_path);
-    m->acme_email = strdup("acme@example.com"); // Placeholder, in Go it's derived from root host
+    char email[256];
+    snprintf(email, sizeof(email), "acme@%s", m->cfg.base_domain ? m->cfg.base_domain : "example.com");
+    m->acme_email = strdup(email);
 
     if (access(m->acme_account_key_path, F_OK) != 0) {
         LOG_INFO("ACME: No account key found, generating a new one...");
@@ -196,12 +236,15 @@ int portillia_acme_manager_ensure_certificate(portillia_acme_manager *m, char **
 int portillia_acme_manager_sync_dns(portillia_acme_manager *m) {
     if (!m->dns) return CWIST_SUCCESS;
 
-    // In a real implementation, we would resolve the public IP.
-    // Let's use a placeholder or implement a simple IP resolver.
-    const char *public_ip = "127.0.0.1"; // Placeholder
-    
+    char *public_ip = fetch_public_ip();
+    if (!public_ip) {
+        public_ip = strdup("127.0.0.1");
+        LOG_WARN("Failed to detect public IP, falling back to %s", public_ip);
+    }
     LOG_INFO("Syncing DNS A records for %s to %s using %s", m->cfg.base_domain, public_ip, m->dns->name(m->dns));
-    return m->dns->ensure_a_records(m->dns, m->cfg.base_domain, public_ip);
+    int res = m->dns->ensure_a_records(m->dns, m->cfg.base_domain, public_ip);
+    free(public_ip);
+    return res;
 }
 
 int portillia_acme_manager_sync_ens_gasless(portillia_acme_manager *m) {

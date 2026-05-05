@@ -1,11 +1,10 @@
+#include <portillia/sdk/expose.h>
 #include <portillia/types/types.h>
 #include <portillia/utils/log.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
-
-extern void* portillia_expose(const char *target, const char *relay_url);
 
 void print_usage() {
     printf("portal-tunnel <command> [args]\n");
@@ -37,10 +36,25 @@ int main(int argc, char **argv) {
         }
 
         LOG_INFO("SDK: Starting portal tunnel; target: %s, relay: %s", target, relay);
-        portillia_expose(target, relay);
-        
+
+        portillia_expose_config_t cfg = {0};
+        cfg.target_addr = (char *)target;
+        cfg.relay_urls = (char **)&relay;
+        cfg.relay_urls_count = 1;
+        cfg.tcp_enabled = true;
+
+        portillia_exposure_t *exp = portillia_expose(&cfg);
+        if (!exp) {
+            LOG_ERROR("SDK: Failed to create exposure");
+            return 1;
+        }
+
         // Keep main alive
-        while(1) sleep(60);
+        while (!exp->done) {
+            sleep(1);
+        }
+
+        portillia_exposure_close(exp);
     } else {
         print_usage();
         return 1;

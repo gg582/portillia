@@ -29,7 +29,7 @@ struct portillia_acme_manager {
     // ACME Account details
     char *acme_account_key_path;
     char *acme_email;
-    // Placeholder for lego client in C context
+    // C implementation shells out to lego CLI for certificate provisioning
 };
 
 typedef struct portillia_acme_manager portillia_acme_manager;
