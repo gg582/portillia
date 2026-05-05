@@ -5,6 +5,7 @@
 #include <portillia/sdk/api_client.h>
 #include <portillia/utils/crypto.h>
 #include <portillia/utils/log.h>
+#include <portillia/utils/network.h>
 #include <cjson/cJSON.h>
 #include <curl/curl.h>
 #include <openssl/sha.h>
@@ -636,9 +637,8 @@ static int http_json(portillia_http_client_t *client,
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "portillia-c-sdk/1");
-    if (strncmp(url, "https://", 8) == 0 && client->insecure_skip_verify) {
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    if (strncmp(url, "https://", 8) == 0) {
+        portillia_network_configure_curl_tls(curl, client->insecure_skip_verify);
     }
 
     if (strcmp(method, "GET") == 0) {

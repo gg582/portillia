@@ -1,5 +1,6 @@
 #include <portillia/transport/quic_conn.h>
 #include <portillia/utils/log.h>
+#include <portillia/utils/network.h>
 #include <portillia/mem/gc.h>
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto.h>
@@ -295,10 +296,27 @@ portillia_quic_conn_t *portillia_quic_conn_new(const char *host, int port) {
         free(qc);
         return NULL;
     }
+    if (portillia_network_configure_ssl_client_ctx(qc->ssl_ctx, false) != 0) {
+        LOG_ERROR("QUIC: failed to configure TLS verification context");
+        SSL_CTX_free(qc->ssl_ctx);
+        ngtcp2_conn_del(qc->conn);
+        close(fd);
+        free(qc);
+        return NULL;
+    }
 
     qc->ssl = SSL_new(qc->ssl_ctx);
     if (!qc->ssl) {
         LOG_ERROR("QUIC: SSL_new failed");
+        SSL_CTX_free(qc->ssl_ctx);
+        ngtcp2_conn_del(qc->conn);
+        close(fd);
+        free(qc);
+        return NULL;
+    }
+    if (!SSL_set_tlsext_host_name(qc->ssl, host) || !SSL_set1_host(qc->ssl, host)) {
+        LOG_ERROR("QUIC: failed to configure SNI/hostname verification for %s", host);
+        SSL_free(qc->ssl);
         SSL_CTX_free(qc->ssl_ctx);
         ngtcp2_conn_del(qc->conn);
         close(fd);

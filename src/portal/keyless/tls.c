@@ -1,5 +1,6 @@
 #include <portillia/portal/keyless/tls.h>
 #include <portillia/utils/log.h>
+#include <portillia/utils/network.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/x509.h>
@@ -27,7 +28,9 @@ static size_t curl_write_cb(void *contents, size_t size, size_t nmemb, void *use
     return total;
 }
 
-static char *fetch_cert_chain(const char *endpoint, const char *server_name) {
+static char *fetch_cert_chain(const char *endpoint,
+                              const char *server_name,
+                              bool insecure_skip_verify) {
     CURL *curl = curl_easy_init();
     if (!curl) return NULL;
     char url[2048];
@@ -37,8 +40,7 @@ static char *fetch_cert_chain(const char *endpoint, const char *server_name) {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    portillia_network_configure_curl_tls(curl, insecure_skip_verify);
     CURLcode rc = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
     if (rc != CURLE_OK) {
@@ -53,6 +55,7 @@ static char *fetch_cert_chain(const char *endpoint, const char *server_name) {
 typedef struct {
     char *endpoint;
     char *server_name;
+    bool insecure_skip_verify;
 } remote_signer_ctx_t;
 
 static char *base64_encode(const uint8_t *data, size_t len) {
@@ -135,8 +138,7 @@ static int remote_rsa_priv_enc(int flen, const unsigned char *from, unsigned cha
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    portillia_network_configure_curl_tls(curl, rs->insecure_skip_verify);
 
     CURLcode rc = curl_easy_perform(curl);
     curl_slist_free_all(headers);
@@ -174,10 +176,13 @@ static RSA_METHOD *get_remote_rsa_method(void) {
     return method;
 }
 
-static remote_signer_ctx_t *remote_signer_ctx_new(const char *endpoint, const char *server_name) {
+static remote_signer_ctx_t *remote_signer_ctx_new(const char *endpoint,
+                                                  const char *server_name,
+                                                  bool insecure_skip_verify) {
     remote_signer_ctx_t *ctx = calloc(1, sizeof(remote_signer_ctx_t));
     ctx->endpoint = strdup(endpoint);
     ctx->server_name = server_name ? strdup(server_name) : NULL;
+    ctx->insecure_skip_verify = insecure_skip_verify;
     return ctx;
 }
 
@@ -189,13 +194,15 @@ static remote_signer_ctx_t *remote_signer_ctx_new(const char *endpoint, const ch
  * Implements full remote signing via OpenSSL RSA_METHOD.  The private
  * key operations are forwarded to the keyless endpoint over HTTPS.
  */
-void *portillia_keyless_build_tls_ctx(const char *keyless_url, const char *hostname) {
+void *portillia_keyless_build_tls_ctx(const char *keyless_url,
+                                      const char *hostname,
+                                      bool insecure_skip_verify) {
     if (!keyless_url) return NULL;
 
     SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
     if (!ctx) return NULL;
 
-    char *cert_pem = fetch_cert_chain(keyless_url, hostname);
+    char *cert_pem = fetch_cert_chain(keyless_url, hostname, insecure_skip_verify);
     if (cert_pem) {
         BIO *bio = BIO_new_mem_buf(cert_pem, -1);
         if (bio) {
@@ -232,7 +239,7 @@ void *portillia_keyless_build_tls_ctx(const char *keyless_url, const char *hostn
     BN_set_word(e, RSA_F4);
     BN_set_word(n, 0);
     RSA_set0_key(rsa, n, e, NULL);
-    RSA_set_app_data(rsa, remote_signer_ctx_new(keyless_url, hostname));
+    RSA_set_app_data(rsa, remote_signer_ctx_new(keyless_url, hostname, insecure_skip_verify));
 
     EVP_PKEY *pkey = EVP_PKEY_new();
     EVP_PKEY_assign_RSA(pkey, rsa);

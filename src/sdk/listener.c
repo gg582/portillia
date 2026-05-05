@@ -5,6 +5,7 @@
 #include <portillia/sdk/listener.h>
 #include <portillia/portal/keyless/tls.h>
 #include <portillia/utils/log.h>
+#include <portillia/utils/network.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
@@ -132,9 +133,12 @@ static int open_reverse_session(portillia_listener_t *l, SSL **out_outer_ssl) {
             close(conn_fd);
             return -1;
         }
-        SSL_CTX_set_default_verify_paths(ctx);
-        /* For self-signed or relay certs we often need to skip verification in SDK context */
-        SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+        if (portillia_network_configure_ssl_client_ctx(ctx, l->insecure_skip_verify) != 0) {
+            SSL_CTX_free(ctx);
+            close(conn_fd);
+            errno = EIO;
+            return -1;
+        }
         outer_ssl = SSL_new(ctx);
         SSL_CTX_free(ctx);
         if (!outer_ssl) {
@@ -147,6 +151,12 @@ static int open_reverse_session(portillia_listener_t *l, SSL **out_outer_ssl) {
             return -1;
         }
         if (!SSL_set_tlsext_host_name(outer_ssl, host)) {
+            SSL_free(outer_ssl);
+            close(conn_fd);
+            errno = EIO;
+            return -1;
+        }
+        if (!l->insecure_skip_verify && !SSL_set1_host(outer_ssl, host)) {
             SSL_free(outer_ssl);
             close(conn_fd);
             errno = EIO;
@@ -346,7 +356,7 @@ static int register_and_configure(portillia_listener_t *l) {
     if (!keyless_url || !keyless_url[0]) {
         keyless_url = l->relay_url;
     }
-    void *tls_ctx = portillia_keyless_build_tls_ctx(keyless_url, resp.hostname);
+    void *tls_ctx = portillia_keyless_build_tls_ctx(keyless_url, resp.hostname, l->insecure_skip_verify);
 
     /* Store lease */
     portillia_listener_lease_t *lease = PORTILLIA_GC_NEW_ZERO(portillia_listener_lease_t);

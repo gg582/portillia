@@ -1,9 +1,13 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <arpa/inet.h>
+#include <curl/curl.h>
+#include <openssl/ssl.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#include <portillia/utils/network.h>
 
 /**
  * @brief Check if an IP address is within a CIDR range.
@@ -52,4 +56,17 @@ int hostname_matches(const char *pattern, const char *hostname) {
         // Exact match
         return strcmp(pattern, hostname) == 0;
     }
+}
+
+void portillia_network_configure_curl_tls(CURL *curl, bool insecure_skip_verify) {
+    if (!curl) return;
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, insecure_skip_verify ? 0L : 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, insecure_skip_verify ? 0L : 2L);
+}
+
+int portillia_network_configure_ssl_client_ctx(SSL_CTX *ctx, bool insecure_skip_verify) {
+    if (!ctx) return -1;
+    SSL_CTX_set_verify(ctx, insecure_skip_verify ? SSL_VERIFY_NONE : SSL_VERIFY_PEER, NULL);
+    if (insecure_skip_verify) return 0;
+    return SSL_CTX_set_default_verify_paths(ctx) == 1 ? 0 : -1;
 }

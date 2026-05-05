@@ -296,8 +296,7 @@ static char *fetch_remote_registry(void) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &res);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    portillia_network_configure_curl_tls(curl, false);
     CURLcode code = curl_easy_perform(curl);
     char *result = NULL;
     if (code == CURLE_OK) {

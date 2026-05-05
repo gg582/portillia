@@ -4,6 +4,8 @@
 #ifndef PORTILLIA_PORTAL_KEYLESS_TLS_H
 #define PORTILLIA_PORTAL_KEYLESS_TLS_H
 
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -12,7 +14,9 @@ extern "C" {
  * @brief Build a server-side TLS context for the leased hostname.
  * @return SSL_CTX* on success, NULL on error.
  */
-void *portillia_keyless_build_tls_ctx(const char *keyless_url, const char *hostname);
+void *portillia_keyless_build_tls_ctx(const char *keyless_url,
+                                      const char *hostname,
+                                      bool insecure_skip_verify);
 
 void portillia_tls_setup(void);
 

@@ -6,7 +6,10 @@
 #ifndef PORTILLIA_UTILS_NETWORK_H
 #define PORTILLIA_UTILS_NETWORK_H
 
+#include <stdbool.h>
 #include <stdint.h>
+#include <curl/curl.h>
+#include <openssl/ssl.h>
 
 /**
  * @brief Listens for incoming TCP connections.
@@ -31,5 +34,16 @@ int portillia_network_ip_in_cidr(const char *ip, const char *cidr);
  * @return 1 if matches, 0 if not.
  */
 int hostname_matches(const char *pattern, const char *hostname);
+
+/**
+ * @brief Apply the SDK's TLS verification policy to a curl handle.
+ */
+void portillia_network_configure_curl_tls(CURL *curl, bool insecure_skip_verify);
+
+/**
+ * @brief Apply the SDK's TLS verification policy to an OpenSSL client context.
+ * @return 0 on success, -1 on error.
+ */
+int portillia_network_configure_ssl_client_ctx(SSL_CTX *ctx, bool insecure_skip_verify);
 
 #endif // PORTILLIA_UTILS_NETWORK_H
