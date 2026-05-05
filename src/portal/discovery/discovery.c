@@ -94,6 +94,7 @@ static void ensure_descriptor_identity() {
 
 static int sign_descriptor_compact_b64(const char *canonical_json, char *out_b64, size_t out_len) {
     ensure_descriptor_identity();
+    LOG_INFO("SIGN_PRIV_KEY priv=%s addr=%s", g_desc_priv_hex, g_desc_addr);
     if (!canonical_json || !canonical_json[0] || !g_desc_priv_hex[0]) return -1;
 
     uint8_t seckey[32];
@@ -410,6 +411,7 @@ static void discovery_task(ttak_task_t *task, void *arg) {
 
     portillia_relay_descriptor desc = {0};
     ensure_descriptor_identity();
+    LOG_INFO("DISCOVERY_IDENTITY priv=%s addr=%s", g_desc_priv_hex, g_desc_addr);
     desc.address = strdup(g_desc_addr);
     desc.api_https_addr = strdup(cfg->relay_url);
     desc.version = strdup("7");
