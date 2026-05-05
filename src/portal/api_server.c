@@ -222,7 +222,7 @@ static bool verify_siwe_signature_address(const char *siwe_message, const char *
     if (recid < 0 || recid > 3) return false;
 
     char prefix[64];
-    snprintf(prefix, sizeof(prefix), "\x19Ethereum Signed Message:\n%zu", strlen(siwe_message));
+    snprintf(prefix, sizeof(prefix), "\x19" "Ethereum Signed Message:\n%zu", strlen(siwe_message));
     size_t payload_len = strlen(prefix) + strlen(siwe_message);
     uint8_t *payload = malloc(payload_len);
     if (!payload) return false;
