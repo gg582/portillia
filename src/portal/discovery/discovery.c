@@ -360,14 +360,19 @@ void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descrip
                 cJSON_AddItemToObject(root, "descriptor", d);
                 
                 char *json = cJSON_PrintUnformatted(root);
+                LOG_INFO("relay discovery announce payload=%s", json);
                 
                 struct curl_slist *announce_headers = NULL;
                 announce_headers = curl_slist_append(announce_headers, "Content-Type: application/json");
+                struct curl_response res = { .data = malloc(1), .size = 0 };
+                res.data[0] = '\0';
                 curl_easy_setopt(curl, CURLOPT_URL, announce_url);
                 curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
                 curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json);
                 curl_easy_setopt(curl, CURLOPT_HTTPHEADER, announce_headers);
                 curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+                curl_easy_setopt(curl, CURLOPT_WRITEDATA, &res);
                 CURLcode code = curl_easy_perform(curl);
                 if (code == CURLE_OK) {
                     long status = 0;
@@ -375,11 +380,12 @@ void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descrip
                     if (status >= 200 && status < 300) {
                         LOG_INFO("relay discovery announce succeeded relay=%s", token);
                     } else {
-                        LOG_WARN("relay discovery announce failed error=\"http status %ld\" relay=%s", status, token);
+                        LOG_WARN("relay discovery announce failed error=\"http status %ld\" relay=%s response=%s", status, token, res.data ? res.data : "");
                     }
                 } else {
                     LOG_WARN("relay discovery announce failed error=\"%s\" relay=%s", curl_easy_strerror(code), token);
                 }
+                free(res.data);
                 
                 free(json);
                 cJSON_Delete(root);
