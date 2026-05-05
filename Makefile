@@ -1,5 +1,5 @@
 CC ?= gcc
-CFLAGS = -Wall -Wextra -O3 -I./include -I./libs/cwist/include -I./libs/cwist/lib/cjson -I./libs/libttak/include -I./libs/secp256k1/include -pthread
+CFLAGS = -Wall -Wextra -O3 -I./include -I./libs/cwist/include -I./libs/cwist/lib/cjson -I./libs/libttak/include -I./libs/secp256k1/include -I./libs/keccak -pthread
 LDFLAGS = -L./libs/cwist -L./libs/cwist/lib/cjson -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -L./libs/secp256k1/.libs -lcwist -lttak -lssl -lcrypto -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread -lcrypto -lsecp256k1 -lm
 
 # ngtcp2 detection (supports both distro packages and source builds)
@@ -36,7 +36,7 @@ SRC_SDK = src/sdk/expose.c src/sdk/listener.c src/sdk/api_client.c src/sdk/http_
 SRC_COMMON_API = src/portal/api_server.c
 SRC_RELAY_API = src/portal/api_server_relay.c
 
-ALL_SRCS = $(SRC_MEM) $(SRC_TYPES) $(SRC_UTILS) $(SRC_DISCOVERY) $(SRC_TRANSPORT) $(SRC_PORTAL) $(SRC_SDK) $(SRC_COMMON_API)
+ALL_SRCS = $(SRC_MEM) $(SRC_TYPES) $(SRC_UTILS) $(SRC_DISCOVERY) $(SRC_TRANSPORT) $(SRC_PORTAL) $(SRC_SDK) $(SRC_COMMON_API) libs/keccak/sha3.c
 ALL_OBJS = $(ALL_SRCS:.c=.o)
 
 BIN_RELAY = bin/relay-server

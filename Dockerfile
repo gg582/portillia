@@ -64,6 +64,13 @@ RUN if [ ! -f libs/secp256k1/autogen.sh ]; then \
         git clone https://github.com/bitcoin-core/secp256k1.git libs/secp256k1; \
     fi
 
+# Robustly handle missing keccak submodule
+RUN if [ ! -f libs/keccak/sha3.c ]; then \
+        echo "keccak submodule missing, cloning..." && \
+        rm -rf libs/keccak && \
+        git clone https://github.com/brainhub/SHA3IUF.git libs/keccak; \
+    fi
+
 # Ensure stubs are available for cwist
 RUN cp include/ttak_stubs.h libs/cwist/include/
 

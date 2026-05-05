@@ -14,18 +14,11 @@
 #include <portillia/utils/crypto.h>
 
 /**
- * @brief Keccak-256 implementation using OpenSSL EVP.
+ * @brief Keccak-256 implementation using SHA3IUF.
  */
+#include "sha3.h"
 void portillia_crypto_keccak256(const uint8_t *data, size_t len, uint8_t *out) {
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    const EVP_MD *md = EVP_get_digestbyname("keccak-256");
-    if (!md) {
-        md = EVP_sha3_256(); 
-    }
-    EVP_DigestInit_ex(ctx, md, NULL);
-    EVP_DigestUpdate(ctx, data, len);
-    EVP_DigestFinal_ex(ctx, out, NULL);
-    EVP_MD_CTX_free(ctx);
+    sha3_HashBuffer(256, SHA3_FLAGS_KECCAK, data, len, out, 32);
 }
 
 /**
