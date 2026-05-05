@@ -215,10 +215,15 @@ int portillia_acme_manager_ensure_certificate(portillia_acme_manager *m, char **
     int ret = system(cmd);
     
     if (ret == 0) {
-        // Copy generated files to standard fullchain.pem and privatekey.pem paths
+        // Build fullchain.pem from leaf + intermediate; lego stores intermediate
+        // in .issuer.crt by default, so concatenating is required.
         char cp_cmd[2048];
-        snprintf(cp_cmd, sizeof(cp_cmd), "cp %s/certificates/%s.crt %s && cp %s/certificates/%s.key %s", 
-                 acme_home, m->cfg.base_domain, cert_path, 
+        snprintf(cp_cmd, sizeof(cp_cmd),
+                 "cat %s/certificates/%s.crt %s/certificates/%s.issuer.crt > %s 2>/dev/null || cp %s/certificates/%s.crt %s",
+                 acme_home, m->cfg.base_domain, acme_home, m->cfg.base_domain, cert_path,
+                 acme_home, m->cfg.base_domain, cert_path);
+        system(cp_cmd);
+        snprintf(cp_cmd, sizeof(cp_cmd), "cp %s/certificates/%s.key %s",
                  acme_home, m->cfg.base_domain, key_path);
         system(cp_cmd);
     }
