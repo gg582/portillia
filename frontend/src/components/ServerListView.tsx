@@ -53,6 +53,7 @@ async function loadRelayReleaseVersion(
   timeoutMs: number = 5000
 ): Promise<string> {
   const domainURL = new URL(API_PATHS.sdk.domain, relayURL).toString();
+  const healthURL = new URL(API_PATHS.healthz, relayURL).toString();
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(() => reject(new Error("timeout")), timeoutMs);
@@ -67,7 +68,15 @@ async function loadRelayReleaseVersion(
       ? domain.release_version.trim()
       : "";
   } catch {
-    return "";
+    try {
+      const health = await Promise.race([
+        apiClient.get<{ status?: string }>(healthURL),
+        timeoutPromise,
+      ]);
+      return health?.status === "ok" ? "online" : "";
+    } catch {
+      return "";
+    }
   }
 }
 

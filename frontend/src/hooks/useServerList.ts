@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useSSRData } from "@/hooks/useSSRData";
 import type { PublicLeaseData } from "@/hooks/useSSRData";
 import { useList, type BaseServer } from "@/hooks/useList";
+import { isLeaseOnline } from "@/lib/leaseStatus";
 import { parseLeaseMetadata } from "@/lib/metadata";
 
 function convertSSRDataToServers(ssrData: PublicLeaseData[]): BaseServer[] {
@@ -17,7 +18,7 @@ function convertSSRDataToServers(ssrData: PublicLeaseData[]): BaseServer[] {
       tags: metadata.tags,
       thumbnail: metadata.thumbnail || "",
       owner: metadata.owner || "",
-      online: (row.Ready || 0) > 0,
+      online: isLeaseOnline(row.Ready, row.LastSeenAt),
       dns: hostname,
       link: hostname ? `https://${hostname}/` : "",
       lastUpdated: row.LastSeenAt || undefined,

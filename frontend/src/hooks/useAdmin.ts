@@ -9,6 +9,7 @@ import {
 } from "@/lib/apiPaths";
 import { APIClientError, apiClient } from "@/lib/apiClient";
 import { parseLeaseMetadata } from "@/lib/metadata";
+import { isLeaseOnline } from "@/lib/leaseStatus";
 
 export type ApprovalMode = "auto" | "manual";
 
@@ -118,7 +119,7 @@ function toAdminServer(
     tags: metadata.tags,
     thumbnail: metadata.thumbnail,
     owner: metadata.owner,
-    online: (row.Ready || 0) > 0,
+    online: isLeaseOnline(row.Ready, row.LastSeenAt),
     dns: hostname,
     link: hostname ? `https://${hostname}/` : "",
     lastUpdated: row.LastSeenAt || undefined,

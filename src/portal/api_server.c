@@ -758,7 +758,8 @@ void handle_unregister(cwist_http_request *req, cwist_http_response *res) {
  * @brief Function handle_healthz
  */
 void handle_healthz(cwist_http_request *req, cwist_http_response *res) {
-    cwist_sstring_assign(res->body, "{\"status\": \"ok\"}");
+    (void)req;
+    cwist_sstring_assign(res->body, "{\"ok\":true,\"status\":\"ok\",\"data\":{\"status\":\"ok\"}}");
     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
 }
 
