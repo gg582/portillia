@@ -345,7 +345,7 @@ void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descrip
                 format_rfc3339_utc(desc->issued_at, issued_at, sizeof(issued_at));
                 format_rfc3339_utc(desc->expires_at, expires_at, sizeof(expires_at));
                 cJSON_AddStringToObject(d, "address", desc->address ? desc->address : "");
-                cJSON_AddStringToObject(d, "version", desc->version ? desc->version : PORTILLIA_RELEASE_VERSION);
+                cJSON_AddStringToObject(d, "version", desc->version ? desc->version : "7");
                 cJSON_AddStringToObject(d, "issued_at", issued_at);
                 cJSON_AddStringToObject(d, "expires_at", expires_at);
                 cJSON_AddStringToObject(d, "api_https_addr", desc->api_https_addr ? desc->api_https_addr : "");
@@ -412,7 +412,7 @@ static void discovery_task(ttak_task_t *task, void *arg) {
     ensure_descriptor_identity();
     desc.address = strdup(g_desc_addr);
     desc.api_https_addr = strdup(cfg->relay_url);
-    desc.version = strdup(PORTILLIA_RELEASE_VERSION);
+    desc.version = strdup("7");
     desc.wireguard_public_key = strdup("");
     desc.signature = strdup("");
     desc.issued_at = time(NULL);
