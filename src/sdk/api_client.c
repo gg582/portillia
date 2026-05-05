@@ -386,6 +386,49 @@ static int sign_siwe(const char *siwe_message, const char *private_key_hex, char
     return 0;
 }
 
+static int derive_address_from_private_key(const char *private_key_hex,
+                                           char *out_addr,
+                                           size_t out_addr_len) {
+    if (!private_key_hex) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    uint8_t seckey[32];
+    if (parse_hex_bytes(private_key_hex, seckey, sizeof(seckey)) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+    if (!ctx) {
+        errno = EIO;
+        return -1;
+    }
+
+    secp256k1_pubkey pubkey;
+    if (!secp256k1_ec_pubkey_create(ctx, &pubkey, seckey)) {
+        secp256k1_context_destroy(ctx);
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (out_addr) {
+        if (out_addr_len < 43) {
+            secp256k1_context_destroy(ctx);
+            errno = ENOSPC;
+            return -1;
+        }
+        size_t uncompressed_len = 65;
+        uint8_t uncompressed[65];
+        secp256k1_ec_pubkey_serialize(ctx, uncompressed, &uncompressed_len, &pubkey, SECP256K1_EC_UNCOMPRESSED);
+        portillia_crypto_pubkey_to_address(uncompressed, uncompressed_len, out_addr);
+    }
+
+    secp256k1_context_destroy(ctx);
+    return 0;
+}
+
 static int sign_sha256_secp256k1_der_hex(const uint8_t *payload, size_t payload_len,
                                          const char *private_key_hex, char *out_hex, size_t out_len) {
     if (!payload || !private_key_hex || !out_hex) {
@@ -956,10 +999,21 @@ int portillia_api_register_lease(portillia_http_client_t *client,
         free(path);
     }
 
+    char derived_address[43] = {0};
+    const char *identity_address = identity->address ? identity->address : "";
+    if (identity->private_key &&
+        derive_address_from_private_key(identity->private_key, derived_address, sizeof(derived_address)) == 0) {
+        if (identity->address && identity->address[0] && strcasecmp(identity->address, derived_address) != 0) {
+            LOG_WARN("SDK: Identity address %s does not match signing key; using derived address %s for SIWE",
+                     identity->address, derived_address);
+        }
+        identity_address = derived_address;
+    }
+
     cJSON *challenge_req = cJSON_CreateObject();
     cJSON *identity_json = cJSON_CreateObject();
     cJSON_AddStringToObject(identity_json, "name", identity->name ? identity->name : "");
-    cJSON_AddStringToObject(identity_json, "address", identity->address ? identity->address : "");
+    cJSON_AddStringToObject(identity_json, "address", identity_address);
     cJSON_AddItemToObject(challenge_req, "identity", identity_json);
     if (metadata) {
         cJSON *meta = cJSON_CreateObject();
