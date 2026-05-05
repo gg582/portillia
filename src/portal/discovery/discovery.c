@@ -361,9 +361,12 @@ void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descrip
                 
                 char *json = cJSON_PrintUnformatted(root);
                 
+                struct curl_slist *announce_headers = NULL;
+                announce_headers = curl_slist_append(announce_headers, "Content-Type: application/json");
                 curl_easy_setopt(curl, CURLOPT_URL, announce_url);
                 curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
                 curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json);
+                curl_easy_setopt(curl, CURLOPT_HTTPHEADER, announce_headers);
                 curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
                 CURLcode code = curl_easy_perform(curl);
                 if (code == CURLE_OK) {
@@ -380,6 +383,7 @@ void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descrip
                 
                 free(json);
                 cJSON_Delete(root);
+                curl_slist_free_all(announce_headers);
                 curl_easy_cleanup(curl);
             }
             token = strtok_r(NULL, ",", &saveptr);
