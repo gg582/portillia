@@ -206,9 +206,18 @@ static bool verify_siwe_signature_address(const char *siwe_message, const char *
 
     uint8_t sig65[65];
     if (parse_hex_bytes(sig_hex, sig65, sizeof(sig65)) != 0) return false;
+
+    // Extract recid from Ethereum v value.
+    // Uncompressed: v = 27 + recid (range 27-30)
+    // Compressed:   v = 31 + recid (range 31-34)
     int recid = (int)sig65[64];
-    if (recid >= 27) recid -= 27;
-    if (recid >= 4) recid -= 4;
+    if (recid >= 27 && recid <= 30) {
+        recid -= 27;
+    } else if (recid >= 31 && recid <= 34) {
+        recid -= 31;
+    } else if (recid < 0 || recid > 3) {
+        return false;
+    }
     if (recid < 0 || recid > 3) return false;
 
     char prefix[64];
@@ -223,19 +232,29 @@ static bool verify_siwe_signature_address(const char *siwe_message, const char *
     portillia_crypto_keccak256(payload, payload_len, hash);
     free(payload);
 
-    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY);
+    // SIGN | VERIFY context is required for secp256k1_ecdsa_recover on some builds
+    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
     if (!ctx) return false;
+
+    // Explicitly separate r||s from v to avoid any boundary issue
+    uint8_t rs64[64];
+    memcpy(rs64, sig65, 64);
+
     secp256k1_ecdsa_recoverable_signature sig;
     secp256k1_pubkey pubkey;
     bool ok = false;
-    if (secp256k1_ecdsa_recoverable_signature_parse_compact(ctx, &sig, sig65, recid) &&
+    if (secp256k1_ecdsa_recoverable_signature_parse_compact(ctx, &sig, rs64, recid) &&
         secp256k1_ecdsa_recover(ctx, &pubkey, &sig, hash)) {
         size_t pub_len = 65;
         uint8_t pub_buf[65];
         secp256k1_ec_pubkey_serialize(ctx, pub_buf, &pub_len, &pubkey, SECP256K1_EC_UNCOMPRESSED);
         char addr[43] = {0};
         portillia_crypto_pubkey_to_address(pub_buf, pub_len, addr);
-        ok = (strcasecmp(addr, expected_address) == 0);
+
+        // Strip optional 0x prefix from expected_address before comparison
+        const char *expected = expected_address;
+        if (expected[0] == '0' && (expected[1] == 'x' || expected[1] == 'X')) expected += 2;
+        ok = (strcasecmp(addr + 2, expected) == 0);
     }
     secp256k1_context_destroy(ctx);
     return ok;
