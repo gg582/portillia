@@ -44,6 +44,7 @@ void portillia_relay_identity_cleanup(portillia_relay_identity_t *id) {
     if (id->admin_secret_key) portillia_gc_free_later(id->admin_secret_key);
     if (id->wireguard_public_key) portillia_gc_free_later(id->wireguard_public_key);
     if (id->wireguard_private_key) portillia_gc_free_later(id->wireguard_private_key);
+    if (id->encrypted_client_hello_seed) portillia_gc_free_later(id->encrypted_client_hello_seed);
     memset(id, 0, sizeof(*id));
 }
 

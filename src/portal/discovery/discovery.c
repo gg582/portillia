@@ -15,8 +15,8 @@
 
 extern char* portillia_registry_to_json();
 
-static char g_desc_priv_hex[65] = {0};
-static char g_desc_addr[43] = {0};
+char g_desc_priv_hex[65] = {0};
+char g_desc_addr[43] = {0};
 
 static time_t parse_rfc3339_utc(const char *value) {
     if (!value || !value[0]) return 0;
@@ -60,7 +60,7 @@ static int hex_to_bytes32(const char *hex, uint8_t out[32]) {
     return 0;
 }
 
-static void ensure_descriptor_identity() {
+void ensure_descriptor_identity() {
     if (g_desc_priv_hex[0] && g_desc_addr[0]) return;
     const char *env_priv = getenv("RELAY_DESCRIPTOR_PRIVATE_KEY");
     if (env_priv && strlen(env_priv) == 64) {

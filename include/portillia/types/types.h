@@ -62,6 +62,7 @@ typedef struct portillia_relay_identity {
     char *admin_secret_key;       /**< json:"-" */
     char *wireguard_public_key;   /**< json:"-" */
     char *wireguard_private_key;  /**< json:"-" */
+    char *encrypted_client_hello_seed; /**< json:"-" */
 } portillia_relay_identity_t;
 
 /* ---------- Lease & Metadata ---------- */

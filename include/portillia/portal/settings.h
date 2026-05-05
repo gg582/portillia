@@ -19,6 +19,7 @@ typedef struct {
     int64_t default_bps_limit; /**< Global default throughput limit */
     bool udp_enabled; /**< Global UDP tunnel toggle */
     bool tcp_port_enabled; /**< Global raw TCP port toggle */
+    char *encrypted_client_hello_seed; /**< Seed for ECH key derivation */
     
     // Policy Engine
     char **banned_identities; /**< List of banned Ethereum addresses */

@@ -7,6 +7,9 @@
 #include <portillia/portal/settings.h>
 #include <cwist/net/yamux.h>
 #include <portillia/portal/api_server_relay.h>
+#include <portillia/portal/keyless/ech.h>
+#include <cwist/security/tls/ech.h>
+#include <openssl/rand.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -471,12 +474,14 @@ int main(void) {
         .aws_kms_key_arn = getenv("AWS_DNSSEC_KMS_KEY_ARN")
     };
 
+    bool ech_enabled = cwist_ech_is_supported_by_openssl();
     LOG_INFO(
-        "configured relay server acme_dns_provider=%s api_port=%d bootstraps=%s discovery_enabled=%s ens_gasless_enabled=%s headless_shell_enabled=%s identity_path=%s landing_page_enabled=%s max_port=%d min_port=%d portal_url=%s pprof_addr=%s pprof_enabled=%s release_version=%s sni_port=%d tcp_enabled=%s trust_proxy_headers=%s trusted_proxy_cidrs=%s udp_enabled=%s wireguard_port=%d",
+        "configured relay server acme_dns_provider=%s api_port=%d bootstraps=%s discovery_enabled=%s ech_enabled=%s ens_gasless_enabled=%s headless_shell_enabled=%s identity_path=%s landing_page_enabled=%s max_port=%d min_port=%d portal_url=%s pprof_addr=%s pprof_enabled=%s release_version=%s sni_port=%d tcp_enabled=%s trust_proxy_headers=%s trusted_proxy_cidrs=%s udp_enabled=%s wireguard_port=%d",
         acme_dns_provider,
         api_port,
         bootstraps,
         bool_str(discovery_enabled),
+        bool_str(ech_enabled),
         bool_str(ens_gasless_enabled),
         bool_str(strlen(headless_shell_url) > 0),
         identity_path,
@@ -522,6 +527,45 @@ int main(void) {
                 LOG_INFO("Using certificate: %s", cert_file);
                 cwist_app_use_https(app, cert_file, key_file);
                 free(cert_file); free(key_file);
+
+                // Encrypted Client Hello (ECH) setup
+                ensure_descriptor_identity();
+                if (g_desc_priv_hex[0]) {
+                    char ech_seed[64] = {0};
+                    if (settings->encrypted_client_hello_seed && settings->encrypted_client_hello_seed[0]) {
+                        snprintf(ech_seed, sizeof(ech_seed), "%s", settings->encrypted_client_hello_seed);
+                    } else {
+                        const char *ech_seed_env = getenv("ENCRYPTED_CLIENT_HELLO_SEED");
+                        if (ech_seed_env && ech_seed_env[0]) {
+                            snprintf(ech_seed, sizeof(ech_seed), "%s", ech_seed_env);
+                        } else {
+                            uint8_t rand_bytes[16];
+                            if (RAND_bytes(rand_bytes, sizeof(rand_bytes)) == 1) {
+                                for (int i = 0; i < 16; i++) {
+                                    sprintf(ech_seed + i * 2, "%02x", rand_bytes[i]);
+                                }
+                            }
+                        }
+                        if (ech_seed[0]) {
+                            free(settings->encrypted_client_hello_seed);
+                            settings->encrypted_client_hello_seed = strdup(ech_seed);
+                            portillia_settings_save(settings_path, settings);
+                        }
+                    }
+                    if (ech_seed[0]) {
+                        char ech_pem_path[1024];
+                        snprintf(ech_pem_path, sizeof(ech_pem_path), "%s/ech.pem", identity_path);
+                        if (portillia_keyless_ech_generate_keys(g_desc_priv_hex, ech_seed, root_hostname, ech_pem_path) == 0) {
+                            cwist_ech_config ech_cfg = {
+                                .ech_key_file = ech_pem_path,
+                                .ech_dir = NULL,
+                                .enforce_ech = false,
+                                .auto_retry_keys = true,
+                            };
+                            cwist_app_use_ech(app, &ech_cfg);
+                        }
+                    }
+                }
             }
             portillia_acme_manager_sync_dns(acme);
             if (acme_cfg.ens_gasless_enabled) portillia_acme_manager_sync_ens_gasless(acme);

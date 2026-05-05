@@ -73,4 +73,8 @@ void portillia_discovery_relay_set_free(portillia_relay_set *set);
  */
 void portillia_relay_set_upsert(portillia_relay_set *set, portillia_relay_descriptor desc);
 
+extern char g_desc_priv_hex[65];
+extern char g_desc_addr[43];
+void ensure_descriptor_identity(void);
+
 #endif // PORTILLIA_PORTAL_DISCOVERY_H

@@ -79,6 +79,9 @@ portillia_settings* portillia_settings_load(const char *path) {
             cJSON *trust_headers = cJSON_GetObjectItem(root, "trust_proxy_headers");
             if (trust_headers) s->trust_proxy_headers = cJSON_IsTrue(trust_headers);
 
+            cJSON *ech_seed = cJSON_GetObjectItem(root, "encrypted_client_hello_seed");
+            if (ech_seed && ech_seed->valuestring) s->encrypted_client_hello_seed = strdup(ech_seed->valuestring);
+
             // Load banned identities
             cJSON *banned_arr = cJSON_GetObjectItem(root, "banned_identities");
             if (cJSON_IsArray(banned_arr)) {
@@ -127,6 +130,9 @@ void portillia_settings_save(const char *path, portillia_settings *s) {
     cJSON_AddBoolToObject(root, "udp_enabled", s->udp_enabled);
     cJSON_AddBoolToObject(root, "tcp_port_enabled", s->tcp_port_enabled);
     cJSON_AddBoolToObject(root, "trust_proxy_headers", s->trust_proxy_headers);
+    if (s->encrypted_client_hello_seed) {
+        cJSON_AddStringToObject(root, "encrypted_client_hello_seed", s->encrypted_client_hello_seed);
+    }
 
     cJSON *banned_arr = cJSON_CreateArray();
     for (int i = 0; i < s->banned_count; i++) {
@@ -170,6 +176,7 @@ void portillia_settings_free(portillia_settings *s) {
     free(s->approved_identities);
     for (int i = 0; i < s->trusted_proxy_count; i++) free(s->trusted_proxy_cidrs[i]);
     free(s->trusted_proxy_cidrs);
+    free(s->encrypted_client_hello_seed);
     free(s);
 }
 
