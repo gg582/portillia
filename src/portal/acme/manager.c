@@ -77,6 +77,62 @@ static int ensure_acme_account(portillia_acme_manager *m) {
     return CWIST_SUCCESS;
 }
 
+static int certificate_count(const char *cert_path) {
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd),
+             "openssl crl2pkcs7 -nocrl -certfile '%s' 2>/dev/null | "
+             "openssl pkcs7 -print_certs -noout 2>/dev/null | grep -c 'BEGIN CERTIFICATE'",
+             cert_path);
+    FILE *fp = popen(cmd, "r");
+    int count = 0;
+    if (!fp) return 0;
+    char buf[16] = {0};
+    if (fgets(buf, sizeof(buf), fp)) count = atoi(buf);
+    pclose(fp);
+    return count;
+}
+
+static void copy_leaf_and_issuer_if_present(const char *leaf_path, const char *issuer_path, const char *cert_path) {
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd),
+             "cat '%s' '%s' > '%s' 2>/dev/null || cp '%s' '%s'",
+             leaf_path, issuer_path, cert_path, leaf_path, cert_path);
+    system(cmd);
+}
+
+static void append_aia_issuer_from_leaf(const char *leaf_path, const char *cert_path) {
+    char cmd[8192];
+    snprintf(cmd, sizeof(cmd),
+             "AIA=$(openssl x509 -in '%s' -noout -text 2>/dev/null | "
+             "grep -A1 'CA Issuers' | grep 'URI:' | sed 's/.*URI://;s/^[[:space:]]*//' | head -1); "
+             "if [ -n \"$AIA\" ]; then "
+             "  curl -fsSL \"$AIA\" 2>/dev/null | openssl x509 -inform DER -outform PEM 2>/dev/null >> '%s' || "
+             "  curl -fsSL \"$AIA\" 2>/dev/null >> '%s'; "
+             "fi",
+             leaf_path, cert_path, cert_path);
+    system(cmd);
+}
+
+static void rebuild_fullchain_if_incomplete(const char *cert_path,
+                                            const char *lego_leaf_path,
+                                            const char *lego_issuer_path) {
+    if (certificate_count(cert_path) >= 2) return;
+
+    const char *leaf_path = cert_path;
+    if (lego_leaf_path && access(lego_leaf_path, F_OK) == 0) {
+        leaf_path = lego_leaf_path;
+        copy_leaf_and_issuer_if_present(lego_leaf_path, lego_issuer_path, cert_path);
+    }
+
+    if (certificate_count(cert_path) < 2) {
+        append_aia_issuer_from_leaf(leaf_path, cert_path);
+    }
+
+    if (certificate_count(cert_path) < 2) {
+        LOG_WARN("ACME: certificate chain is still incomplete for %s", cert_path);
+    }
+}
+
 portillia_acme_manager* portillia_acme_manager_new(portillia_acme_config cfg) {
     portillia_acme_manager *m = calloc(1, sizeof(portillia_acme_manager));
     m->cfg = cfg;
@@ -180,60 +236,13 @@ int portillia_acme_manager_ensure_certificate(portillia_acme_manager *m, char **
     char acme_home[512];
     snprintf(acme_home, sizeof(acme_home), "%s/.lego", m->cfg.key_dir);
     mkdir(acme_home, 0700);
+    char lego_leaf_path[512];
+    char lego_issuer_path[512];
+    snprintf(lego_leaf_path, sizeof(lego_leaf_path), "%s/certificates/%s.crt", acme_home, m->cfg.base_domain);
+    snprintf(lego_issuer_path, sizeof(lego_issuer_path), "%s/certificates/%s.issuer.crt", acme_home, m->cfg.base_domain);
     
     if (access(cert_path, F_OK) == 0 && access(key_path, F_OK) == 0) {
-        // Rebuild fullchain.pem from lego artifacts in case the existing one lacks the intermediate chain
-        char check_cmd[2048];
-        snprintf(check_cmd, sizeof(check_cmd),
-                 "openssl crl2pkcs7 -nocrl -certfile %s 2>/dev/null | openssl pkcs7 -print_certs -noout 2>/dev/null | grep -c 'BEGIN CERTIFICATE'",
-                 cert_path);
-        FILE *fp = popen(check_cmd, "r");
-        int cert_count = 0;
-        if (fp) {
-            char buf[16] = {0};
-            if (fgets(buf, sizeof(buf), fp)) cert_count = atoi(buf);
-            pclose(fp);
-        }
-        if (cert_count < 2) {
-            char cp_cmd[4096];
-            // 1. Try lego's .issuer.crt
-            snprintf(cp_cmd, sizeof(cp_cmd),
-                     "cat %s/certificates/%s.crt %s/certificates/%s.issuer.crt > %s 2>/dev/null || true",
-                     acme_home, m->cfg.base_domain, acme_home, m->cfg.base_domain, cert_path);
-            system(cp_cmd);
-            // 2. Check again; if still incomplete, try AIA download from leaf cert
-            fp = popen(check_cmd, "r");
-            int new_count = 0;
-            if (fp) {
-                char buf[16] = {0};
-                if (fgets(buf, sizeof(buf), fp)) new_count = atoi(buf);
-                pclose(fp);
-            }
-            if (new_count < 2) {
-                snprintf(cp_cmd, sizeof(cp_cmd),
-                         "AIA=$(openssl x509 -in %s/certificates/%s.crt -noout -text 2>/dev/null | grep -A1 'CA Issuers' | grep 'URI:' | sed 's/.*URI://;s/^[[:space:]]*//' | head -1); "
-                         "if [ -n \"$AIA\" ]; then "
-                         "  curl -fsSL \"$AIA\" 2>/dev/null | openssl x509 -inform DER -outform PEM 2>/dev/null >> %s || "
-                         "  curl -fsSL \"$AIA\" 2>/dev/null >> %s; "
-                         "fi",
-                         acme_home, m->cfg.base_domain, cert_path, cert_path);
-                system(cp_cmd);
-            }
-            // 3. Final fallback: well-known Let's Encrypt R3 intermediate
-            fp = popen(check_cmd, "r");
-            int final_count = 0;
-            if (fp) {
-                char buf[16] = {0};
-                if (fgets(buf, sizeof(buf), fp)) final_count = atoi(buf);
-                pclose(fp);
-            }
-            if (final_count < 2) {
-                snprintf(cp_cmd, sizeof(cp_cmd),
-                         "curl -fsSL https://letsencrypt.org/certs/lets-encrypt-r3.pem >> %s 2>/dev/null || true",
-                         cert_path);
-                system(cp_cmd);
-            }
-        }
+        rebuild_fullchain_if_incomplete(cert_path, lego_leaf_path, lego_issuer_path);
         *cert_file = strdup(cert_path);
         *key_file = strdup(key_path);
         return CWIST_SUCCESS;
@@ -267,54 +276,9 @@ int portillia_acme_manager_ensure_certificate(portillia_acme_manager *m, char **
     int ret = system(cmd);
     
     if (ret == 0) {
-        // Build fullchain.pem from leaf + intermediate; lego stores intermediate
-        // in .issuer.crt by default, so concatenating is required.
+        rebuild_fullchain_if_incomplete(cert_path, lego_leaf_path, lego_issuer_path);
+
         char cp_cmd[4096];
-        snprintf(cp_cmd, sizeof(cp_cmd),
-                 "cat %s/certificates/%s.crt %s/certificates/%s.issuer.crt > %s 2>/dev/null || cp %s/certificates/%s.crt %s",
-                 acme_home, m->cfg.base_domain, acme_home, m->cfg.base_domain, cert_path,
-                 acme_home, m->cfg.base_domain, cert_path);
-        system(cp_cmd);
-        
-        // If chain is still incomplete, try AIA or well-known fallback
-        char check_cmd[2048];
-        snprintf(check_cmd, sizeof(check_cmd),
-                 "openssl crl2pkcs7 -nocrl -certfile %s 2>/dev/null | openssl pkcs7 -print_certs -noout 2>/dev/null | grep -c 'BEGIN CERTIFICATE'",
-                 cert_path);
-        FILE *fp = popen(check_cmd, "r");
-        int cert_count = 0;
-        if (fp) {
-            char buf[16] = {0};
-            if (fgets(buf, sizeof(buf), fp)) cert_count = atoi(buf);
-            pclose(fp);
-        }
-        if (cert_count < 2) {
-            // Try AIA download from leaf cert
-            snprintf(cp_cmd, sizeof(cp_cmd),
-                     "AIA=$(openssl x509 -in %s/certificates/%s.crt -noout -text 2>/dev/null | grep -A1 'CA Issuers' | grep 'URI:' | sed 's/.*URI://;s/^[[:space:]]*//' | head -1); "
-                     "if [ -n \"$AIA\" ]; then "
-                     "  curl -fsSL \"$AIA\" 2>/dev/null | openssl x509 -inform DER -outform PEM 2>/dev/null >> %s || "
-                     "  curl -fsSL \"$AIA\" 2>/dev/null >> %s; "
-                     "fi",
-                     acme_home, m->cfg.base_domain, cert_path, cert_path);
-            system(cp_cmd);
-            
-            // Final fallback: well-known Let's Encrypt R3 intermediate
-            fp = popen(check_cmd, "r");
-            int new_count = 0;
-            if (fp) {
-                char buf[16] = {0};
-                if (fgets(buf, sizeof(buf), fp)) new_count = atoi(buf);
-                pclose(fp);
-            }
-            if (new_count < 2) {
-                snprintf(cp_cmd, sizeof(cp_cmd),
-                         "curl -fsSL https://letsencrypt.org/certs/lets-encrypt-r3.pem >> %s 2>/dev/null || true",
-                         cert_path);
-                system(cp_cmd);
-            }
-        }
-        
         snprintf(cp_cmd, sizeof(cp_cmd), "cp %s/certificates/%s.key %s",
                  acme_home, m->cfg.base_domain, key_path);
         system(cp_cmd);
