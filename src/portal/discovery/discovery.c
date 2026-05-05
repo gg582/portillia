@@ -250,6 +250,7 @@ void portillia_discovery_poll(discovery_config *cfg, const char *url) {
     snprintf(full_url, sizeof(full_url), "%s/discovery", url);
 
     curl_easy_setopt(curl, CURLOPT_URL, full_url);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&res);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
@@ -319,7 +320,8 @@ void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descrip
     // Periodic poll of bootstraps
     if (cfg->bootstrap_urls) {
         char *copy = strdup(cfg->bootstrap_urls);
-        char *token = strtok(copy, ",");
+        char *saveptr = NULL;
+        char *token = strtok_r(copy, ",", &saveptr);
         while (token) {
             while (*token == ' ' || *token == '\t' || *token == '\n' || *token == '\r') token++;
             size_t token_len = strlen(token);
@@ -360,6 +362,7 @@ void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descrip
                 char *json = cJSON_PrintUnformatted(root);
                 
                 curl_easy_setopt(curl, CURLOPT_URL, announce_url);
+                curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
                 curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json);
                 curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
                 CURLcode code = curl_easy_perform(curl);
@@ -379,7 +382,7 @@ void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descrip
                 cJSON_Delete(root);
                 curl_easy_cleanup(curl);
             }
-            token = strtok(NULL, ",");
+            token = strtok_r(NULL, ",", &saveptr);
         }
         free(copy);
     }
