@@ -265,7 +265,10 @@ static const char *bool_str(bool value) {
 
 static char *load_registry_bootstraps(const char *path) {
     FILE *f = fopen(path, "r");
-    if (!f) return NULL;
+    if (!f) {
+        LOG_WARN("registry.json not found path=%s", path);
+        return NULL;
+    }
     fseek(f, 0, SEEK_END);
     long fsize = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -276,16 +279,27 @@ static char *load_registry_bootstraps(const char *path) {
     buf[fsize] = '\0';
     cJSON *root = cJSON_Parse(buf);
     free(buf);
-    if (!root) return NULL;
+    if (!root) {
+        LOG_WARN("registry.json parse failed path=%s", path);
+        return NULL;
+    }
     cJSON *relays = cJSON_GetObjectItem(root, "relays");
-    if (!cJSON_IsArray(relays)) { cJSON_Delete(root); return NULL; }
+    if (!cJSON_IsArray(relays)) {
+        LOG_WARN("registry.json missing relays array path=%s", path);
+        cJSON_Delete(root);
+        return NULL;
+    }
     int count = cJSON_GetArraySize(relays);
     size_t total = 0;
     for (int i = 0; i < count; i++) {
         cJSON *item = cJSON_GetArrayItem(relays, i);
         if (cJSON_IsString(item) && item->valuestring) total += strlen(item->valuestring) + 1;
     }
-    if (total == 0) { cJSON_Delete(root); return NULL; }
+    if (total == 0) {
+        LOG_WARN("registry.json relays array empty path=%s", path);
+        cJSON_Delete(root);
+        return NULL;
+    }
     char *result = malloc(total);
     if (!result) { cJSON_Delete(root); return NULL; }
     result[0] = '\0';
@@ -301,6 +315,7 @@ static char *load_registry_bootstraps(const char *path) {
         }
     }
     cJSON_Delete(root);
+    LOG_INFO("loaded registry.json path=%s bootstraps=%s", path, result);
     return result;
 }
 
@@ -455,12 +470,16 @@ int main(void) {
         if (registry_bootstraps) free(registry_bootstraps);
     } else if (registry_bootstraps) {
         disc_cfg->bootstrap_urls = registry_bootstraps;
-        LOG_INFO("loaded %zu bootstrap relays from registry.json", strlen(registry_bootstraps) > 0 ? 1 : 0);
     } else {
         disc_cfg->bootstrap_urls = NULL;
     }
     disc_cfg->relay_set = portillia_relay_set_new();
     global_disc_cfg = disc_cfg;
+    if (disc_cfg->bootstrap_urls) {
+        LOG_INFO("discovery bootstraps=%s", disc_cfg->bootstrap_urls);
+    } else {
+        LOG_WARN("discovery no bootstraps configured");
+    }
     portillia_discovery_publish_self(disc_cfg);
 
     pthread_t sni_tid, wg_tid, disc_tid;
