@@ -1,4 +1,5 @@
 #include <portillia/portal/discovery/discovery.h>
+#include <portillia/portal/settings.h>
 #include <ttak/ttak.h>
 #include <portillia/utils/crypto.h>
 #include <stdio.h>
@@ -475,6 +476,7 @@ void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descrip
 
 extern int64_t portillia_proxy_get_active_conns();
 extern double portillia_proxy_get_current_bps();
+extern portillia_settings* portillia_server_get_settings();
 
 static void discovery_task(ttak_task_t *task, void *arg) {
     (void)task;
@@ -503,8 +505,9 @@ static void discovery_task(ttak_task_t *task, void *arg) {
     desc.wireguard_public_key = strdup(wg_pub ? wg_pub : "");
     desc.wireguard_port = (wg_pub && wg_pub[0]) ? 51820 : 0;
     desc.supports_overlay = (wg_pub && wg_pub[0]) ? true : false;
-    desc.supports_udp = false;
-    desc.supports_tcp = true;
+    portillia_settings *settings = portillia_server_get_settings();
+    desc.supports_udp = settings ? settings->udp_enabled : false;
+    desc.supports_tcp = settings ? settings->tcp_port_enabled : true;
 
     char canonical[2048] = {0};
     build_canonical_descriptor_json(&desc, canonical, sizeof(canonical));

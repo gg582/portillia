@@ -20,6 +20,7 @@ extern void portillia_registry_register(const char *hostname, const char *identi
 extern void portillia_registry_register_hop(const char *hop_token, const char *next_ipv4, const char *next_token, const char *identity_key);
 extern int portillia_registry_offer_conn(const char *hostname, int sdk_fd);
 extern char* portillia_registry_to_json();
+extern bool portillia_registry_tunnel_status(const char *hostname, char *resolved_hostname, size_t resolved_hostname_len, bool *service_alive);
 extern portillia_settings* portillia_server_get_settings();
 extern const char* portillia_server_root_hostname();
 extern int portillia_server_sni_port();
@@ -496,6 +497,41 @@ void handle_discovery(cwist_http_request *req, cwist_http_response *res) {
     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
 }
 
+void handle_tunnel_status(cwist_http_request *req, cwist_http_response *res) {
+    const char *hostname_param = cwist_query_map_get(req->query_params, "hostname");
+    char hostname[512];
+    char resolved_hostname[512];
+    bool service_alive = false;
+    bool registered = false;
+
+    snprintf(hostname, sizeof(hostname), "%s", hostname_param ? hostname_param : "");
+    normalize_hostname(hostname);
+
+    if (!hostname[0]) {
+        res->status_code = CWIST_HTTP_BAD_REQUEST;
+        cwist_sstring_assign(res->body, "{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"hostname is required\"}}");
+        cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+        return;
+    }
+
+    resolved_hostname[0] = '\0';
+    registered = portillia_registry_tunnel_status(hostname, resolved_hostname, sizeof(resolved_hostname), &service_alive);
+
+    cJSON *data = cJSON_CreateObject();
+    cJSON_AddStringToObject(data, "hostname", registered && resolved_hostname[0] ? resolved_hostname : hostname);
+    cJSON_AddBoolToObject(data, "registered", registered);
+    cJSON_AddBoolToObject(data, "service_alive", registered && service_alive);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddItemToObject(root, "data", data);
+    char *json = cJSON_PrintUnformatted(root);
+    cwist_sstring_assign(res->body, json);
+    free(json);
+    cJSON_Delete(root);
+    cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+}
+
 /**
  * @brief Function handle_admin_leases
  */
@@ -919,6 +955,7 @@ void handle_admin_approval_mode(cwist_http_request *req, cwist_http_response *re
  */
 void portillia_api_server_setup(cwist_app *app) {
     cwist_app_get(app, "/healthz", handle_healthz);
+    cwist_app_get(app, "/tunnel/status", handle_tunnel_status);
     cwist_app_get(app, "/sdk/domain", handle_domain);
     cwist_app_post(app, "/sdk/register/challenge", handle_register_challenge);
     cwist_app_post(app, "/sdk/register", handle_register);

@@ -426,6 +426,31 @@ int portillia_registry_offer_conn(const char *hostname, int sdk_fd) {
     return -1;
 }
 
+bool portillia_registry_tunnel_status(const char *hostname, char *resolved_hostname, size_t resolved_hostname_len, bool *service_alive) {
+    if (resolved_hostname && resolved_hostname_len > 0) {
+        resolved_hostname[0] = '\0';
+    }
+    if (service_alive) {
+        *service_alive = false;
+    }
+    if (!global_server || !hostname) return false;
+
+    lease_record *rec = lease_registry_lookup(global_server->registry, hostname);
+    if (!rec || !rec->hostname) return false;
+
+    if (resolved_hostname && resolved_hostname_len > 0) {
+        snprintf(resolved_hostname, resolved_hostname_len, "%s", rec->hostname);
+    }
+
+    if (service_alive && rec->stream) {
+        pthread_mutex_lock(&rec->stream->mu);
+        *service_alive = rec->stream->count > 0;
+        pthread_mutex_unlock(&rec->stream->mu);
+    }
+
+    return true;
+}
+
 void portillia_registry_register(const char *hostname, const char *identity_key, int64_t bps_limit) {
     if (!global_server) return;
     lease_registry_register(global_server->registry, hostname, identity_key, bps_limit);
