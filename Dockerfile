@@ -8,7 +8,7 @@ COPY Makefile ./
 RUN make build-frontend || true
 
 # Stage 2: Build C artifacts
-FROM debian:12-slim AS c-builder
+FROM debian:trixie-slim AS c-builder
 WORKDIR /src
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -29,17 +29,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libtool \
     && rm -rf /var/lib/apt/lists/*
 
-# Build and install ngtcp2 from source (not available in Debian 12)
-RUN git clone --depth 1 --branch v1.22.1 https://github.com/ngtcp2/ngtcp2.git /tmp/ngtcp2 && \
-    cd /tmp/ngtcp2 && \
-    cmake -B build \
-        -DENABLE_STATIC_LIB=ON \
-        -DENABLE_SHARED_LIB=OFF \
-        -DENABLE_OPENSSL=ON \
-        -DCMAKE_INSTALL_PREFIX=/usr/local && \
-    cmake --build build -j$(nproc) && \
-    cmake --install build && \
-    rm -rf /tmp/ngtcp2
+# Build and install ngtcp2 from source if not available in distro
+RUN if ! pkg-config --exists libngtcp2_crypto_quictls 2>/dev/null && ! pkg-config --exists libngtcp2_crypto_ossl 2>/dev/null; then \
+        echo "ngtcp2 not found, building from source..." && \
+        git clone --depth 1 --branch v1.22.1 https://github.com/ngtcp2/ngtcp2.git /tmp/ngtcp2 && \
+        cd /tmp/ngtcp2 && \
+        cmake -B build \
+            -DENABLE_STATIC_LIB=ON \
+            -DENABLE_SHARED_LIB=OFF \
+            -DENABLE_LIB_ONLY=ON \
+            -DENABLE_OPENSSL=ON \
+            -DBUILD_TESTING=OFF \
+            -DCMAKE_INSTALL_PREFIX=/usr/local && \
+        cmake --build build -j$(nproc) && \
+        cmake --install build && \
+        rm -rf /tmp/ngtcp2; \
+    else \
+        echo "ngtcp2 found via pkg-config"; \
+    fi
 
 COPY . .
 
@@ -69,7 +76,7 @@ RUN make build-tunnel build-server build-demo
 
 # Stage 3: Final image
 FROM goacme/lego:latest AS lego-bin
-FROM debian:12-slim
+FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     libsqlite3-0 \
