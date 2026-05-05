@@ -176,7 +176,18 @@ int portillia_acme_manager_ensure_certificate(portillia_acme_manager *m, char **
     snprintf(cert_path, sizeof(cert_path), "%s/fullchain.pem", m->cfg.key_dir);
     snprintf(key_path, sizeof(key_path), "%s/privatekey.pem", m->cfg.key_dir);
     
+    // Ensure the internal lego state directory exists within the persistent volume
+    char acme_home[512];
+    snprintf(acme_home, sizeof(acme_home), "%s/.lego", m->cfg.key_dir);
+    mkdir(acme_home, 0700);
+    
     if (access(cert_path, F_OK) == 0 && access(key_path, F_OK) == 0) {
+        // Rebuild fullchain.pem from lego artifacts in case the existing one lacks the intermediate chain
+        char cp_cmd[2048];
+        snprintf(cp_cmd, sizeof(cp_cmd),
+                 "cat %s/certificates/%s.crt %s/certificates/%s.issuer.crt > %s 2>/dev/null || true",
+                 acme_home, m->cfg.base_domain, acme_home, m->cfg.base_domain, cert_path);
+        system(cp_cmd);
         *cert_file = strdup(cert_path);
         *key_file = strdup(key_path);
         return CWIST_SUCCESS;
@@ -202,11 +213,6 @@ int portillia_acme_manager_ensure_certificate(portillia_acme_manager *m, char **
         LOG_ERROR("Unsupported DNS provider for lego: %s", m->cfg.dns_provider_type);
         return CWIST_FAILURE;
     }
-
-    // Ensure the internal lego state directory exists within the persistent volume
-    char acme_home[512];
-    snprintf(acme_home, sizeof(acme_home), "%s/.lego", m->cfg.key_dir);
-    mkdir(acme_home, 0700);
 
     snprintf(cmd, sizeof(cmd), 
              "lego --accept-tos --email portal@%s --dns %s --domains %s --domains '*.%s' --path %s run", 
