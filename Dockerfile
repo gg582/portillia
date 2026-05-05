@@ -29,6 +29,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libtool \
     && rm -rf /var/lib/apt/lists/*
 
+# Build and install ngtcp2 from source (not available in Debian 12)
+RUN git clone --depth 1 --branch v1.22.1 https://github.com/ngtcp2/ngtcp2.git /tmp/ngtcp2 && \
+    cd /tmp/ngtcp2 && \
+    cmake -B build \
+        -DENABLE_STATIC_LIB=ON \
+        -DENABLE_SHARED_LIB=OFF \
+        -DENABLE_OPENSSL=ON \
+        -DCMAKE_INSTALL_PREFIX=/usr/local && \
+    cmake --build build -j$(nproc) && \
+    cmake --install build && \
+    rm -rf /tmp/ngtcp2
+
 COPY . .
 
 # Robustly handle missing cwist submodule (e.g. when built without local submodules initialized)

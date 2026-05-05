@@ -1,6 +1,23 @@
 CC ?= gcc
 CFLAGS = -Wall -Wextra -O3 -I./include -I./libs/cwist/include -I./libs/cwist/lib/cjson -I./libs/libttak/include -I./libs/secp256k1/include -pthread
-LDFLAGS = -L./libs/cwist -L./libs/cwist/lib/cjson -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -L./libs/secp256k1/.libs -lcwist -lttak -lssl -lcrypto -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread -lcrypto -lsecp256k1 -lngtcp2 -lngtcp2_crypto_ossl -lm
+LDFLAGS = -L./libs/cwist -L./libs/cwist/lib/cjson -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -L./libs/secp256k1/.libs -lcwist -lttak -lssl -lcrypto -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread -lcrypto -lsecp256k1 -lm
+
+# ngtcp2 detection (supports both distro packages and source builds)
+NGTCP2_CFLAGS := $(shell pkg-config --cflags libngtcp2 2>/dev/null)
+NGTCP2_LDFLAGS := $(shell pkg-config --libs-only-L libngtcp2 2>/dev/null)
+NGTCP2_LIBS := $(shell pkg-config --libs-only-l libngtcp2 2>/dev/null)
+NGTCP2_CRYPTO_LIBS := $(shell pkg-config --libs-only-l libngtcp2_crypto_quictls 2>/dev/null || pkg-config --libs-only-l libngtcp2_crypto_ossl 2>/dev/null)
+
+# Fallback if pkg-config doesn't find ngtcp2
+ifeq ($(NGTCP2_LIBS),)
+    NGTCP2_CFLAGS := -I/usr/local/include
+    NGTCP2_LDFLAGS := -L/usr/local/lib
+    NGTCP2_LIBS := -lngtcp2
+    NGTCP2_CRYPTO_LIBS := $(shell test -f /usr/local/lib/libngtcp2_crypto_quictls.a && echo -lngtcp2_crypto_quictls || echo -lngtcp2_crypto_ossl)
+endif
+
+CFLAGS += $(NGTCP2_CFLAGS)
+LDFLAGS += $(NGTCP2_LDFLAGS) $(NGTCP2_LIBS) $(NGTCP2_CRYPTO_LIBS)
 
 # Add cwist internal libs to include path
 CFLAGS += -I./libs/cwist/lib/libttak/include -I./libs/cwist/lib -I./libs/cwist/lib/sqlite3 -I./libs/cwist/lib/uriparser/include

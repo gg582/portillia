@@ -4,16 +4,14 @@
 #include <portillia/types/types.h>
 #include <portillia/utils/log.h>
 #include <cjson/cJSON.h>
-#include <time.h> // For time(NULL)
+#include <time.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include <portillia/portal/discovery/discovery.h>
 
 extern discovery_config *global_disc_cfg;
 
-/**
- * @brief Function handle_discovery_announce
- */
 void handle_discovery_announce(cwist_http_request *req, cwist_http_response *res) {
     cwist_sstring_assign(res->body, "{\"ok\": true, \"data\": {\"protocol_version\": \"7\", \"accepted\": false}}");
     if (req->body && req->body->size > 0) {
@@ -24,11 +22,6 @@ void handle_discovery_announce(cwist_http_request *req, cwist_http_response *res
                 cJSON *api_addr = cJSON_GetObjectItem(desc, "api_https_addr");
                 if (api_addr && api_addr->valuestring) {
                     portillia_relay_descriptor d = {0};
-                    d.address = cwist_sstring_create();
-                    d.version = cwist_sstring_create();
-                    d.api_https_addr = cwist_sstring_create();
-                    d.wireguard_public_key = cwist_sstring_create();
-                    d.signature = cwist_sstring_create();
                     cJSON *addr = cJSON_GetObjectItem(desc, "address");
                     cJSON *version = cJSON_GetObjectItem(desc, "version");
                     cJSON *issued = cJSON_GetObjectItem(desc, "issued_at");
@@ -41,11 +34,11 @@ void handle_discovery_announce(cwist_http_request *req, cwist_http_response *res
                     cJSON *active_connections = cJSON_GetObjectItem(desc, "active_connections");
                     cJSON *tcp_bps = cJSON_GetObjectItem(desc, "tcp_bps");
                     cJSON *signature = cJSON_GetObjectItem(desc, "signature");
-                    cwist_sstring_assign(d.address, (addr && cJSON_IsString(addr) && addr->valuestring) ? addr->valuestring : "");
-                    cwist_sstring_assign(d.version, (version && cJSON_IsString(version) && version->valuestring) ? version->valuestring : "");
-                    cwist_sstring_assign(d.api_https_addr, api_addr->valuestring);
-                    cwist_sstring_assign(d.wireguard_public_key, (wg_pub && cJSON_IsString(wg_pub) && wg_pub->valuestring) ? wg_pub->valuestring : "");
-                    cwist_sstring_assign(d.signature, (signature && cJSON_IsString(signature) && signature->valuestring) ? signature->valuestring : "");
+                    d.address = strdup((addr && cJSON_IsString(addr) && addr->valuestring) ? addr->valuestring : "");
+                    d.version = strdup((version && cJSON_IsString(version) && version->valuestring) ? version->valuestring : "");
+                    d.api_https_addr = strdup(api_addr->valuestring);
+                    d.wireguard_public_key = strdup((wg_pub && cJSON_IsString(wg_pub) && wg_pub->valuestring) ? wg_pub->valuestring : "");
+                    d.signature = strdup((signature && cJSON_IsString(signature) && signature->valuestring) ? signature->valuestring : "");
                     d.issued_at = (issued && cJSON_IsString(issued) && issued->valuestring) ? time(NULL) : time(NULL);
                     d.expires_at = (expires && cJSON_IsString(expires) && expires->valuestring) ? time(NULL) + 300 : time(NULL) + 300;
                     d.wireguard_port = (wg_port && cJSON_IsNumber(wg_port)) ? wg_port->valueint : 0;
@@ -64,11 +57,11 @@ void handle_discovery_announce(cwist_http_request *req, cwist_http_response *res
                     LOG_INFO("relay discovery announce accepted relay=%s source_ip=%s", api_addr->valuestring, source_ip);
                     
                     cwist_sstring_assign(res->body, "{\"ok\": true, \"data\": {\"protocol_version\": \"7\", \"accepted\": true}}");
-                    cwist_sstring_destroy(d.address);
-                    cwist_sstring_destroy(d.version);
-                    cwist_sstring_destroy(d.api_https_addr);
-                    cwist_sstring_destroy(d.wireguard_public_key);
-                    cwist_sstring_destroy(d.signature);
+                    free(d.address);
+                    free(d.version);
+                    free(d.api_https_addr);
+                    free(d.wireguard_public_key);
+                    free(d.signature);
                 }
             }
             cJSON_Delete(root);
@@ -77,9 +70,6 @@ void handle_discovery_announce(cwist_http_request *req, cwist_http_response *res
     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
 }
 
-/**
- * @brief Function portillia_api_server_relay_setup
- */
 void portillia_api_server_relay_setup(cwist_app *app) {
     cwist_app_post(app, "/discovery/announce", handle_discovery_announce);
 }
