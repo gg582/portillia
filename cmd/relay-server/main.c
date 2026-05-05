@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 #include <ctype.h>
 #include <cjson/cJSON.h>
+#include <curl/curl.h>
 
 extern char *get_sni_hostname(int client_fd);
 discovery_config *global_disc_cfg = NULL;
@@ -263,59 +264,145 @@ static const char *bool_str(bool value) {
     return value ? "true" : "false";
 }
 
-static char *load_registry_bootstraps(const char *path) {
-    FILE *f = fopen(path, "r");
-    if (!f) {
-        LOG_WARN("registry.json not found path=%s", path);
-        return NULL;
+#define PORTAL_RELAY_REGISTRY_URL "https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json"
+
+struct curl_response {
+    char *data;
+    size_t size;
+};
+
+static size_t curl_write_cb(void *contents, size_t size, size_t nmemb, void *userp) {
+    size_t realsize = size * nmemb;
+    struct curl_response *mem = (struct curl_response *)userp;
+    char *ptr = realloc(mem->data, mem->size + realsize + 1);
+    if (!ptr) return 0;
+    mem->data = ptr;
+    memcpy(&(mem->data[mem->size]), contents, realsize);
+    mem->size += realsize;
+    mem->data[mem->size] = 0;
+    return realsize;
+}
+
+static char *fetch_remote_registry(void) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+    struct curl_response res = { .data = malloc(1), .size = 0 };
+    res.data[0] = '\0';
+    curl_easy_setopt(curl, CURLOPT_URL, PORTAL_RELAY_REGISTRY_URL);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &res);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    CURLcode code = curl_easy_perform(curl);
+    char *result = NULL;
+    if (code == CURLE_OK) {
+        long status = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+        if (status == 200) {
+            cJSON *root = cJSON_Parse(res.data);
+            if (root) {
+                cJSON *relays = cJSON_GetObjectItem(root, "relays");
+                if (cJSON_IsArray(relays)) {
+                    int count = cJSON_GetArraySize(relays);
+                    size_t total = 0;
+                    for (int i = 0; i < count; i++) {
+                        cJSON *item = cJSON_GetArrayItem(relays, i);
+                        if (cJSON_IsString(item) && item->valuestring) total += strlen(item->valuestring) + 1;
+                    }
+                    if (total > 0) {
+                        result = malloc(total);
+                        if (result) {
+                            result[0] = '\0';
+                            size_t off = 0;
+                            for (int i = 0; i < count; i++) {
+                                cJSON *item = cJSON_GetArrayItem(relays, i);
+                                if (cJSON_IsString(item) && item->valuestring) {
+                                    if (off > 0) result[off++] = ',';
+                                    size_t len = strlen(item->valuestring);
+                                    memcpy(result + off, item->valuestring, len);
+                                    off += len;
+                                    result[off] = '\0';
+                                }
+                            }
+                        }
+                    }
+                }
+                cJSON_Delete(root);
+            }
+        } else {
+            LOG_WARN("remote registry fetch failed status=%ld", status);
+        }
+    } else {
+        LOG_WARN("remote registry fetch failed error=%s", curl_easy_strerror(code));
     }
-    fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc(fsize + 1);
-    if (!buf) { fclose(f); return NULL; }
-    fread(buf, 1, fsize, f);
-    fclose(f);
-    buf[fsize] = '\0';
-    cJSON *root = cJSON_Parse(buf);
-    free(buf);
-    if (!root) {
-        LOG_WARN("registry.json parse failed path=%s", path);
-        return NULL;
-    }
-    cJSON *relays = cJSON_GetObjectItem(root, "relays");
-    if (!cJSON_IsArray(relays)) {
-        LOG_WARN("registry.json missing relays array path=%s", path);
-        cJSON_Delete(root);
-        return NULL;
-    }
-    int count = cJSON_GetArraySize(relays);
+    free(res.data);
+    curl_easy_cleanup(curl);
+    return result;
+}
+
+static char *resolve_portal_relay_urls(const char *bootstraps, bool include_defaults, const char *portal_url) {
     size_t total = 0;
-    for (int i = 0; i < count; i++) {
-        cJSON *item = cJSON_GetArrayItem(relays, i);
-        if (cJSON_IsString(item) && item->valuestring) total += strlen(item->valuestring) + 1;
+    if (bootstraps && strlen(bootstraps) > 0) total += strlen(bootstraps);
+
+    char *remote = include_defaults ? fetch_remote_registry() : NULL;
+    if (remote && strlen(remote) > 0) {
+        if (total > 0) total++;
+        total += strlen(remote);
     }
+
     if (total == 0) {
-        LOG_WARN("registry.json relays array empty path=%s", path);
-        cJSON_Delete(root);
+        free(remote);
         return NULL;
     }
-    char *result = malloc(total);
-    if (!result) { cJSON_Delete(root); return NULL; }
+
+    char *result = malloc(total + 1);
+    if (!result) { free(remote); return NULL; }
     result[0] = '\0';
+
     size_t off = 0;
-    for (int i = 0; i < count; i++) {
-        cJSON *item = cJSON_GetArrayItem(relays, i);
-        if (cJSON_IsString(item) && item->valuestring) {
-            if (off > 0) result[off++] = ',';
-            size_t len = strlen(item->valuestring);
-            memcpy(result + off, item->valuestring, len);
-            off += len;
-            result[off] = '\0';
+    if (bootstraps && strlen(bootstraps) > 0) {
+        strcpy(result + off, bootstraps);
+        off += strlen(bootstraps);
+    }
+    if (remote && strlen(remote) > 0) {
+        if (off > 0) result[off++] = ',';
+        strcpy(result + off, remote);
+        off += strlen(remote);
+    }
+    result[off] = '\0';
+    free(remote);
+
+    /* Remove self URL from bootstraps (Go: RemoveRelayURL) */
+    if (portal_url && portal_url[0]) {
+        char *copy = strdup(result);
+        char *out = malloc(strlen(result) + 1);
+        if (out && copy) {
+            out[0] = '\0';
+            size_t out_off = 0;
+            char *saveptr = NULL;
+            char *token = strtok_r(copy, ",", &saveptr);
+            bool first = true;
+            while (token) {
+                while (*token == ' ') token++;
+                if (strcmp(token, portal_url) != 0 && strcasecmp(token, portal_url) != 0) {
+                    if (!first) { out[out_off++] = ','; out[out_off] = '\0'; }
+                    strcpy(out + out_off, token);
+                    out_off += strlen(token);
+                    first = false;
+                }
+                token = strtok_r(NULL, ",", &saveptr);
+            }
+            free(copy);
+            free(result);
+            result = out;
+        } else {
+            free(copy);
+            free(out);
         }
     }
-    cJSON_Delete(root);
-    LOG_INFO("loaded registry.json path=%s bootstraps=%s", path, result);
+
     return result;
 }
 
@@ -464,15 +551,8 @@ int main(void) {
     
     discovery_config *disc_cfg = malloc(sizeof(discovery_config));
     disc_cfg->relay_url = strdup(portal_url);
-    char *registry_bootstraps = load_registry_bootstraps("registry.json");
-    if (strlen(bootstraps) > 0) {
-        disc_cfg->bootstrap_urls = strdup(bootstraps);
-        if (registry_bootstraps) free(registry_bootstraps);
-    } else if (registry_bootstraps) {
-        disc_cfg->bootstrap_urls = registry_bootstraps;
-    } else {
-        disc_cfg->bootstrap_urls = NULL;
-    }
+    char *resolved_bootstraps = resolve_portal_relay_urls(bootstraps, discovery_enabled, portal_url);
+    disc_cfg->bootstrap_urls = resolved_bootstraps;
     disc_cfg->relay_set = portillia_relay_set_new();
     global_disc_cfg = disc_cfg;
     if (disc_cfg->bootstrap_urls) {
