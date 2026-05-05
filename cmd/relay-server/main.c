@@ -18,6 +18,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <ctype.h>
+#include <cjson/cJSON.h>
 
 extern char *get_sni_hostname(int client_fd);
 discovery_config *global_disc_cfg = NULL;
@@ -262,6 +263,47 @@ static const char *bool_str(bool value) {
     return value ? "true" : "false";
 }
 
+static char *load_registry_bootstraps(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc(fsize + 1);
+    if (!buf) { fclose(f); return NULL; }
+    fread(buf, 1, fsize, f);
+    fclose(f);
+    buf[fsize] = '\0';
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    if (!root) return NULL;
+    cJSON *relays = cJSON_GetObjectItem(root, "relays");
+    if (!cJSON_IsArray(relays)) { cJSON_Delete(root); return NULL; }
+    int count = cJSON_GetArraySize(relays);
+    size_t total = 0;
+    for (int i = 0; i < count; i++) {
+        cJSON *item = cJSON_GetArrayItem(relays, i);
+        if (cJSON_IsString(item) && item->valuestring) total += strlen(item->valuestring) + 1;
+    }
+    if (total == 0) { cJSON_Delete(root); return NULL; }
+    char *result = malloc(total);
+    if (!result) { cJSON_Delete(root); return NULL; }
+    result[0] = '\0';
+    size_t off = 0;
+    for (int i = 0; i < count; i++) {
+        cJSON *item = cJSON_GetArrayItem(relays, i);
+        if (cJSON_IsString(item) && item->valuestring) {
+            if (off > 0) result[off++] = ',';
+            size_t len = strlen(item->valuestring);
+            memcpy(result + off, item->valuestring, len);
+            off += len;
+            result[off] = '\0';
+        }
+    }
+    cJSON_Delete(root);
+    return result;
+}
+
 static char *portal_root_hostname(const char *portal_url) {
     if (!portal_url) {
         return strdup("localhost");
@@ -407,7 +449,16 @@ int main(void) {
     
     discovery_config *disc_cfg = malloc(sizeof(discovery_config));
     disc_cfg->relay_url = strdup(portal_url);
-    disc_cfg->bootstrap_urls = strlen(bootstraps) > 0 ? strdup(bootstraps) : NULL;
+    char *registry_bootstraps = load_registry_bootstraps("registry.json");
+    if (strlen(bootstraps) > 0) {
+        disc_cfg->bootstrap_urls = strdup(bootstraps);
+        if (registry_bootstraps) free(registry_bootstraps);
+    } else if (registry_bootstraps) {
+        disc_cfg->bootstrap_urls = registry_bootstraps;
+        LOG_INFO("loaded %zu bootstrap relays from registry.json", strlen(registry_bootstraps) > 0 ? 1 : 0);
+    } else {
+        disc_cfg->bootstrap_urls = NULL;
+    }
     disc_cfg->relay_set = portillia_relay_set_new();
     global_disc_cfg = disc_cfg;
     portillia_discovery_publish_self(disc_cfg);

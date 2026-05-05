@@ -256,11 +256,14 @@ void portillia_discovery_poll(discovery_config *cfg, const char *url) {
 
     CURLcode code = curl_easy_perform(curl);
     if (code == CURLE_OK) {
+        long status = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
         cJSON *root = cJSON_Parse(res.data);
         if (root) {
             cJSON *relays = discovery_relays_array(root);
             if (cJSON_IsArray(relays)) {
                 int size = cJSON_GetArraySize(relays);
+                LOG_INFO("discovery poll succeeded url=%s status=%ld relays=%d", url, status, size);
                 for (int i = 0; i < size; i++) {
                     cJSON *item = cJSON_GetArrayItem(relays, i);
                     cJSON *addr = cJSON_GetObjectItem(item, "address");
@@ -301,7 +304,11 @@ void portillia_discovery_poll(discovery_config *cfg, const char *url) {
                 }
             }
             cJSON_Delete(root);
+        } else {
+            LOG_WARN("discovery poll parse failed url=%s", url);
         }
+    } else {
+        LOG_WARN("discovery poll failed url=%s error=%s", url, curl_easy_strerror(code));
     }
 
     free(res.data);
