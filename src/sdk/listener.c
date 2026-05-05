@@ -146,6 +146,12 @@ static int open_reverse_session(portillia_listener_t *l, SSL **out_outer_ssl) {
             close(conn_fd);
             return -1;
         }
+        if (!SSL_set_tlsext_host_name(outer_ssl, host)) {
+            SSL_free(outer_ssl);
+            close(conn_fd);
+            errno = EIO;
+            return -1;
+        }
         if (SSL_connect(outer_ssl) <= 0) {
             SSL_free(outer_ssl);
             close(conn_fd);
