@@ -525,46 +525,71 @@ int main(void) {
             char *cert_file = NULL, *key_file = NULL;
             if (portillia_acme_manager_ensure_certificate(acme, &cert_file, &key_file) == CWIST_SUCCESS) {
                 LOG_INFO("Using certificate: %s", cert_file);
-                cwist_app_use_https(app, cert_file, key_file);
+                cwist_error_t https_err = cwist_app_use_https(app, cert_file, key_file);
                 free(cert_file); free(key_file);
 
-                // Encrypted Client Hello (ECH) setup
-                ensure_descriptor_identity();
-                if (g_desc_priv_hex[0]) {
-                    char ech_seed[64] = {0};
-                    if (settings->encrypted_client_hello_seed && settings->encrypted_client_hello_seed[0]) {
-                        snprintf(ech_seed, sizeof(ech_seed), "%s", settings->encrypted_client_hello_seed);
+                if (https_err.errtype != CWIST_ERR_INT16 || https_err.error.err_i16 != 0) {
+                    if (https_err.errtype == CWIST_ERR_JSON && https_err.error.err_json) {
+                        char *json = cJSON_PrintUnformatted(https_err.error.err_json);
+                        LOG_ERROR("Failed to initialize HTTPS context error=%s", json ? json : "{}");
+                        free(json);
                     } else {
-                        const char *ech_seed_env = getenv("ENCRYPTED_CLIENT_HELLO_SEED");
-                        if (ech_seed_env && ech_seed_env[0]) {
-                            snprintf(ech_seed, sizeof(ech_seed), "%s", ech_seed_env);
+                        LOG_ERROR("Failed to initialize HTTPS context errtype=%d code=%d",
+                                  https_err.errtype,
+                                  https_err.error.err_i16);
+                    }
+                } else if (ech_enabled) {
+                    // Encrypted Client Hello (ECH) setup is only safe on supported OpenSSL builds.
+                    ensure_descriptor_identity();
+                    if (g_desc_priv_hex[0]) {
+                        char ech_seed[64] = {0};
+                        if (settings->encrypted_client_hello_seed && settings->encrypted_client_hello_seed[0]) {
+                            snprintf(ech_seed, sizeof(ech_seed), "%s", settings->encrypted_client_hello_seed);
                         } else {
-                            uint8_t rand_bytes[16];
-                            if (RAND_bytes(rand_bytes, sizeof(rand_bytes)) == 1) {
-                                for (int i = 0; i < 16; i++) {
-                                    sprintf(ech_seed + i * 2, "%02x", rand_bytes[i]);
+                            const char *ech_seed_env = getenv("ENCRYPTED_CLIENT_HELLO_SEED");
+                            if (ech_seed_env && ech_seed_env[0]) {
+                                snprintf(ech_seed, sizeof(ech_seed), "%s", ech_seed_env);
+                            } else {
+                                uint8_t rand_bytes[16];
+                                if (RAND_bytes(rand_bytes, sizeof(rand_bytes)) == 1) {
+                                    for (int i = 0; i < 16; i++) {
+                                        sprintf(ech_seed + i * 2, "%02x", rand_bytes[i]);
+                                    }
                                 }
+                            }
+                            if (ech_seed[0]) {
+                                free(settings->encrypted_client_hello_seed);
+                                settings->encrypted_client_hello_seed = strdup(ech_seed);
+                                portillia_settings_save(settings_path, settings);
                             }
                         }
                         if (ech_seed[0]) {
-                            free(settings->encrypted_client_hello_seed);
-                            settings->encrypted_client_hello_seed = strdup(ech_seed);
-                            portillia_settings_save(settings_path, settings);
+                            char ech_pem_path[1024];
+                            snprintf(ech_pem_path, sizeof(ech_pem_path), "%s/ech.pem", identity_path);
+                            if (portillia_keyless_ech_generate_keys(g_desc_priv_hex, ech_seed, root_hostname, ech_pem_path) == 0) {
+                                cwist_ech_config ech_cfg = {
+                                    .ech_key_file = ech_pem_path,
+                                    .ech_dir = NULL,
+                                    .enforce_ech = false,
+                                    .auto_retry_keys = true,
+                                };
+                                cwist_error_t ech_err = cwist_app_use_ech(app, &ech_cfg);
+                                if (ech_err.errtype != CWIST_ERR_INT16 || ech_err.error.err_i16 != 0) {
+                                    if (ech_err.errtype == CWIST_ERR_JSON && ech_err.error.err_json) {
+                                        char *json = cJSON_PrintUnformatted(ech_err.error.err_json);
+                                        LOG_WARN("ECH setup skipped after TLS init error=%s", json ? json : "{}");
+                                        free(json);
+                                    } else {
+                                        LOG_WARN("ECH setup skipped after TLS init errtype=%d code=%d",
+                                                 ech_err.errtype,
+                                                 ech_err.error.err_i16);
+                                    }
+                                }
+                            }
                         }
                     }
-                    if (ech_seed[0]) {
-                        char ech_pem_path[1024];
-                        snprintf(ech_pem_path, sizeof(ech_pem_path), "%s/ech.pem", identity_path);
-                        if (portillia_keyless_ech_generate_keys(g_desc_priv_hex, ech_seed, root_hostname, ech_pem_path) == 0) {
-                            cwist_ech_config ech_cfg = {
-                                .ech_key_file = ech_pem_path,
-                                .ech_dir = NULL,
-                                .enforce_ech = false,
-                                .auto_retry_keys = true,
-                            };
-                            cwist_app_use_ech(app, &ech_cfg);
-                        }
-                    }
+                } else {
+                    LOG_INFO("Skipping ECH setup because the linked OpenSSL build does not support server ECH");
                 }
             }
             portillia_acme_manager_sync_dns(acme);
