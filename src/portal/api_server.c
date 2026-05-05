@@ -604,8 +604,8 @@ void handle_domain(cwist_http_request *req, cwist_http_response *res) {
     cJSON_AddStringToObject(data, "protocol_version", PORTILLIA_SDK_VERSION);
     cJSON_AddStringToObject(data, "release_version", PORTILLIA_RELEASE_VERSION);
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "ok", true);
     cJSON_AddItemToObject(root, "data", data);
+    cJSON_AddBoolToObject(root, "ok", true);
     char *json = cJSON_PrintUnformatted(root);
     cwist_sstring_assign(res->body, json);
     free(json);
