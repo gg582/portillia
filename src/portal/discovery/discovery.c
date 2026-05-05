@@ -432,6 +432,7 @@ static void discovery_task(ttak_task_t *task, void *arg) {
 
     char canonical[2048] = {0};
     build_canonical_descriptor_json(&desc, canonical, sizeof(canonical));
+    LOG_INFO("discovery canonical json=%s", canonical);
     char sig_b64[256] = {0};
     if (sign_descriptor_compact_b64(canonical, sig_b64, sizeof(sig_b64)) == 0) {
         free(desc.signature);
