@@ -425,7 +425,7 @@ static void discovery_task(ttak_task_t *task, void *arg) {
     const char *wg_pub = getenv("WIREGUARD_PUBLIC_KEY");
     free(desc.wireguard_public_key);
     desc.wireguard_public_key = strdup(wg_pub ? wg_pub : "");
-    desc.wireguard_port = 51820;
+    desc.wireguard_port = (wg_pub && wg_pub[0]) ? 51820 : 0;
     desc.supports_overlay = (wg_pub && wg_pub[0]) ? true : false;
     desc.supports_udp = false;
     desc.supports_tcp = true;
