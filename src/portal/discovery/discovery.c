@@ -60,27 +60,92 @@ static int hex_to_bytes32(const char *hex, uint8_t out[32]) {
     return 0;
 }
 
+static bool load_descriptor_identity_from_private_key(const char *private_key_hex) {
+    if (!private_key_hex) return false;
+
+    const char *hex = private_key_hex;
+    if (strncmp(hex, "0x", 2) == 0 || strncmp(hex, "0X", 2) == 0) {
+        hex += 2;
+    }
+    if (strlen(hex) != 64) return false;
+
+    char tmp_addr[43] = {0};
+    uint8_t priv[32];
+    if (hex_to_bytes32(hex, priv) != 0) return false;
+
+    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+    if (!ctx) return false;
+
+    bool ok = false;
+    if (secp256k1_ec_seckey_verify(ctx, priv)) {
+        secp256k1_pubkey pubkey;
+        if (secp256k1_ec_pubkey_create(ctx, &pubkey, priv)) {
+            size_t pub_len = 65;
+            uint8_t pub_buf[65];
+            secp256k1_ec_pubkey_serialize(ctx, pub_buf, &pub_len, &pubkey, SECP256K1_EC_UNCOMPRESSED);
+            portillia_crypto_pubkey_to_address(pub_buf, pub_len, tmp_addr);
+            snprintf(g_desc_priv_hex, sizeof(g_desc_priv_hex), "%s", hex);
+            snprintf(g_desc_addr, sizeof(g_desc_addr), "%s", tmp_addr);
+            ok = true;
+        }
+    }
+
+    secp256k1_context_destroy(ctx);
+    return ok;
+}
+
+static bool load_descriptor_identity_from_file(const char *identity_path_env) {
+    if (!identity_path_env || !identity_path_env[0]) return false;
+
+    char identity_file[1024];
+    snprintf(identity_file, sizeof(identity_file), "%s/identity.json", identity_path_env);
+
+    FILE *f = fopen(identity_file, "rb");
+    if (!f) return false;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0) {
+        fclose(f);
+        return false;
+    }
+
+    char *data = malloc((size_t)size + 1);
+    if (!data) {
+        fclose(f);
+        return false;
+    }
+    if (fread(data, 1, (size_t)size, f) != (size_t)size) {
+        free(data);
+        fclose(f);
+        return false;
+    }
+    data[size] = '\0';
+    fclose(f);
+
+    bool ok = false;
+    cJSON *root = cJSON_Parse(data);
+    if (root) {
+        cJSON *private_key = cJSON_GetObjectItem(root, "private_key");
+        if (private_key && cJSON_IsString(private_key) && private_key->valuestring) {
+            ok = load_descriptor_identity_from_private_key(private_key->valuestring);
+        }
+        cJSON_Delete(root);
+    }
+    free(data);
+    return ok;
+}
+
 void ensure_descriptor_identity() {
     if (g_desc_priv_hex[0] && g_desc_addr[0]) return;
     const char *env_priv = getenv("RELAY_DESCRIPTOR_PRIVATE_KEY");
-    if (env_priv && strlen(env_priv) == 64) {
-        char tmp_addr[43] = {0};
-        uint8_t priv[32];
-        if (hex_to_bytes32(env_priv, priv) == 0) {
-            secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
-            if (ctx && secp256k1_ec_seckey_verify(ctx, priv)) {
-                secp256k1_pubkey pubkey;
-                if (secp256k1_ec_pubkey_create(ctx, &pubkey, priv)) {
-                    size_t pub_len = 65;
-                    uint8_t pub_buf[65];
-                    secp256k1_ec_pubkey_serialize(ctx, pub_buf, &pub_len, &pubkey, SECP256K1_EC_UNCOMPRESSED);
-                    portillia_crypto_pubkey_to_address(pub_buf, pub_len, tmp_addr);
-                    snprintf(g_desc_priv_hex, sizeof(g_desc_priv_hex), "%s", env_priv);
-                    snprintf(g_desc_addr, sizeof(g_desc_addr), "%s", tmp_addr);
-                }
-            }
-            if (ctx) secp256k1_context_destroy(ctx);
-        }
+    const char *identity_path = getenv("IDENTITY_PATH");
+    if (env_priv && env_priv[0]) {
+        (void)load_descriptor_identity_from_private_key(env_priv);
+    }
+    if ((!g_desc_priv_hex[0] || !g_desc_addr[0]) && identity_path && identity_path[0]) {
+        (void)load_descriptor_identity_from_file(identity_path);
     }
     if (!g_desc_priv_hex[0] || !g_desc_addr[0]) {
         char priv_hex[65] = {0};
