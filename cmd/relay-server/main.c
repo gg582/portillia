@@ -2,6 +2,7 @@
 #include <cwist/core/sstring/sstring.h>
 #include <portillia/types/types.h>
 #include <portillia/utils/log.h>
+#include <portillia/utils/network.h>
 #include <portillia/portal/acme/manager.h>
 #include <portillia/portal/discovery/discovery.h>
 #include <portillia/portal/settings.h>
