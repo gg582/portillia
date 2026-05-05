@@ -234,7 +234,10 @@ static bool verify_siwe_signature_address(const char *siwe_message, const char *
 
     // SIGN | VERIFY context is required for secp256k1_ecdsa_recover on some builds
     secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
-    if (!ctx) return false;
+    if (!ctx) {
+        LOG_ERROR("SIWE verify: secp256k1_context_create failed");
+        return false;
+    }
 
     // Explicitly separate r||s from v to avoid any boundary issue
     uint8_t rs64[64];
@@ -243,20 +246,47 @@ static bool verify_siwe_signature_address(const char *siwe_message, const char *
     secp256k1_ecdsa_recoverable_signature sig;
     secp256k1_pubkey pubkey;
     bool ok = false;
-    if (secp256k1_ecdsa_recoverable_signature_parse_compact(ctx, &sig, rs64, recid) &&
-        secp256k1_ecdsa_recover(ctx, &pubkey, &sig, hash)) {
-        size_t pub_len = 65;
-        uint8_t pub_buf[65];
-        secp256k1_ec_pubkey_serialize(ctx, pub_buf, &pub_len, &pubkey, SECP256K1_EC_UNCOMPRESSED);
-        char addr[43] = {0};
-        portillia_crypto_pubkey_to_address(pub_buf, pub_len, addr);
 
-        // Strip optional 0x prefix from expected_address before comparison
-        const char *expected = expected_address;
-        if (expected[0] == '0' && (expected[1] == 'x' || expected[1] == 'X')) expected += 2;
-        ok = (strcasecmp(addr + 2, expected) == 0);
+    LOG_DEBUG("SIWE verify: msg_len=%zu expected=%s", strlen(siwe_message), expected_address);
+    LOG_DEBUG("SIWE verify: hash=%02x%02x%02x%02x...%02x%02x%02x%02x",
+              hash[0], hash[1], hash[2], hash[3], hash[28], hash[29], hash[30], hash[31]);
+    LOG_DEBUG("SIWE verify: r=%02x%02x...%02x s=%02x%02x...%02x v=%d",
+              rs64[0], rs64[1], rs64[31], rs64[32], rs64[33], rs64[63], (int)sig65[64]);
+
+    // Try all 4 recid values. Different secp256k1 libraries (e.g. decred/dcrd
+    // vs bitcoin-core) may compute recid slightly differently, so trying each
+    // possibility is the most robust way to recover the correct pubkey.
+    for (int try_recid = 0; try_recid < 4; try_recid++) {
+        int parsed = secp256k1_ecdsa_recoverable_signature_parse_compact(ctx, &sig, rs64, try_recid);
+        int recovered = 0;
+        if (parsed) {
+            recovered = secp256k1_ecdsa_recover(ctx, &pubkey, &sig, hash);
+        }
+        if (parsed && recovered) {
+            size_t pub_len = 65;
+            uint8_t pub_buf[65];
+            secp256k1_ec_pubkey_serialize(ctx, pub_buf, &pub_len, &pubkey, SECP256K1_EC_UNCOMPRESSED);
+            char addr[43] = {0};
+            portillia_crypto_pubkey_to_address(pub_buf, pub_len, addr);
+
+            // Strip optional 0x prefix from expected_address before comparison
+            const char *expected = expected_address;
+            if (expected[0] == '0' && (expected[1] == 'x' || expected[1] == 'X')) expected += 2;
+            int match = strcasecmp(addr + 2, expected) == 0;
+            LOG_DEBUG("SIWE verify: recid=%d parsed=%d recovered=%d addr=%s match=%d",
+                      try_recid, parsed, recovered, addr, match);
+            if (match) {
+                ok = true;
+                break;
+            }
+        } else {
+            LOG_DEBUG("SIWE verify: recid=%d parsed=%d recovered=%d", try_recid, parsed, recovered);
+        }
     }
     secp256k1_context_destroy(ctx);
+    if (!ok) {
+        LOG_WARN("SIWE verify: all 4 recids failed for expected=%s", expected_address);
+    }
     return ok;
 }
 
@@ -322,6 +352,10 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
                     return;
                 }
+                LOG_INFO("Register verify: challenge_id=%s addr=%s msg_len=%zu sig_len=%zu",
+                         challenge->challenge_id, challenge->identity_address,
+                         siwe_message && siwe_message->valuestring ? strlen(siwe_message->valuestring) : 0,
+                         siwe_signature && siwe_signature->valuestring ? strlen(siwe_signature->valuestring) : 0);
                 if (!siwe_signature || !cJSON_IsString(siwe_signature) || !siwe_signature->valuestring ||
                     !verify_siwe_signature_address(siwe_message->valuestring, siwe_signature->valuestring, challenge->identity_address)) {
                     res->status_code = CWIST_HTTP_FORBIDDEN;
