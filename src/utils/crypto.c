@@ -22,16 +22,40 @@ void portillia_crypto_keccak256(const uint8_t *data, size_t len, uint8_t *out) {
 }
 
 /**
- * @brief Derive Ethereum address from Secp256k1 public key.
+ * @brief Derive Ethereum address from Secp256k1 public key (EIP-55 checksummed).
  */
 void portillia_crypto_pubkey_to_address(const uint8_t *pubkey, size_t pubkey_len, char *out_addr) {
     uint8_t hash[32];
     portillia_crypto_keccak256(pubkey + 1, pubkey_len - 1, hash);
     
-    strcpy(out_addr, "0x");
+    char lower[41] = {0};
     for (int i = 12; i < 32; i++) {
-        sprintf(out_addr + 2 + (i - 12) * 2, "%02x", hash[i]);
+        sprintf(lower + (i - 12) * 2, "%02x", hash[i]);
     }
+    
+    uint8_t checksum_hash[32];
+    sha3_HashBuffer(256, SHA3_FLAGS_KECCAK, lower, 40, checksum_hash, 32);
+    
+    strcpy(out_addr, "0x");
+    for (int i = 0; i < 40; i++) {
+        char c = lower[i];
+        if (c >= '0' && c <= '9') {
+            out_addr[2 + i] = c;
+        } else {
+            int nibble = checksum_hash[i / 2];
+            if (i % 2 == 0) {
+                nibble >>= 4;
+            } else {
+                nibble &= 0x0f;
+            }
+            if (nibble > 7) {
+                out_addr[2 + i] = c - ('a' - 'A');
+            } else {
+                out_addr[2 + i] = c;
+            }
+        }
+    }
+    out_addr[42] = '\0';
 }
 
 /**
