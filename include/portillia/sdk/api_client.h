@@ -19,9 +19,11 @@ typedef struct portillia_http_client portillia_http_client_t;
 
 /**
  * @brief Create an HTTP+TLS client for a relay URL.
+ * @param insecure_skip_verify When true, disable TLS peer and hostname verification.
  * @return Client context on success, NULL on error.
  */
-portillia_http_client_t *portillia_http_client_create(const char *relay_url);
+portillia_http_client_t *portillia_http_client_create(const char *relay_url,
+                                                      bool insecure_skip_verify);
 void portillia_http_client_destroy(portillia_http_client_t *client);
 void portillia_http_client_close_idle(portillia_http_client_t *client);
 

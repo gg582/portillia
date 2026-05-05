@@ -47,6 +47,7 @@ typedef struct portillia_expose_config {
     size_t multi_hop_count;
     int multi_hop_depth;
     bool ban_mitm;
+    bool insecure_skip_verify;
     int max_active_relays;
     portillia_lease_metadata_t metadata;
 } portillia_expose_config_t;
@@ -74,6 +75,7 @@ typedef struct portillia_exposure {
     size_t multi_hop_count;
     int multi_hop_depth;
     bool ban_mitm;
+    bool insecure_skip_verify;
     int max_active_relays;
     portillia_lease_metadata_t metadata;
 

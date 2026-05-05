@@ -76,6 +76,7 @@ portal expose --name myapp \
 - `--multi-hop-depth` automatically selects one multi-hop relay path with that hop count.
 - `--discovery=false` disables the public registry seed list and the runtime relay discovery expansion loop for that run. With `--discovery=false`, only the explicit `--relays` values are used.
 - `--ban-mitm` enables strict rejection when the TLS self-probe detects termination in the path.
+- Relay API TLS certificates are verified by default. Use `--insecure-skip-verify` only for temporary local development against a relay with a broken or private trust chain.
 - `--tcp` requests a dedicated TCP port on the relay for raw TCP services that do not use TLS (e.g., Minecraft, game servers).
 - `--udp` requests a public UDP port on the relay and forwards datagrams to `--udp-addr` or the primary target.
 
@@ -88,6 +89,7 @@ Flags:
 --discovery       Include public registry relays and discover additional relay bootstraps
 --max-active-relays  Maximum number of auto-selected relays; explicit --relays are always included
 --ban-mitm        Ban relay when the MITM self-probe detects TLS termination
+--insecure-skip-verify  Disable TLS verification for relay API HTTPS requests
 --identity-path   Identity JSON file path; created automatically when missing
 --identity-json   Identity JSON payload; overrides --identity-path contents and is persisted there when both are set
 --name            Public hostname prefix (single DNS label); auto-generated when omitted

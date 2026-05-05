@@ -44,6 +44,7 @@ typedef struct portillia_listener {
     int retry_wait_sec;
     int lease_ttl_sec;
     int renew_before_sec;
+    bool insecure_skip_verify;
 
     /* Transport */
     portillia_stream_client_t *stream;
@@ -71,7 +72,8 @@ portillia_listener_t *portillia_listener_new(const char *relay_url,
                                               portillia_relay_set_t *relay_set,
                                               char **multi_hop, size_t multi_hop_count,
                                               bool udp_enabled, bool tcp_enabled,
-                                              int retry_count);
+                                              int retry_count,
+                                              bool insecure_skip_verify);
 
 void portillia_listener_close(portillia_listener_t *l);
 

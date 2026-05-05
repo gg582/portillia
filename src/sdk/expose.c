@@ -345,6 +345,7 @@ portillia_exposure_t *portillia_expose(const portillia_expose_config_t *cfg) {
     e->tcp_enabled = cfg->tcp_enabled;
     e->multi_hop_depth = cfg->multi_hop_depth;
     e->ban_mitm = cfg->ban_mitm;
+    e->insecure_skip_verify = cfg->insecure_skip_verify;
     e->max_active_relays = cfg->max_active_relays;
     portillia_lease_metadata_copy(&e->metadata, &cfg->metadata);
 
@@ -1066,7 +1067,7 @@ static void *discovery_loop_thread(void *arg) {
         if (urls) {
             for (size_t i = 0; i < url_count && e->discovery_running && !exposure_done(e); i++) {
                 if (!urls[i]) continue;
-                portillia_http_client_t *client = portillia_http_client_create(urls[i]);
+                portillia_http_client_t *client = portillia_http_client_create(urls[i], e->insecure_skip_verify);
                 if (!client) continue;
                 portillia_discovery_response_t resp = {0};
                 if (portillia_api_discover_relays(client, &resp) == 0) {
@@ -1180,7 +1181,8 @@ static int reconcile_relay_listeners(portillia_exposure_t *e, bool fail_on_error
             url, &e->identity, &e->metadata, e->relay_set,
             listener_multi_hop, listener_multi_hop_count,
             e->udp_enabled, e->tcp_enabled,
-            0 /* retry_count: auto-selected relays get retries */
+            0 /* retry_count: auto-selected relays get retries */,
+            e->insecure_skip_verify
         );
         if (!listener) {
             LOG_WARN("SDK: Failed to create listener for %s", url);

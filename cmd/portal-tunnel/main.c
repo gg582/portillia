@@ -9,7 +9,7 @@
 void print_usage() {
     printf("portal-tunnel <command> [args]\n");
     printf("Commands:\n");
-    printf("  expose <target> --relays <url>\n");
+    printf("  expose <target> [--relays <url>] [--insecure-skip-verify]\n");
     printf("  version\n");
 }
 
@@ -23,25 +23,35 @@ int main(int argc, char **argv) {
         printf("Portillia %s (C implementation)\n", PORTILLIA_RELEASE_VERSION);
     } else if (strcmp(argv[1], "expose") == 0) {
         if (argc < 3) {
-            printf("Usage: portal-tunnel expose <target> [--relays <url>]\n");
+            printf("Usage: portal-tunnel expose <target> [--relays <url>] [--insecure-skip-verify]\n");
             return 1;
         }
         const char *target = argv[2];
         const char *relay = "http://localhost:4017";
+        bool insecure_skip_verify = false;
         
         for (int i = 3; i < argc; i++) {
             if (strcmp(argv[i], "--relays") == 0 && i + 1 < argc) {
                 relay = argv[i+1];
+                i++;
+                continue;
+            }
+            if (strcmp(argv[i], "--insecure-skip-verify") == 0) {
+                insecure_skip_verify = true;
             }
         }
 
         LOG_INFO("SDK: Starting portal tunnel; target: %s, relay: %s", target, relay);
+        if (insecure_skip_verify) {
+            LOG_WARN("SDK: TLS certificate verification disabled for relay API requests");
+        }
 
         portillia_expose_config_t cfg = {0};
         cfg.target_addr = (char *)target;
         cfg.relay_urls = (char **)&relay;
         cfg.relay_urls_count = 1;
         cfg.tcp_enabled = true;
+        cfg.insecure_skip_verify = insecure_skip_verify;
 
         portillia_exposure_t *exp = portillia_expose(&cfg);
         if (!exp) {

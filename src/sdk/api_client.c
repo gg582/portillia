@@ -29,6 +29,7 @@
 struct portillia_http_client {
     char *relay_url;
     CURL *curl;
+    bool insecure_skip_verify;
 };
 
 /* ---------- Normalization helpers ---------- */
@@ -635,7 +636,7 @@ static int http_json(portillia_http_client_t *client,
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "portillia-c-sdk/1");
-    if (strncmp(url, "https://", 8) == 0) {
+    if (strncmp(url, "https://", 8) == 0 && client->insecure_skip_verify) {
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     }
@@ -761,7 +762,8 @@ static int parse_renew_response_json(cJSON *root, portillia_renew_response_t *ou
     return out->access_token ? 0 : -1;
 }
 
-portillia_http_client_t *portillia_http_client_create(const char *relay_url) {
+portillia_http_client_t *portillia_http_client_create(const char *relay_url,
+                                                      bool insecure_skip_verify) {
     if (!relay_url) return NULL;
     static bool curl_inited = false;
     if (!curl_inited) {
@@ -772,6 +774,7 @@ portillia_http_client_t *portillia_http_client_create(const char *relay_url) {
     if (!c) return NULL;
     c->relay_url = portillia_gc_strdup(relay_url);
     c->curl = curl_easy_init();
+    c->insecure_skip_verify = insecure_skip_verify;
     return c;
 }
 

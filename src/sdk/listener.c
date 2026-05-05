@@ -313,7 +313,7 @@ static void *renew_thread(void *arg) {
 
 static int register_and_configure(portillia_listener_t *l) {
     if (!l->http_client) {
-        l->http_client = portillia_http_client_create(l->relay_url);
+        l->http_client = portillia_http_client_create(l->relay_url, l->insecure_skip_verify);
         if (!l->http_client) return -1;
     }
     if (portillia_http_client_check_domain(l->http_client) != 0) {
@@ -468,7 +468,8 @@ portillia_listener_t *portillia_listener_new(const char *relay_url,
                                               portillia_relay_set_t *relay_set,
                                               char **multi_hop, size_t multi_hop_count,
                                               bool udp_enabled, bool tcp_enabled,
-                                              int retry_count) {
+                                              int retry_count,
+                                              bool insecure_skip_verify) {
     if (!relay_url || !identity) {
         errno = EINVAL;
         return NULL;
@@ -500,6 +501,7 @@ portillia_listener_t *portillia_listener_new(const char *relay_url,
     l->retry_wait_sec = DEFAULT_RETRY_WAIT_SEC;
     l->lease_ttl_sec = DEFAULT_LEASE_TTL_SEC;
     l->renew_before_sec = DEFAULT_RENEW_BEFORE_SEC;
+    l->insecure_skip_verify = insecure_skip_verify;
 
     l->stream = portillia_stream_client_new(l->ready_target, DEFAULT_HANDSHAKE_TIMEOUT_SEC);
     if (udp_enabled) {
