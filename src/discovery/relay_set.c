@@ -15,8 +15,6 @@
 #include <openssl/sha.h>
 #include <openssl/bio.h>
 #include <openssl/buffer.h>
-#include <secp256k1.h>
-#include <secp256k1_recovery.h>
 #include <portillia/utils/crypto.h>
 
 /* ---------- ttak_table iteration (Swiss-table control bytes) ---------- */
@@ -235,25 +233,14 @@ static bool verify_relay_descriptor(const portillia_relay_descriptor_t *desc) {
     uint8_t hash[SHA256_DIGEST_LENGTH];
     SHA256((const uint8_t *)canonical, strlen(canonical), hash);
 
-    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY);
-    if (!ctx) return false;
-    secp256k1_ecdsa_recoverable_signature sig;
-    secp256k1_pubkey pubkey;
-    bool ok = false;
-    if (secp256k1_ecdsa_recoverable_signature_parse_compact(ctx, &sig, sig65 + 1, recid) &&
-        secp256k1_ecdsa_recover(ctx, &pubkey, &sig, hash)) {
-        uint8_t pub_uncompressed[65];
-        size_t pub_len = 65;
-        if (secp256k1_ec_pubkey_serialize(ctx, pub_uncompressed, &pub_len, &pubkey, SECP256K1_EC_UNCOMPRESSED)) {
-            char derived_addr[43] = {0};
-            portillia_crypto_pubkey_to_address(pub_uncompressed, pub_len, derived_addr);
-            if (strcasecmp(derived_addr, desc->address) == 0) {
-                ok = true;
-            }
-        }
+    uint8_t pub_uncompressed[65];
+    if (portillia_crypto_recover_secp256k1_compact(hash, sig65 + 1, recid, pub_uncompressed) != 0) {
+        return false;
     }
-    secp256k1_context_destroy(ctx);
-    return ok;
+
+    char derived_addr[43] = {0};
+    portillia_crypto_pubkey_to_address(pub_uncompressed, sizeof(pub_uncompressed), derived_addr);
+    return strcasecmp(derived_addr, desc->address) == 0;
 }
 
 /* ---------- Validation ---------- */

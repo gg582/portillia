@@ -327,108 +327,6 @@ static int parse_hex_bytes(const char *hex, uint8_t *out, size_t out_len) {
     return 0;
 }
 
-static int sign_siwe(const char *siwe_message, const char *private_key_hex, char *out_sig, size_t out_len) {
-    if (!siwe_message || !private_key_hex || !out_sig) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    uint8_t seckey[32];
-    if (parse_hex_bytes(private_key_hex, seckey, sizeof(seckey)) != 0) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    char prefix[64];
-    snprintf(prefix, sizeof(prefix), "\x19" "Ethereum Signed Message:\n%zu", strlen(siwe_message));
-    size_t payload_len = strlen(prefix) + strlen(siwe_message);
-    uint8_t *payload = (uint8_t *)malloc(payload_len);
-    if (!payload) {
-        errno = ENOMEM;
-        return -1;
-    }
-    memcpy(payload, prefix, strlen(prefix));
-    memcpy(payload + strlen(prefix), siwe_message, strlen(siwe_message));
-
-    uint8_t hash[32];
-    portillia_crypto_keccak256(payload, payload_len, hash);
-    free(payload);
-
-    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
-    if (!ctx) {
-        errno = EIO;
-        return -1;
-    }
-
-    secp256k1_ecdsa_recoverable_signature sig;
-    int recid = 0;
-    if (!secp256k1_ecdsa_sign_recoverable(ctx, &sig, hash, seckey, NULL, NULL)) {
-        secp256k1_context_destroy(ctx);
-        errno = EIO;
-        return -1;
-    }
-
-    uint8_t compact64[64];
-    secp256k1_ecdsa_recoverable_signature_serialize_compact(ctx, compact64, &recid, &sig);
-    secp256k1_context_destroy(ctx);
-
-    if (out_len < 133) {
-        errno = ENOSPC;
-        return -1;
-    }
-    out_sig[0] = '0';
-    out_sig[1] = 'x';
-    for (int i = 0; i < 64; i++) {
-        sprintf(out_sig + 2 + i * 2, "%02x", compact64[i]);
-    }
-    sprintf(out_sig + 130, "%02x", (uint8_t)(27 + recid));
-    out_sig[132] = '\0';
-    return 0;
-}
-
-static int derive_address_from_private_key(const char *private_key_hex,
-                                           char *out_addr,
-                                           size_t out_addr_len) {
-    if (!private_key_hex) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    uint8_t seckey[32];
-    if (parse_hex_bytes(private_key_hex, seckey, sizeof(seckey)) != 0) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
-    if (!ctx) {
-        errno = EIO;
-        return -1;
-    }
-
-    secp256k1_pubkey pubkey;
-    if (!secp256k1_ec_pubkey_create(ctx, &pubkey, seckey)) {
-        secp256k1_context_destroy(ctx);
-        errno = EINVAL;
-        return -1;
-    }
-
-    if (out_addr) {
-        if (out_addr_len < 43) {
-            secp256k1_context_destroy(ctx);
-            errno = ENOSPC;
-            return -1;
-        }
-        size_t uncompressed_len = 65;
-        uint8_t uncompressed[65];
-        secp256k1_ec_pubkey_serialize(ctx, uncompressed, &uncompressed_len, &pubkey, SECP256K1_EC_UNCOMPRESSED);
-        portillia_crypto_pubkey_to_address(uncompressed, uncompressed_len, out_addr);
-    }
-
-    secp256k1_context_destroy(ctx);
-    return 0;
-}
-
 static int sign_sha256_secp256k1_der_hex(const uint8_t *payload, size_t payload_len,
                                          const char *private_key_hex, char *out_hex, size_t out_len) {
     if (!payload || !private_key_hex || !out_hex) {
@@ -1002,7 +900,7 @@ int portillia_api_register_lease(portillia_http_client_t *client,
     char derived_address[43] = {0};
     const char *identity_address = identity->address ? identity->address : "";
     if (identity->private_key &&
-        derive_address_from_private_key(identity->private_key, derived_address, sizeof(derived_address)) == 0) {
+        portillia_crypto_derive_address_from_private_key(identity->private_key, derived_address, sizeof(derived_address)) == 0) {
         if (identity->address && identity->address[0] && strcasecmp(identity->address, derived_address) != 0) {
             LOG_WARN("SDK: Identity address %s does not match signing key; using derived address %s for SIWE",
                      identity->address, derived_address);
@@ -1058,7 +956,7 @@ int portillia_api_register_lease(portillia_http_client_t *client,
     }
 
     char signature[133];
-    if (sign_siwe(challenge.siwe_message, identity->private_key, signature, sizeof(signature)) != 0) {
+    if (portillia_crypto_sign_siwe_message(challenge.siwe_message, identity->private_key, signature, sizeof(signature)) != 0) {
         portillia_gc_free_later(challenge.challenge_id);
         portillia_gc_free_later(challenge.siwe_message);
         return -1;
