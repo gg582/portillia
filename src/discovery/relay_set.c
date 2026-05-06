@@ -466,6 +466,8 @@ void portillia_relay_set_confirm_url(portillia_relay_set_t *set, const char *url
         str_table_put(set->relays, url, stored);
     } else {
         state->confirmed = true;
+        state->active_failures = 0;
+        state->suppress_active_until = 0;
     }
     pthread_rwlock_unlock(&set->mu);
 }
@@ -1007,8 +1009,19 @@ bool portillia_relay_set_record_active_failure(portillia_relay_set_t *set, const
     bool backed_off = false;
     if (state) {
         state->active_failures++;
-        (void)recovery_failures;
         if (out_count) *out_count = state->active_failures;
+        if (recovery_failures > 0 && state->active_failures >= recovery_failures) {
+            int extra_failures = state->active_failures - recovery_failures;
+            int backoff = PORTILLIA_DEFAULT_DIRECT_RECOVERY_BACKOFF_SEC;
+            while (extra_failures-- > 0 && backoff < PORTILLIA_MAX_DIRECT_RECOVERY_BACKOFF_SEC) {
+                backoff *= 2;
+                if (backoff > PORTILLIA_MAX_DIRECT_RECOVERY_BACKOFF_SEC) {
+                    backoff = PORTILLIA_MAX_DIRECT_RECOVERY_BACKOFF_SEC;
+                }
+            }
+            state->suppress_active_until = time(NULL) + backoff;
+            backed_off = true;
+        }
     }
     pthread_rwlock_unlock(&set->mu);
     if (out_reason) *out_reason = NULL;

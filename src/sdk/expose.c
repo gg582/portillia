@@ -1177,11 +1177,16 @@ static int reconcile_relay_listeners(portillia_exposure_t *e, bool fail_on_error
             listener_multi_hop_count = e->multi_hop_count;
         }
 
+        int retry_count = 0;
+        if (e->multi_hop_count > 0 || string_in_list(url, e->explicit_relays, e->explicit_relays_count)) {
+            retry_count = -1;
+        }
+
         portillia_listener_t *listener = portillia_listener_new(
             url, &e->identity, &e->metadata, e->relay_set,
             listener_multi_hop, listener_multi_hop_count,
             e->udp_enabled, e->tcp_enabled,
-            0 /* retry_count: auto-selected relays get retries */,
+            retry_count,
             e->insecure_skip_verify
         );
         if (!listener) {

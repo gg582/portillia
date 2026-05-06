@@ -24,6 +24,7 @@
 #define DEFAULT_RENEW_BEFORE_SEC      5
 #define DEFAULT_READY_TARGET          2
 #define DEFAULT_RETRY_WAIT_SEC        3
+#define DEFAULT_ACTIVE_FAILURES_BEFORE_BACKOFF 5
 
 /* ---------- Lease helpers ---------- */
 
@@ -450,6 +451,13 @@ static void *listener_run_thread(void *arg) {
             retries++;
             if (l->retry_count > 0 && retries > l->retry_count) {
                 LOG_ERROR("SDK: Registration retry budget exhausted for %s", l->relay_url);
+                break;
+            }
+            if (l->retry_count == 0 && l->relay_set &&
+                portillia_relay_set_record_active_failure(l->relay_set, l->relay_url,
+                                                          DEFAULT_ACTIVE_FAILURES_BEFORE_BACKOFF,
+                                                          NULL, NULL)) {
+                LOG_WARN("SDK: Registration failed for %s, backing off relay", l->relay_url);
                 break;
             }
             LOG_DEBUG("SDK: Registration failed for %s, retrying (%d/%d)",
