@@ -58,13 +58,16 @@ void *sni_listener_thread(void *arg) {
         if (sni) {
             extern const char* portillia_server_root_hostname();
             const char *root = portillia_server_root_hostname();
+            LOG_DEBUG("sni_listener: SNI=%s root=%s", sni, root ? root : "(null)");
             if (root && strcmp(sni, root) == 0) {
+                LOG_INFO("sni_listener: TLS proxy for root hostname %s", sni);
                 int target_fd = socket(AF_INET, SOCK_STREAM, 0);
                 struct sockaddr_in target = { .sin_family = AF_INET, .sin_port = htons(args->api_port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
                 if (connect(target_fd, (struct sockaddr *)&target, sizeof(target)) == 0) {
                     extern void portillia_tls_proxy_bridge(int client_fd, int target_fd);
                     portillia_tls_proxy_bridge(client, target_fd);
                 } else {
+                    LOG_ERROR("sni_listener: connect to api_port %d failed: %s", args->api_port, strerror(errno));
                     close(target_fd);
                     close(client);
                 }
@@ -74,6 +77,7 @@ void *sni_listener_thread(void *arg) {
             }
             free(sni);
         } else {
+            LOG_DEBUG("sni_listener: no SNI, closing client");
             close(client);
         }
     }

@@ -12,6 +12,7 @@
 #include <arpa/inet.h>
 #include <poll.h>
 #include <time.h>
+#include <portillia/utils/log.h>
 
 #define TLS_RECORD_HEADER_LEN 5
 #define TLS_HANDSHAKE_TYPE_CLIENT_HELLO 1
@@ -257,6 +258,7 @@ char *get_sni_hostname(int client_fd) {
         if (ioctl(client_fd, FIONREAD, &available) != 0 || available <= 0) {
             long remaining_ms = deadline_ms - monotonic_ms();
             if (remaining_ms <= 0) {
+                LOG_DEBUG("get_sni_hostname: timeout waiting for ClientHello data");
                 return NULL;
             }
             struct pollfd pfd = { .fd = client_fd, .events = POLLIN };
@@ -265,6 +267,7 @@ char *get_sni_hostname(int client_fd) {
                 rc = poll(&pfd, 1, (int)remaining_ms);
             } while (rc < 0 && errno == EINTR);
             if (rc <= 0) {
+                LOG_DEBUG("get_sni_hostname: poll failed rc=%d errno=%d", rc, errno);
                 return NULL;
             }
             continue;
@@ -272,6 +275,7 @@ char *get_sni_hostname(int client_fd) {
 
         unsigned char *peeked = malloc((size_t)available);
         if (!peeked) {
+            LOG_ERROR("get_sni_hostname: malloc failed for %d bytes", available);
             return NULL;
         }
         ssize_t n;
@@ -280,19 +284,23 @@ char *get_sni_hostname(int client_fd) {
         } while (n < 0 && errno == EINTR);
         if (n <= 0) {
             free(peeked);
+            LOG_DEBUG("get_sni_hostname: recv failed n=%zd errno=%d", n, errno);
             return NULL;
         }
         int need_more = 0;
         char *hostname = parse_client_hello_stream(peeked, (size_t)n, &need_more);
         free(peeked);
         if (hostname) {
+            LOG_DEBUG("get_sni_hostname: parsed hostname=%s", hostname);
             return hostname;
         }
         if (!need_more) {
+            LOG_DEBUG("get_sni_hostname: parse_client_hello_stream failed, need_more=0");
             return NULL;
         }
         long remaining_ms = deadline_ms - monotonic_ms();
         if (remaining_ms <= 0) {
+            LOG_DEBUG("get_sni_hostname: timeout after need_more");
             return NULL;
         }
         long sleep_us = remaining_ms > 10 ? 10000L : remaining_ms * 1000L;

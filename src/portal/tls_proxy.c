@@ -81,6 +81,11 @@ void portillia_tls_proxy_bridge(int client_fd, int target_fd) {
     SSL_set_fd(ssl, client_fd);
     
     if (SSL_accept(ssl) <= 0) {
+        int ssl_err = SSL_get_error(ssl, -1);
+        unsigned long err = ERR_get_error();
+        char err_buf[256];
+        ERR_error_string_n(err, err_buf, sizeof(err_buf));
+        LOG_ERROR("SSL_accept failed: ssl_err=%d, err=%s", ssl_err, err_buf);
         SSL_free(ssl);
         close(client_fd);
         close(target_fd);
