@@ -1,6 +1,6 @@
 CC ?= gcc
 CFLAGS = -Wall -Wextra -O3 -I./include -I./libs/cwist/include -I./libs/cwist/lib/cjson -I./libs/libttak/include -I./libs/secp256k1/include -I./libs/keccak -pthread
-LDFLAGS = -L./libs/cwist -L./libs/cwist/lib/cjson -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -L./libs/secp256k1/.libs -lcwist -lttak -lssl -lcrypto -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread -lcrypto -lsecp256k1 -lm
+LDFLAGS = -L. -L./libs/cwist -L./libs/cwist/lib/cjson -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -L./libs/secp256k1/.libs -lcwist -lttak -lssl -lcrypto -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread -lcrypto -lsecp256k1 -lm -lverify_siwe
 
 # ngtcp2 detection (supports both distro packages and source builds)
 NGTCP2_CFLAGS := $(shell pkg-config --cflags libngtcp2 2>/dev/null)
@@ -63,6 +63,11 @@ cwist-libs:
 libs/secp256k1/.libs/libsecp256k1.a:
 	cd libs/secp256k1 && ./autogen.sh && ./configure --enable-module-recovery --disable-shared && make
 
+libverify_siwe.so verify_siwe.h: portal-tunnel/verify_siwe.go
+	cd portal-tunnel && GOTOOLCHAIN=auto go build -buildmode=c-shared -o libverify_siwe.so verify_siwe.go
+	cp portal-tunnel/libverify_siwe.so libverify_siwe.so
+	cp portal-tunnel/verify_siwe.h verify_siwe.h
+
 libs: cwist-libs libs/secp256k1/.libs/libsecp256k1.a
 
 build: build-frontend build-tunnel build-server build-demo
@@ -70,23 +75,28 @@ build: build-frontend build-tunnel build-server build-demo
 build-frontend:
 	cd frontend && npm install && npm run build
 
-build-tunnel: libs cmd/portal-tunnel/main.o $(ALL_OBJS)
+build-tunnel: libs libverify_siwe.so cmd/portal-tunnel/main.o $(ALL_OBJS)
 	@mkdir -p bin
-	$(CC) -o $(BIN_PORTAL) cmd/portal-tunnel/main.o $(ALL_OBJS) $(LDFLAGS)
+	$(CC) -o $(BIN_PORTAL) cmd/portal-tunnel/main.o $(ALL_OBJS) $(LDFLAGS) -Wl,-rpath,'$$ORIGIN'
+	cp libverify_siwe.so bin/
 
-build-server: libs cmd/relay-server/main.o $(ALL_OBJS) src/portal/api_server_relay.o
+build-server: libs libverify_siwe.so cmd/relay-server/main.o $(ALL_OBJS) src/portal/api_server_relay.o
 	@mkdir -p bin
-	$(CC) -o $(BIN_RELAY) cmd/relay-server/main.o $(ALL_OBJS) src/portal/api_server_relay.o $(LDFLAGS)
+	$(CC) -o $(BIN_RELAY) cmd/relay-server/main.o $(ALL_OBJS) src/portal/api_server_relay.o $(LDFLAGS) -Wl,-rpath,'$$ORIGIN'
+	cp libverify_siwe.so bin/
 
-build-demo: libs cmd/demo-app/main.o $(ALL_OBJS)
+build-demo: libs libverify_siwe.so cmd/demo-app/main.o $(ALL_OBJS)
 	@mkdir -p bin
-	$(CC) -o $(BIN_DEMO) cmd/demo-app/main.o $(ALL_OBJS) $(LDFLAGS)
+	$(CC) -o $(BIN_DEMO) cmd/demo-app/main.o $(ALL_OBJS) $(LDFLAGS) -Wl,-rpath,'$$ORIGIN'
+	cp libverify_siwe.so bin/
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/portal/api_server_relay.o: src/portal/api_server_relay.c
 	$(CC) $(CFLAGS) -DPORTILLIA_RELAY_SERVER_BUILD -c $< -o $@
+
+src/portal/api_server.o: verify_siwe.h
 
 clean:
 	rm -rf bin
