@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     unzip \
     git \
+    golang-go \
     libssl-dev \
     libsqlite3-dev \
     libcurl4-openssl-dev \

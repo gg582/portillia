@@ -1,5 +1,6 @@
 CC ?= gcc
-CFLAGS = -Wall -Wextra -O3 -I./include -I./libs/cwist/include -I./libs/cwist/lib/cjson -I./libs/libttak/include -I./libs/secp256k1/include -I./libs/keccak -pthread
+GO ?= go
+CFLAGS = -Wall -Wextra -O3 -I./include -I./libs/cwist/include -I./libs/cwist/lib/cjson -I./libs/libttak/include -I./libs/secp256k1/include -I./libs/keccak -I./libs/go-siwe -pthread
 LDFLAGS = -L./libs/cwist -L./libs/cwist/lib/cjson -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -L./libs/secp256k1/.libs -lcwist -lttak -lssl -lcrypto -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread -lcrypto -lsecp256k1 -lm
 
 # ngtcp2 detection (supports both distro packages and source builds)
@@ -35,6 +36,7 @@ SRC_PORTAL = src/portal/server.c src/portal/proxy.c src/portal/sni_parser.c \
 SRC_SDK = src/sdk/expose.c src/sdk/listener.c src/sdk/api_client.c src/sdk/http_runtime.c
 SRC_COMMON_API = src/portal/api_server.c
 SRC_RELAY_API = src/portal/api_server_relay.c
+GO_SIWE_LIB = libs/go-siwe/libportillia_go_siwe.a
 
 ALL_SRCS = $(SRC_MEM) $(SRC_TYPES) $(SRC_UTILS) $(SRC_DISCOVERY) $(SRC_TRANSPORT) $(SRC_PORTAL) $(SRC_SDK) $(SRC_COMMON_API) libs/keccak/sha3.c
 ALL_OBJS = $(ALL_SRCS:.c=.o)
@@ -43,7 +45,7 @@ BIN_RELAY = bin/relay-server
 BIN_PORTAL = bin/portal-tunnel
 BIN_DEMO = bin/demo-app
 
-.PHONY: all help build build-frontend build-docs build-tunnel build-server build-demo clean cwist-libs
+.PHONY: all help build build-frontend build-docs build-tunnel build-server build-demo clean cwist-libs go-siwe
 
 all: build
 
@@ -63,7 +65,13 @@ cwist-libs:
 libs/secp256k1/.libs/libsecp256k1.a:
 	cd libs/secp256k1 && ./autogen.sh && ./configure --enable-module-recovery --disable-shared && make
 
-libs: cwist-libs libs/secp256k1/.libs/libsecp256k1.a
+go-siwe: $(GO_SIWE_LIB)
+
+$(GO_SIWE_LIB): libs/go-siwe/siwe_bridge.go libs/go-siwe/go.mod libs/go-siwe/portillia_go_siwe.h
+	cd libs/go-siwe && $(GO) mod download
+	cd libs/go-siwe && $(GO) build -buildmode=c-archive -o libportillia_go_siwe.a .
+
+libs: cwist-libs libs/secp256k1/.libs/libsecp256k1.a go-siwe
 
 build: build-frontend build-tunnel build-server build-demo
 
@@ -72,15 +80,15 @@ build-frontend:
 
 build-tunnel: libs cmd/portal-tunnel/main.o $(ALL_OBJS)
 	@mkdir -p bin
-	$(CC) -o $(BIN_PORTAL) cmd/portal-tunnel/main.o $(ALL_OBJS) $(LDFLAGS)
+	$(CC) -o $(BIN_PORTAL) cmd/portal-tunnel/main.o $(ALL_OBJS) $(GO_SIWE_LIB) $(LDFLAGS)
 
 build-server: libs cmd/relay-server/main.o $(ALL_OBJS) src/portal/api_server_relay.o
 	@mkdir -p bin
-	$(CC) -o $(BIN_RELAY) cmd/relay-server/main.o $(ALL_OBJS) src/portal/api_server_relay.o $(LDFLAGS)
+	$(CC) -o $(BIN_RELAY) cmd/relay-server/main.o $(ALL_OBJS) src/portal/api_server_relay.o $(GO_SIWE_LIB) $(LDFLAGS)
 
 build-demo: libs cmd/demo-app/main.o $(ALL_OBJS)
 	@mkdir -p bin
-	$(CC) -o $(BIN_DEMO) cmd/demo-app/main.o $(ALL_OBJS) $(LDFLAGS)
+	$(CC) -o $(BIN_DEMO) cmd/demo-app/main.o $(ALL_OBJS) $(GO_SIWE_LIB) $(LDFLAGS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -92,5 +100,6 @@ clean:
 	rm -rf bin
 	rm -f $(ALL_OBJS) cmd/relay-server/main.o cmd/portal-tunnel/main.o cmd/demo-app/main.o
 	rm -rf cmd/relay-server/dist/app
+	rm -f libs/go-siwe/libportillia_go_siwe.a libs/go-siwe/libportillia_go_siwe.h
 	$(MAKE) -C libs/cwist clean
 	cd libs/secp256k1 && make clean || true

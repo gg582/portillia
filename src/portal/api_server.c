@@ -12,9 +12,6 @@
 #include <cjson/cJSON.h>
 #include <time.h>
 #include <ctype.h>
-#include <openssl/sha.h>
-#include <secp256k1.h>
-#include <secp256k1_recovery.h>
 
 extern void portillia_registry_register(const char *hostname, const char *identity_key, int64_t bps_limit);
 extern void portillia_registry_register_hop(const char *hop_token, const char *next_ipv4, const char *next_token, const char *identity_key);
@@ -189,115 +186,6 @@ static void derive_hostname(const char *identity_name, const char *identity_addr
     normalize_hostname(out);
 }
 
-static int parse_hex_bytes(const char *hex, uint8_t *out, size_t out_len) {
-    if (!hex || strlen(hex) != out_len * 2) return -1;
-    for (size_t i = 0; i < out_len; i++) {
-        unsigned int v = 0;
-        if (sscanf(hex + i * 2, "%2x", &v) != 1) return -1;
-        out[i] = (uint8_t)v;
-    }
-    return 0;
-}
-
-static bool verify_siwe_signature_address(const char *siwe_message, const char *siwe_signature, const char *expected_address) {
-    if (!siwe_message || !siwe_signature || !expected_address) return false;
-    const char *sig_hex = siwe_signature;
-    if (sig_hex[0] == '0' && (sig_hex[1] == 'x' || sig_hex[1] == 'X')) sig_hex += 2;
-    if (strlen(sig_hex) != 130) return false;
-
-    uint8_t sig65[65];
-    if (parse_hex_bytes(sig_hex, sig65, sizeof(sig65)) != 0) return false;
-
-    // Extract recid from Ethereum v value.
-    // Uncompressed: v = 27 + recid (range 27-30)
-    // Compressed:   v = 31 + recid (range 31-34)
-    int recid = (int)sig65[64];
-    if (recid >= 27 && recid <= 30) {
-        recid -= 27;
-    } else if (recid >= 31 && recid <= 34) {
-        recid -= 31;
-    } else if (recid < 0 || recid > 3) {
-        return false;
-    }
-    if (recid < 0 || recid > 3) return false;
-
-    char prefix[64];
-    snprintf(prefix, sizeof(prefix), "\x19" "Ethereum Signed Message:\n%zu", strlen(siwe_message));
-    size_t payload_len = strlen(prefix) + strlen(siwe_message);
-    uint8_t *payload = malloc(payload_len);
-    if (!payload) return false;
-    memcpy(payload, prefix, strlen(prefix));
-    memcpy(payload + strlen(prefix), siwe_message, strlen(siwe_message));
-
-    uint8_t hash[32];
-    portillia_crypto_keccak256(payload, payload_len, hash);
-
-    // SIGN | VERIFY context is required for secp256k1_ecdsa_recover on some builds
-    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
-    if (!ctx) {
-        LOG_ERROR("SIWE verify: secp256k1_context_create failed");
-        return false;
-    }
-
-    // Explicitly separate r||s from v to avoid any boundary issue
-    uint8_t rs64[64];
-    memcpy(rs64, sig65, 64);
-
-    secp256k1_ecdsa_recoverable_signature sig;
-    secp256k1_pubkey pubkey;
-    bool ok = false;
-
-    LOG_DEBUG("SIWE verify: msg=%s", siwe_message);
-    LOG_DEBUG("SIWE verify: msg_len=%zu expected=%s", strlen(siwe_message), expected_address);
-    char payload_hex[101];
-    for (size_t i = 0; i < payload_len && i < 50; i++) {
-        sprintf(payload_hex + i * 2, "%02x", payload[i]);
-    }
-    payload_hex[payload_len < 50 ? payload_len * 2 : 100] = '\0';
-    LOG_DEBUG("SIWE verify: payload=%s", payload_hex);
-    LOG_DEBUG("SIWE verify: hash=%02x%02x%02x%02x...%02x%02x%02x%02x",
-              hash[0], hash[1], hash[2], hash[3], hash[28], hash[29], hash[30], hash[31]);
-    LOG_DEBUG("SIWE verify: r=%02x%02x...%02x s=%02x%02x...%02x v=%d",
-              rs64[0], rs64[1], rs64[31], rs64[32], rs64[33], rs64[63], (int)sig65[64]);
-
-    // Try all 4 recid values. Different secp256k1 libraries (e.g. decred/dcrd
-    // vs bitcoin-core) may compute recid slightly differently, so trying each
-    // possibility is the most robust way to recover the correct pubkey.
-    for (int try_recid = 0; try_recid < 4; try_recid++) {
-        int parsed = secp256k1_ecdsa_recoverable_signature_parse_compact(ctx, &sig, rs64, try_recid);
-        int recovered = 0;
-        if (parsed) {
-            recovered = secp256k1_ecdsa_recover(ctx, &pubkey, &sig, hash);
-        }
-        if (parsed && recovered) {
-            size_t pub_len = 65;
-            uint8_t pub_buf[65];
-            secp256k1_ec_pubkey_serialize(ctx, pub_buf, &pub_len, &pubkey, SECP256K1_EC_UNCOMPRESSED);
-            char addr[43] = {0};
-            portillia_crypto_pubkey_to_address(pub_buf, pub_len, addr);
-
-            // Strip optional 0x prefix from expected_address before comparison
-            const char *expected = expected_address;
-            if (expected[0] == '0' && (expected[1] == 'x' || expected[1] == 'X')) expected += 2;
-            int match = strcasecmp(addr + 2, expected) == 0;
-            LOG_DEBUG("SIWE verify: recid=%d parsed=%d recovered=%d addr=%s match=%d",
-                      try_recid, parsed, recovered, addr, match);
-            if (match) {
-                ok = true;
-                break;
-            }
-        } else {
-            LOG_DEBUG("SIWE verify: recid=%d parsed=%d recovered=%d", try_recid, parsed, recovered);
-        }
-    }
-    secp256k1_context_destroy(ctx);
-    free(payload);
-    if (!ok) {
-        LOG_WARN("SIWE verify: all 4 recids failed for expected=%s", expected_address);
-    }
-    return ok;
-}
-
 /**
  * @brief Extract client IP, optionally trusting proxy headers.
  */
@@ -365,7 +253,7 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                          siwe_message && siwe_message->valuestring ? strlen(siwe_message->valuestring) : 0,
                          siwe_signature && siwe_signature->valuestring ? strlen(siwe_signature->valuestring) : 0);
                 if (!siwe_signature || !cJSON_IsString(siwe_signature) || !siwe_signature->valuestring ||
-                    !verify_siwe_signature_address(siwe_message->valuestring, siwe_signature->valuestring, challenge->identity_address)) {
+                    !portillia_crypto_verify_siwe_signature_address(siwe_message->valuestring, siwe_signature->valuestring, challenge->identity_address)) {
                     res->status_code = CWIST_HTTP_FORBIDDEN;
                     cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"unauthorized\", \"message\": \"siwe signature is invalid\"}}");
                     cJSON_Delete(root);
