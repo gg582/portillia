@@ -12,6 +12,7 @@
 #include <portillia/utils/network.h>
 #include <portillia/portal/settings.h>
 #include <cjson/cJSON.h>
+#include "portal_bridge.h"
 
 #define MAX_RECORDS 1024
 #define READY_LIMIT 8
@@ -323,22 +324,7 @@ void portillia_server_setup(const char *root_hostname, int api_port, int sni_por
 }
 
 static int dial_next_hop(const char *ipv4, const char *token) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in addr;
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(443);
-    inet_pton(AF_INET, ipv4, &addr.sin_addr);
-    
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(fd);
-        return -1;
-    }
-    
-    uint32_t len = htonl(strlen(token));
-    write(fd, &len, 4);
-    write(fd, token, strlen(token));
-    
-    return fd;
+    return HopMuxOpenStreamFD(ipv4, token);
 }
 
 void portillia_server_handle_connect(const char *hostname, int client_fd) {
@@ -381,15 +367,7 @@ void portillia_server_handle_connect(const char *hostname, int client_fd) {
     }
 }
 
-void portillia_server_handle_hop(int hop_fd) {
-    uint32_t net_len;
-    if (read(hop_fd, &net_len, 4) != 4) { close(hop_fd); return; }
-    uint32_t len = ntohl(net_len);
-    if (len == 0 || len > 256) { close(hop_fd); return; }
-    char token[257];
-    if (read(hop_fd, token, len) != (ssize_t)len) { close(hop_fd); return; }
-    token[len] = '\0';
-
+void portillia_server_handle_hop_stream(int hop_fd, const char *token) {
     lease_record *rec = lease_registry_lookup_hop(global_server->registry, token);
     if (rec) {
         if (rec->hop_next_overlay_ipv4) {
@@ -412,6 +390,17 @@ void portillia_server_handle_hop(int hop_fd) {
     } else {
         close(hop_fd);
     }
+}
+
+void portillia_server_handle_hop(int hop_fd) {
+    uint32_t net_len;
+    if (read(hop_fd, &net_len, 4) != 4) { close(hop_fd); return; }
+    uint32_t len = ntohl(net_len);
+    if (len == 0 || len > 256) { close(hop_fd); return; }
+    char token[257];
+    if (read(hop_fd, token, len) != (ssize_t)len) { close(hop_fd); return; }
+    token[len] = '\0';
+    portillia_server_handle_hop_stream(hop_fd, token);
 }
 
 int portillia_registry_offer_conn(const char *hostname, int sdk_fd) {

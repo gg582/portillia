@@ -10,6 +10,7 @@ RUN make build-frontend || true
 # Stage 2: Build C artifacts
 FROM debian:trixie-slim AS c-builder
 WORKDIR /src
+ARG GO_VERSION=1.26.2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -27,7 +28,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     autoconf \
     automake \
     libtool \
+    golang \
     && rm -rf /var/lib/apt/lists/*
+
+RUN go install golang.org/dl/go${GO_VERSION}@latest && \
+    /root/go/bin/go${GO_VERSION} download && \
+    ln -sf /root/go/bin/go${GO_VERSION} /usr/local/bin/go && \
+    go version
 
 # Build and install ngtcp2 from source if not available in distro
 RUN if ! pkg-config --exists libngtcp2_crypto_quictls 2>/dev/null && ! pkg-config --exists libngtcp2_crypto_ossl 2>/dev/null; then \

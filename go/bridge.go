@@ -5,17 +5,135 @@ package main
 */
 import "C"
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 
 	"github.com/gosuda/portal-tunnel/v2/portal/auth"
+	"github.com/gosuda/portal-tunnel/v2/portal/overlay"
 	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/spruceid/siwe-go"
 )
+
+var (
+	globalOverlay *overlay.Overlay
+	globalHopMux  *overlay.HopMux
+)
+
+func bridgeConnToFD(conn net.Conn) (int, error) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		return -1, err
+	}
+	go func() {
+		defer syscall.Close(fds[0])
+		defer conn.Close()
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, 64*1024)
+			for {
+				n, err := conn.Read(buf)
+				if n > 0 {
+					if _, werr := syscall.Write(fds[0], buf[:n]); werr != nil {
+						return
+					}
+				}
+				if err != nil {
+					return
+				}
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, 64*1024)
+			for {
+				n, err := syscall.Read(fds[0], buf)
+				if n > 0 {
+					if _, werr := conn.Write(buf[:n]); werr != nil {
+						return
+					}
+				}
+				if err != nil {
+					return
+				}
+			}
+		}()
+		wg.Wait()
+	}()
+	return fds[1], nil
+}
+
+//export OverlayInit
+func OverlayInit(cPrivateKey, cPublicKey *C.char, cListenPort C.int) C.int {
+	cfg := overlay.Config{
+		PrivateKey: C.GoString(cPrivateKey),
+		PublicKey:  C.GoString(cPublicKey),
+		ListenPort: int(cListenPort),
+	}
+	var err error
+	globalOverlay, err = overlay.NewOverlay(cfg, nil)
+	if err != nil {
+		return -1
+	}
+	globalHopMux, err = overlay.NewHopMux(globalOverlay)
+	if err != nil {
+		return -1
+	}
+	go func() {
+		if err := globalOverlay.Serve(); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+			// Log expected errors silently
+		}
+	}()
+	go func() {
+		if err := globalHopMux.Serve(context.Background()); err != nil && !errors.Is(err, net.ErrClosed) {
+			// Log expected errors silently
+		}
+	}()
+	return 0
+}
+
+//export HopMuxOpenStreamFD
+func HopMuxOpenStreamFD(cOverlayIPv4, cToken *C.char) C.int {
+	if globalHopMux == nil {
+		return -1
+	}
+	conn, err := globalHopMux.OpenStream(context.Background(), C.GoString(cOverlayIPv4), C.GoString(cToken))
+	if err != nil {
+		return -1
+	}
+	fd, err := bridgeConnToFD(conn)
+	if err != nil {
+		return -1
+	}
+	return C.int(fd)
+}
+
+//export HopMuxAcceptFD
+func HopMuxAcceptFD(cTokenOut **C.char) C.int {
+	if globalHopMux == nil {
+		return -1
+	}
+	stream, err := globalHopMux.Accept(context.Background())
+	if err != nil {
+		return -1
+	}
+	fd, err := bridgeConnToFD(stream.Conn)
+	if err != nil {
+		return -1
+	}
+	*cTokenOut = C.CString(stream.Token)
+	return C.int(fd)
+}
 
 //export FreeCString
 func FreeCString(s *C.char) {

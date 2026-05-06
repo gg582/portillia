@@ -87,6 +87,9 @@ typedef struct { void *data; GoInt len; GoInt cap; } GoSlice;
 extern "C" {
 #endif
 
+extern int OverlayInit(char* cPrivateKey, char* cPublicKey, int cListenPort);
+extern int HopMuxOpenStreamFD(char* cOverlayIPv4, char* cToken);
+extern int HopMuxAcceptFD(char** cTokenOut);
 extern void FreeCString(char* s);
 extern int VerifySIWESignature(char* cMessage, char* cSignature, char* cExpectedAddress);
 extern char* SignDescriptorJSON(char* cDescJSON, char* cPrivateKeyHex);
