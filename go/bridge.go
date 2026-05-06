@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -250,7 +251,7 @@ func IssueLeaseTokenJSON(cPrivateKeyHex, cKeyID, cIssuer, cIdentityJSON *C.char,
 		return nil
 	}
 	out := struct {
-		Token  string                       `json:"token"`
+		Token  string                      `json:"token"`
 		Claims auth.LeaseAccessTokenClaims `json:"claims"`
 	}{
 		Token:  token,
