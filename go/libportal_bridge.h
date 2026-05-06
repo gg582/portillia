@@ -28,6 +28,7 @@ extern const char *_GoStringPtr(_GoString_ s);
 #line 1 "cgo-generated-wrapper"
 
 
+
 /* End of preamble from import "C" comments.  */
 
 
@@ -92,7 +93,6 @@ extern int OverlaySyncJSON(char* cRelaysJSON);
 extern int HopMuxOpenStreamFD(char* cOverlayIPv4, char* cToken);
 extern int HopMuxAcceptFD(char** cTokenOut);
 extern void FreeCString(char* s);
-extern int VerifySIWESignature(char* cMessage, char* cSignature, char* cExpectedAddress);
 extern char* SignDescriptorJSON(char* cDescJSON, char* cPrivateKeyHex);
 extern char* VerifyDescriptorJSON(char* cDescJSON);
 extern char* SignHopRouteJSON(char* cRouteJSON, char* cMethod, char* cIdentityJSON, long long int cExpiresAtUnix);
@@ -101,6 +101,8 @@ extern char* IssueLeaseTokenJSON(char* cPrivateKeyHex, char* cKeyID, char* cIssu
 extern char* VerifyLeaseTokenJSON(char* cToken, char* cPublicKeyHex, char* cIssuer, long long int cNowUnix);
 extern char* DiscoveryPollJSON(char* cURL);
 extern char* DiscoveryAnnounceJSON(char* cURL, char* cDescriptorJSON);
+extern int VerifySIWESignature(char* cMessage, char* cSignature, char* cExpectedAddress);
+extern char* CreateSIWEMessage(char* cDomain, char* cAddress, char* cURI, char* cNonce, char* cStatement, char* cRequestID, char* cIssuedAt, char* cExpirationTime, int cChainId);
 
 #ifdef __cplusplus
 }

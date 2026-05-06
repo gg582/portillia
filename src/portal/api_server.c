@@ -613,19 +613,14 @@ void handle_register_challenge(cwist_http_request *req, cwist_http_response *res
                 char req_uri[256];
                 snprintf(req_uri, sizeof(req_uri), "https://%s%s", domain, req->path && req->path->data ? req->path->data : "/sdk/register");
 
-                char msg[2048];
-                snprintf(
-                    msg,
-                    sizeof(msg),
-                    "%s wants you to sign in with your Ethereum account:\n%s\n\nRegister a portal lease\n\nURI: %s\nVersion: 1\nChain ID: 1\nNonce: %s\nIssued At: %s\nRequest ID: %s\nExpiration Time: %s",
-                    domain,
-                    addr,
-                    req_uri,
-                    nonce,
-                    issued_at,
-                    challenge_id,
-                    expires_at
-                );
+                char *msg = CreateSIWEMessage(domain, addr, req_uri, nonce, "Register a portal lease", challenge_id, issued_at, expires_at, 1);
+                if (!msg) {
+                    cJSON_Delete(req_root);
+                    res->status_code = CWIST_HTTP_INTERNAL_SERVER_ERROR;
+                    cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"internal_error\", \"message\": \"failed to create siwe message\"}}");
+                    cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                    return;
+                }
                 store_register_challenge(name, addr, msg, udp, tcp, exp, challenge_id);
                 cJSON *root = cJSON_CreateObject();
                 cJSON *data = cJSON_CreateObject();
@@ -638,6 +633,7 @@ void handle_register_challenge(cwist_http_request *req, cwist_http_response *res
                 char *json = cJSON_PrintUnformatted(root);
                 cwist_sstring_assign(res->body, json);
                 free(json);
+                FreeCString(msg);
                 cJSON_Delete(root);
             }
             cJSON_Delete(req_root);

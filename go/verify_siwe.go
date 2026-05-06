@@ -26,3 +26,28 @@ func VerifySIWESignature(cMessage, cSignature, cExpectedAddress *C.char) C.int {
 	}
 	return 1
 }
+
+//export CreateSIWEMessage
+func CreateSIWEMessage(cDomain, cAddress, cURI, cNonce, cStatement, cRequestID, cIssuedAt, cExpirationTime *C.char, cChainId C.int) *C.char {
+	domain := C.GoString(cDomain)
+	address := C.GoString(cAddress)
+	uri := C.GoString(cURI)
+	nonce := C.GoString(cNonce)
+	statement := C.GoString(cStatement)
+	requestID := C.GoString(cRequestID)
+	issuedAt := C.GoString(cIssuedAt)
+	expirationTime := C.GoString(cExpirationTime)
+	chainId := int(cChainId)
+
+	message, err := siwe.InitMessage(domain, address, uri, nonce, map[string]interface{}{
+		"statement":      statement,
+		"chainId":        chainId,
+		"issuedAt":       issuedAt,
+		"expirationTime": expirationTime,
+		"requestId":      requestID,
+	})
+	if err != nil {
+		return nil
+	}
+	return C.CString(message.String())
+}
