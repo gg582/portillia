@@ -56,8 +56,22 @@ void *sni_listener_thread(void *arg) {
         
         char *sni = get_sni_hostname(client);
         if (sni) {
-            extern void portillia_server_handle_connect(const char *hostname, int client_fd);
-            portillia_server_handle_connect(sni, client);
+            extern const char* portillia_server_root_hostname();
+            const char *root = portillia_server_root_hostname();
+            if (root && strcmp(sni, root) == 0) {
+                int target_fd = socket(AF_INET, SOCK_STREAM, 0);
+                struct sockaddr_in target = { .sin_family = AF_INET, .sin_port = htons(args->api_port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+                if (connect(target_fd, (struct sockaddr *)&target, sizeof(target)) == 0) {
+                    extern void portillia_tls_proxy_bridge(int client_fd, int target_fd);
+                    portillia_tls_proxy_bridge(client, target_fd);
+                } else {
+                    close(target_fd);
+                    close(client);
+                }
+            } else {
+                extern void portillia_server_handle_connect(const char *hostname, int client_fd);
+                portillia_server_handle_connect(sni, client);
+            }
             free(sni);
         } else {
             close(client);
@@ -690,6 +704,16 @@ int main(void) {
     listener_args *sni_args = malloc(sizeof(listener_args));
     sni_args->sni_port = sni_port;
     sni_args->api_port = api_port;
+    
+    char cert_path[512], key_path[512];
+    snprintf(cert_path, sizeof(cert_path), "%s/fullchain.pem", identity_path);
+    snprintf(key_path, sizeof(key_path), "%s/privatekey.pem", identity_path);
+    extern int portillia_tls_proxy_init(const char *cert_path, const char *key_path);
+    if (portillia_tls_proxy_init(cert_path, key_path) == 0) {
+        LOG_INFO("TLS proxy initialized for root hostname on port %d", sni_port);
+    } else {
+        LOG_WARN("TLS proxy initialization failed");
+    }
     
     discovery_config *disc_cfg = malloc(sizeof(discovery_config));
     disc_cfg->relay_url = strdup(public_relay_url ? public_relay_url : portal_url);
