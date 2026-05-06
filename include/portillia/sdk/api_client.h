@@ -15,6 +15,13 @@ extern "C" {
 
 /* ---------- HTTP transport context ---------- */
 
+typedef enum {
+    PORTILLIA_HTTP_CONTEXT_DEFAULT = 0,
+    PORTILLIA_HTTP_CONTEXT_RELAY,
+    PORTILLIA_HTTP_CONTEXT_DISCOVERY,
+    PORTILLIA_HTTP_CONTEXT_KEYLESS
+} portillia_http_context_t;
+
 typedef struct portillia_http_client portillia_http_client_t;
 
 /**
@@ -24,8 +31,22 @@ typedef struct portillia_http_client portillia_http_client_t;
  */
 portillia_http_client_t *portillia_http_client_create(const char *relay_url,
                                                       bool insecure_skip_verify);
+
+/**
+ * @brief Create an HTTP+TLS client for a specific security context.
+ *        Each context gets an isolated CURL handle to avoid cross-context leaks.
+ */
+portillia_http_client_t *portillia_http_client_create_for_context(const char *relay_url,
+                                                                   bool insecure_skip_verify,
+                                                                   portillia_http_context_t context);
 void portillia_http_client_destroy(portillia_http_client_t *client);
 void portillia_http_client_close_idle(portillia_http_client_t *client);
+
+/** @brief Must-style helper: aborts if client creation fails. */
+#define MUST_HTTP_CLIENT(url, skip) \
+    ({ portillia_http_client_t *_c = portillia_http_client_create((url), (skip)); \
+       if (!_c) { LOG_FATAL("Failed to create HTTP client for %s", (url)); abort(); } \
+       _c; })
 
 /**
  * @brief Check relay domain compatibility.

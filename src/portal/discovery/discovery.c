@@ -5,7 +5,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <curl/curl.h>
 #include <cjson/cJSON.h>
 #include <portillia/utils/log.h>
 #include <unistd.h>
@@ -13,6 +12,7 @@
 #include <openssl/sha.h>
 #include <secp256k1.h>
 #include <secp256k1_recovery.h>
+#include "portal_bridge.h"
 
 extern char* portillia_registry_to_json();
 
@@ -286,23 +286,6 @@ void portillia_relay_set_upsert(portillia_relay_set *set, portillia_relay_descri
     pthread_mutex_unlock(&set->mu);
 }
 
-struct curl_response {
-    char *data;
-    size_t size;
-};
-
-static size_t curl_write_cb(void *contents, size_t size, size_t nmemb, void *userp) {
-    size_t realsize = size * nmemb;
-    struct curl_response *mem = (struct curl_response *)userp;
-    char *ptr = realloc(mem->data, mem->size + realsize + 1);
-    if (!ptr) return 0;
-    mem->data = ptr;
-    memcpy(&(mem->data[mem->size]), contents, realsize);
-    mem->size += realsize;
-    mem->data[mem->size] = 0;
-    return realsize;
-}
-
 static cJSON* discovery_relays_array(cJSON *root) {
     if (!root) return NULL;
     cJSON *data = cJSON_GetObjectItem(root, "data");
@@ -316,80 +299,65 @@ static cJSON* discovery_relays_array(cJSON *root) {
 }
 
 void portillia_discovery_poll(discovery_config *cfg, const char *url) {
-    CURL *curl = curl_easy_init();
-    if (!curl) return;
-
-    struct curl_response res = { .data = malloc(1), .size = 0 };
-    res.data[0] = '\0';
-
     char full_url[1024];
     snprintf(full_url, sizeof(full_url), "%s/discovery", url);
 
-    curl_easy_setopt(curl, CURLOPT_URL, full_url);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&res);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-
-    CURLcode code = curl_easy_perform(curl);
-    if (code == CURLE_OK) {
-        long status = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-        cJSON *root = cJSON_Parse(res.data);
-        if (root) {
-            cJSON *relays = discovery_relays_array(root);
-            if (cJSON_IsArray(relays)) {
-                int size = cJSON_GetArraySize(relays);
-                LOG_INFO("discovery poll succeeded url=%s status=%ld relays=%d", url, status, size);
-                for (int i = 0; i < size; i++) {
-                    cJSON *item = cJSON_GetArrayItem(relays, i);
-                    cJSON *addr = cJSON_GetObjectItem(item, "address");
-                    cJSON *version = cJSON_GetObjectItem(item, "version");
-                    cJSON *issued = cJSON_GetObjectItem(item, "issued_at");
-                    cJSON *expires = cJSON_GetObjectItem(item, "expires_at");
-                    cJSON *api_addr = cJSON_GetObjectItem(item, "api_https_addr");
-                    cJSON *wg_pubkey = cJSON_GetObjectItem(item, "wireguard_public_key");
-                    cJSON *wg_port = cJSON_GetObjectItem(item, "wireguard_port");
-                    cJSON *supports_overlay = cJSON_GetObjectItem(item, "supports_overlay");
-                    cJSON *supports_udp = cJSON_GetObjectItem(item, "supports_udp");
-                    cJSON *supports_tcp = cJSON_GetObjectItem(item, "supports_tcp");
-                    cJSON *active_connections = cJSON_GetObjectItem(item, "active_connections");
-                    cJSON *tcp_bps = cJSON_GetObjectItem(item, "tcp_bps");
-                    cJSON *signature = cJSON_GetObjectItem(item, "signature");
-                    if (api_addr && api_addr->valuestring) {
-                        portillia_relay_descriptor d = {0};
-                        d.address = strdup((addr && cJSON_IsString(addr) && addr->valuestring) ? addr->valuestring : "");
-                        d.version = strdup((version && cJSON_IsString(version) && version->valuestring) ? version->valuestring : "");
-                        d.api_https_addr = strdup(api_addr->valuestring);
-                        d.wireguard_public_key = strdup((wg_pubkey && cJSON_IsString(wg_pubkey) && wg_pubkey->valuestring) ? wg_pubkey->valuestring : "");
-                        d.signature = strdup((signature && cJSON_IsString(signature) && signature->valuestring) ? signature->valuestring : "");
-                        d.issued_at = (issued && cJSON_IsString(issued) && issued->valuestring) ? parse_rfc3339_utc(issued->valuestring) : time(NULL);
-                        d.expires_at = (expires && cJSON_IsString(expires) && expires->valuestring) ? parse_rfc3339_utc(expires->valuestring) : (time(NULL) + 60);
-                        d.wireguard_port = (wg_port && cJSON_IsNumber(wg_port)) ? wg_port->valueint : 0;
-                        d.supports_overlay = supports_overlay ? cJSON_IsTrue(supports_overlay) : false;
-                        d.supports_udp = supports_udp ? cJSON_IsTrue(supports_udp) : false;
-                        d.supports_tcp = supports_tcp ? cJSON_IsTrue(supports_tcp) : false;
-                        d.active_connections = (active_connections && cJSON_IsNumber(active_connections)) ? (int64_t)active_connections->valuedouble : 0;
-                        d.tcp_bps = (tcp_bps && cJSON_IsNumber(tcp_bps)) ? tcp_bps->valuedouble : 0.0;
-                        portillia_relay_set_upsert(cfg->relay_set, d);
-                        free(d.address);
-                        free(d.version);
-                        free(d.api_https_addr);
-                        free(d.wireguard_public_key);
-                        free(d.signature);
-                    }
-                }
-            }
-            cJSON_Delete(root);
-        } else {
-            LOG_WARN("discovery poll parse failed url=%s", url);
-        }
-    } else {
-        LOG_WARN("discovery poll failed url=%s error=%s", url, curl_easy_strerror(code));
+    char *res_data = DiscoveryPollJSON(full_url);
+    if (!res_data) {
+        LOG_WARN("discovery poll failed url=%s", url);
+        return;
     }
 
-    free(res.data);
-    curl_easy_cleanup(curl);
+    cJSON *root = cJSON_Parse(res_data);
+    FreeCString(res_data);
+    if (root) {
+        cJSON *relays = discovery_relays_array(root);
+        if (cJSON_IsArray(relays)) {
+            int size = cJSON_GetArraySize(relays);
+            LOG_INFO("discovery poll succeeded url=%s relays=%d", url, size);
+            for (int i = 0; i < size; i++) {
+                cJSON *item = cJSON_GetArrayItem(relays, i);
+                cJSON *addr = cJSON_GetObjectItem(item, "address");
+                cJSON *version = cJSON_GetObjectItem(item, "version");
+                cJSON *issued = cJSON_GetObjectItem(item, "issued_at");
+                cJSON *expires = cJSON_GetObjectItem(item, "expires_at");
+                cJSON *api_addr = cJSON_GetObjectItem(item, "api_https_addr");
+                cJSON *wg_pubkey = cJSON_GetObjectItem(item, "wireguard_public_key");
+                cJSON *wg_port = cJSON_GetObjectItem(item, "wireguard_port");
+                cJSON *supports_overlay = cJSON_GetObjectItem(item, "supports_overlay");
+                cJSON *supports_udp = cJSON_GetObjectItem(item, "supports_udp");
+                cJSON *supports_tcp = cJSON_GetObjectItem(item, "supports_tcp");
+                cJSON *active_connections = cJSON_GetObjectItem(item, "active_connections");
+                cJSON *tcp_bps = cJSON_GetObjectItem(item, "tcp_bps");
+                cJSON *signature = cJSON_GetObjectItem(item, "signature");
+                if (api_addr && api_addr->valuestring) {
+                    portillia_relay_descriptor d = {0};
+                    d.address = strdup((addr && cJSON_IsString(addr) && addr->valuestring) ? addr->valuestring : "");
+                    d.version = strdup((version && cJSON_IsString(version) && version->valuestring) ? version->valuestring : "");
+                    d.api_https_addr = strdup(api_addr->valuestring);
+                    d.wireguard_public_key = strdup((wg_pubkey && cJSON_IsString(wg_pubkey) && wg_pubkey->valuestring) ? wg_pubkey->valuestring : "");
+                    d.signature = strdup((signature && cJSON_IsString(signature) && signature->valuestring) ? signature->valuestring : "");
+                    d.issued_at = (issued && cJSON_IsString(issued) && issued->valuestring) ? parse_rfc3339_utc(issued->valuestring) : time(NULL);
+                    d.expires_at = (expires && cJSON_IsString(expires) && expires->valuestring) ? parse_rfc3339_utc(expires->valuestring) : (time(NULL) + 60);
+                    d.wireguard_port = (wg_port && cJSON_IsNumber(wg_port)) ? wg_port->valueint : 0;
+                    d.supports_overlay = supports_overlay ? cJSON_IsTrue(supports_overlay) : false;
+                    d.supports_udp = supports_udp ? cJSON_IsTrue(supports_udp) : false;
+                    d.supports_tcp = supports_tcp ? cJSON_IsTrue(supports_tcp) : false;
+                    d.active_connections = (active_connections && cJSON_IsNumber(active_connections)) ? (int64_t)active_connections->valuedouble : 0;
+                    d.tcp_bps = (tcp_bps && cJSON_IsNumber(tcp_bps)) ? tcp_bps->valuedouble : 0.0;
+                    portillia_relay_set_upsert(cfg->relay_set, d);
+                    free(d.address);
+                    free(d.version);
+                    free(d.api_https_addr);
+                    free(d.wireguard_public_key);
+                    free(d.signature);
+                }
+            }
+        }
+        cJSON_Delete(root);
+    } else {
+        LOG_WARN("discovery poll parse failed url=%s", url);
+    }
 }
 
 void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descriptor *desc) {
@@ -409,10 +377,9 @@ void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descrip
                 portillia_discovery_poll(cfg, token);
                 
                 // Also send self-announce
-                CURL *curl = curl_easy_init();
                 char announce_url[1024];
                 snprintf(announce_url, sizeof(announce_url), "%s/discovery/announce", token);
-                
+
                 cJSON *root = cJSON_CreateObject();
                 cJSON_AddStringToObject(root, "protocol_version", "7");
                 cJSON *d = cJSON_CreateObject();
@@ -434,39 +401,20 @@ void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descrip
                 cJSON_AddNumberToObject(d, "tcp_bps", desc->tcp_bps);
                 cJSON_AddStringToObject(d, "signature", desc->signature ? desc->signature : "");
                 cJSON_AddItemToObject(root, "descriptor", d);
-                
+
                 char *json = cJSON_PrintUnformatted(root);
                 LOG_INFO("relay discovery announce payload=%s", json);
-                
-                struct curl_slist *announce_headers = NULL;
-                announce_headers = curl_slist_append(announce_headers, "Content-Type: application/json");
-                struct curl_response res = { .data = malloc(1), .size = 0 };
-                res.data[0] = '\0';
-                curl_easy_setopt(curl, CURLOPT_URL, announce_url);
-                curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-                curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json);
-                curl_easy_setopt(curl, CURLOPT_HTTPHEADER, announce_headers);
-                curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
-                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-                curl_easy_setopt(curl, CURLOPT_WRITEDATA, &res);
-                CURLcode code = curl_easy_perform(curl);
-                if (code == CURLE_OK) {
-                    long status = 0;
-                    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-                    if (status >= 200 && status < 300) {
-                        LOG_INFO("relay discovery announce succeeded relay=%s", token);
-                    } else {
-                        LOG_WARN("relay discovery announce failed error=\"http status %ld\" relay=%s response=%s", status, token, res.data ? res.data : "");
-                    }
+
+                char *res_data = DiscoveryAnnounceJSON(announce_url, json);
+                if (res_data) {
+                    LOG_INFO("relay discovery announce succeeded relay=%s", token);
+                    FreeCString(res_data);
                 } else {
-                    LOG_WARN("relay discovery announce failed error=\"%s\" relay=%s", curl_easy_strerror(code), token);
+                    LOG_WARN("relay discovery announce failed relay=%s", token);
                 }
-                free(res.data);
-                
+
                 free(json);
                 cJSON_Delete(root);
-                curl_slist_free_all(announce_headers);
-                curl_easy_cleanup(curl);
             }
             token = strtok_r(NULL, ",", &saveptr);
         }

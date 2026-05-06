@@ -5,7 +5,7 @@
 #include <portillia/types/types.h>
 #include <portillia/utils/log.h>
 #include <portillia/utils/crypto.h>
-#include "verify_siwe.h"
+#include "portal_bridge.h"
 #include <portillia/portal/settings.h>
 #include <stdio.h>
 #include <stdlib.h>

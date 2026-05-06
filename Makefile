@@ -1,6 +1,6 @@
 CC ?= gcc
-CFLAGS = -Wall -Wextra -O3 -I./include -I./libs/cwist/include -I./libs/cwist/lib/cjson -I./libs/libttak/include -I./libs/secp256k1/include -I./libs/keccak -pthread
-LDFLAGS = -L. -L./libs/cwist -L./libs/cwist/lib/cjson -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -L./libs/secp256k1/.libs -lcwist -lttak -lssl -lcrypto -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread -lcrypto -lsecp256k1 -lm -lverify_siwe
+CFLAGS = -Wall -Wextra -O3 -I. -I./include -I./libs/cwist/include -I./libs/cwist/lib/cjson -I./libs/libttak/include -I./libs/secp256k1/include -I./libs/keccak -pthread
+LDFLAGS = -L. -L./libs/cwist -L./libs/cwist/lib/cjson -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -L./libs/secp256k1/.libs -lcwist -lttak -lssl -lcrypto -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread -lcrypto -lsecp256k1 -lm -lportal_bridge
 
 # ngtcp2 detection (supports both distro packages and source builds)
 NGTCP2_CFLAGS := $(shell pkg-config --cflags libngtcp2 2>/dev/null)
@@ -30,7 +30,7 @@ SRC_TRANSPORT = src/transport/stream_client.c src/transport/datagram_client.c sr
 SRC_PORTAL = src/portal/server.c src/portal/proxy.c src/portal/sni_parser.c \
              src/portal/transport/quic_backhaul.c src/portal/keyless/tls.c src/portal/keyless/ech.c \
              src/portal/acme/manager.c src/portal/acme/cloudflare/provider.c src/portal/acme/route53/provider.c src/portal/acme/gcloud/provider.c \
-             src/portal/discovery/discovery.c src/portal/settings.c \
+             src/portal/discovery/discovery.c src/portal/settings.c src/portal/agent/control.c \
              libs/cwist/src/net/http/mux.c
 SRC_SDK = src/sdk/expose.c src/sdk/listener.c src/sdk/api_client.c src/sdk/http_runtime.c
 SRC_COMMON_API = src/portal/api_server.c
@@ -63,6 +63,12 @@ cwist-libs:
 libs/secp256k1/.libs/libsecp256k1.a:
 	cd libs/secp256k1 && ./autogen.sh && ./configure --enable-module-recovery --disable-shared && make
 
+libportal_bridge.so portal_bridge.h: go/bridge.go go/go.mod
+	cd go && GOTOOLCHAIN=auto go mod tidy && GOTOOLCHAIN=auto go build -buildmode=c-shared -o libportal_bridge.so bridge.go
+	cp go/libportal_bridge.so libportal_bridge.so
+	cp go/libportal_bridge.h portal_bridge.h
+
+# legacy libverify_siwe kept for compatibility but no longer linked by default
 libverify_siwe.so verify_siwe.h: portal-tunnel/verify_siwe.go
 	cd portal-tunnel && GOTOOLCHAIN=auto go build -buildmode=c-shared -o libverify_siwe.so verify_siwe.go
 	cp portal-tunnel/libverify_siwe.so libverify_siwe.so
@@ -75,20 +81,20 @@ build: build-frontend build-tunnel build-server build-demo
 build-frontend:
 	cd frontend && npm install && npm run build
 
-build-tunnel: libs libverify_siwe.so cmd/portal-tunnel/main.o $(ALL_OBJS)
+build-tunnel: libs libportal_bridge.so cmd/portal-tunnel/main.o $(ALL_OBJS)
 	@mkdir -p bin
 	$(CC) -o $(BIN_PORTAL) cmd/portal-tunnel/main.o $(ALL_OBJS) $(LDFLAGS) -Wl,-rpath,'$$ORIGIN'
-	cp libverify_siwe.so bin/
+	cp libportal_bridge.so bin/
 
-build-server: libs libverify_siwe.so cmd/relay-server/main.o $(ALL_OBJS) src/portal/api_server_relay.o
+build-server: libs libportal_bridge.so cmd/relay-server/main.o $(ALL_OBJS) src/portal/api_server_relay.o
 	@mkdir -p bin
 	$(CC) -o $(BIN_RELAY) cmd/relay-server/main.o $(ALL_OBJS) src/portal/api_server_relay.o $(LDFLAGS) -Wl,-rpath,'$$ORIGIN'
-	cp libverify_siwe.so bin/
+	cp libportal_bridge.so bin/
 
-build-demo: libs libverify_siwe.so cmd/demo-app/main.o $(ALL_OBJS)
+build-demo: libs libportal_bridge.so cmd/demo-app/main.o $(ALL_OBJS)
 	@mkdir -p bin
 	$(CC) -o $(BIN_DEMO) cmd/demo-app/main.o $(ALL_OBJS) $(LDFLAGS) -Wl,-rpath,'$$ORIGIN'
-	cp libverify_siwe.so bin/
+	cp libportal_bridge.so bin/
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -96,7 +102,7 @@ build-demo: libs libverify_siwe.so cmd/demo-app/main.o $(ALL_OBJS)
 src/portal/api_server_relay.o: src/portal/api_server_relay.c
 	$(CC) $(CFLAGS) -DPORTILLIA_RELAY_SERVER_BUILD -c $< -o $@
 
-src/portal/api_server.o: verify_siwe.h
+src/portal/api_server.o: portal_bridge.h
 
 clean:
 	rm -rf bin

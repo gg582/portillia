@@ -9,6 +9,7 @@
 #include <stdlib.h>
 
 #include <portillia/portal/discovery/discovery.h>
+#include "portal_bridge.h"
 
 extern discovery_config *global_disc_cfg;
 
@@ -21,6 +22,25 @@ void handle_discovery_announce(cwist_http_request *req, cwist_http_response *res
             if (desc && global_disc_cfg && global_disc_cfg->relay_set) {
                 cJSON *api_addr = cJSON_GetObjectItem(desc, "api_https_addr");
                 if (api_addr && api_addr->valuestring) {
+                    /* Verify descriptor signature via Go bridge before accepting */
+                    char *desc_json = cJSON_PrintUnformatted(desc);
+                    bool verified = false;
+                    if (desc_json) {
+                        char *verified_json = VerifyDescriptorJSON(desc_json);
+                        if (verified_json) {
+                            verified = true;
+                            FreeCString(verified_json);
+                        }
+                        free(desc_json);
+                    }
+
+                    if (!verified) {
+                        LOG_WARN("relay discovery announce rejected: invalid descriptor signature relay=%s", api_addr->valuestring);
+                        cJSON_Delete(root);
+                        cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                        return;
+                    }
+
                     portillia_relay_descriptor d = {0};
                     cJSON *addr = cJSON_GetObjectItem(desc, "address");
                     cJSON *version = cJSON_GetObjectItem(desc, "version");
@@ -47,7 +67,7 @@ void handle_discovery_announce(cwist_http_request *req, cwist_http_response *res
                     d.supports_tcp = supports_tcp ? cJSON_IsTrue(supports_tcp) : false;
                     d.active_connections = (active_connections && cJSON_IsNumber(active_connections)) ? (int64_t)active_connections->valuedouble : 0;
                     d.tcp_bps = (tcp_bps && cJSON_IsNumber(tcp_bps)) ? tcp_bps->valuedouble : 0.0;
-                    
+
                     portillia_relay_set_upsert(global_disc_cfg->relay_set, d);
 
                     char *source_ip = cwist_http_header_get(req->headers, "X-Real-IP");
@@ -55,7 +75,7 @@ void handle_discovery_announce(cwist_http_request *req, cwist_http_response *res
                         source_ip = "127.0.0.1";
                     }
                     LOG_INFO("relay discovery announce accepted relay=%s source_ip=%s", api_addr->valuestring, source_ip);
-                    
+
                     cwist_sstring_assign(res->body, "{\"ok\": true, \"data\": {\"protocol_version\": \"7\", \"accepted\": true}}");
                     free(d.address);
                     free(d.version);

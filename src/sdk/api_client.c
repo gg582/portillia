@@ -31,6 +31,7 @@ struct portillia_http_client {
     char *relay_url;
     CURL *curl;
     bool insecure_skip_verify;
+    portillia_http_context_t context;
 };
 
 /* ---------- Normalization helpers ---------- */
@@ -636,6 +637,16 @@ static cJSON *hop_route_to_request_json(const portillia_hop_route_t *route, cons
     return root;
 }
 
+static void configure_curl_handle(CURL *curl, portillia_http_context_t ctx) {
+    (void)ctx;
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPIDLE, 120L);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPINTVL, 60L);
+#if LIBCURL_VERSION_NUM >= 0x073800
+    curl_easy_setopt(curl, CURLOPT_MAXAGE_CONN, 118L);
+#endif
+}
+
 static int http_json(portillia_http_client_t *client,
                      const char *base_url,
                      const char *method,
@@ -672,6 +683,7 @@ static int http_json(portillia_http_client_t *client,
     }
 
     curl_easy_reset(curl);
+    configure_curl_handle(curl, client->context);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
@@ -805,8 +817,9 @@ static int parse_renew_response_json(cJSON *root, portillia_renew_response_t *ou
     return out->access_token ? 0 : -1;
 }
 
-portillia_http_client_t *portillia_http_client_create(const char *relay_url,
-                                                      bool insecure_skip_verify) {
+portillia_http_client_t *portillia_http_client_create_for_context(const char *relay_url,
+                                                                   bool insecure_skip_verify,
+                                                                   portillia_http_context_t context) {
     if (!relay_url) return NULL;
     static bool curl_inited = false;
     if (!curl_inited) {
@@ -818,7 +831,16 @@ portillia_http_client_t *portillia_http_client_create(const char *relay_url,
     c->relay_url = portillia_gc_strdup(relay_url);
     c->curl = curl_easy_init();
     c->insecure_skip_verify = insecure_skip_verify;
+    c->context = context;
+    if (c->curl) {
+        configure_curl_handle(c->curl, context);
+    }
     return c;
+}
+
+portillia_http_client_t *portillia_http_client_create(const char *relay_url,
+                                                      bool insecure_skip_verify) {
+    return portillia_http_client_create_for_context(relay_url, insecure_skip_verify, PORTILLIA_HTTP_CONTEXT_DEFAULT);
 }
 
 void portillia_http_client_destroy(portillia_http_client_t *client) {

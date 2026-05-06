@@ -1,5 +1,6 @@
 #include <portillia/sdk/expose.h>
 #include <portillia/types/types.h>
+#include <portillia/portal/agent/control.h>
 #include <portillia/utils/log.h>
 #include <stdio.h>
 #include <string.h>
@@ -10,6 +11,8 @@ void print_usage() {
     printf("portal-tunnel <command> [args]\n");
     printf("Commands:\n");
     printf("  expose <target> [--relays <url>] [--insecure-skip-verify]\n");
+    printf("  agent start [--control-addr <addr>]\n");
+    printf("  agent status [--control-addr <addr>]\n");
     printf("  version\n");
 }
 
@@ -65,6 +68,35 @@ int main(int argc, char **argv) {
         }
 
         portillia_exposure_close(exp);
+    } else if (strcmp(argv[1], "agent") == 0) {
+        if (argc < 3) {
+            printf("Usage: portal-tunnel agent <subcommand> [args]\n");
+            printf("Subcommands:\n");
+            printf("  start [--control-addr <addr>]\n");
+            printf("  status [--control-addr <addr>]\n");
+            return 1;
+        }
+        const char *control_addr = "127.0.0.1:4019";
+        for (int i = 3; i < argc; i++) {
+            if (strcmp(argv[i], "--control-addr") == 0 && i + 1 < argc) {
+                control_addr = argv[i+1];
+                i++;
+            }
+        }
+        if (strcmp(argv[2], "start") == 0) {
+            return portillia_agent_control_server_run(control_addr);
+        } else if (strcmp(argv[2], "status") == 0) {
+            char url[2048];
+            snprintf(url, sizeof(url), "http://%s/v1/agent/status", control_addr);
+            char cmd[4096];
+            snprintf(cmd, sizeof(cmd), "curl -fsSL %s", url);
+            int rc = system(cmd);
+            printf("\n");
+            return rc;
+        } else {
+            printf("Unknown agent subcommand: %s\n", argv[2]);
+            return 1;
+        }
     } else {
         print_usage();
         return 1;
