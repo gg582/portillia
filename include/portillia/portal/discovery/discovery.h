@@ -46,6 +46,7 @@ typedef struct {
     char *advertise_url; /**< Public relay URL advertised in descriptors */
     char *bootstrap_urls; /**< Comma-separated list of bootstrap URLs */
     portillia_relay_set *relay_set; /**< The set to manage */
+    int wireguard_port; /**< WireGuard listen port for overlay */
 } discovery_config;
 
 /**

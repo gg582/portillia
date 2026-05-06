@@ -63,16 +63,11 @@ cwist-libs:
 libs/secp256k1/.libs/libsecp256k1.a:
 	cd libs/secp256k1 && ./autogen.sh && ./configure --enable-module-recovery --disable-shared && make
 
-libportal_bridge.so portal_bridge.h: go/bridge.go go/go.mod
-	cd go && GOTOOLCHAIN=auto go mod tidy && GOTOOLCHAIN=auto go build -buildmode=c-shared -o libportal_bridge.so bridge.go
+libportal_bridge.so portal_bridge.h: go/bridge.go go/verify_siwe.go go/go.mod
+	cd go && GOTOOLCHAIN=auto go mod tidy && GOTOOLCHAIN=auto go build -buildmode=c-shared -o libportal_bridge.so bridge.go verify_siwe.go
 	cp go/libportal_bridge.so libportal_bridge.so
 	cp go/libportal_bridge.h portal_bridge.h
 
-# legacy libverify_siwe kept for compatibility but no longer linked by default
-libverify_siwe.so verify_siwe.h: portal-tunnel/verify_siwe.go
-	cd portal-tunnel && GOTOOLCHAIN=auto go build -buildmode=c-shared -o libverify_siwe.so verify_siwe.go
-	cp portal-tunnel/libverify_siwe.so libverify_siwe.so
-	cp portal-tunnel/verify_siwe.h verify_siwe.h
 
 libs: cwist-libs libs/secp256k1/.libs/libsecp256k1.a
 

@@ -697,6 +697,7 @@ int main(void) {
     char *resolved_bootstraps = resolve_portal_relay_urls(bootstraps, discovery_enabled, public_relay_url ? public_relay_url : portal_url);
     disc_cfg->bootstrap_urls = resolved_bootstraps;
     disc_cfg->relay_set = portillia_relay_set_new();
+    disc_cfg->wireguard_port = wg_port;
     global_disc_cfg = disc_cfg;
     if (disc_cfg->bootstrap_urls) {
         LOG_INFO("discovery bootstraps=%s", disc_cfg->bootstrap_urls);

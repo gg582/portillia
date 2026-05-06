@@ -448,11 +448,37 @@ static void discovery_task(ttak_task_t *task, void *arg) {
     desc.tcp_bps = portillia_proxy_get_current_bps();
 
     // WireGuard Info
-    const char *wg_pub = getenv("WIREGUARD_PUBLIC_KEY");
+    const char *identity_path = getenv("IDENTITY_PATH");
+    char wg_pub[128] = {0};
+    if (identity_path && identity_path[0]) {
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/identity.json", identity_path);
+        FILE *f = fopen(path, "r");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long size = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            char *json = malloc(size + 1);
+            if (json) {
+                fread(json, 1, size, f);
+                json[size] = '\0';
+                cJSON *root = cJSON_Parse(json);
+                if (root) {
+                    cJSON *wg = cJSON_GetObjectItem(root, "wireguard_public_key");
+                    if (cJSON_IsString(wg) && wg->valuestring) {
+                        strncpy(wg_pub, wg->valuestring, sizeof(wg_pub) - 1);
+                    }
+                    cJSON_Delete(root);
+                }
+                free(json);
+            }
+            fclose(f);
+        }
+    }
     free(desc.wireguard_public_key);
-    desc.wireguard_public_key = strdup(wg_pub ? wg_pub : "");
-    desc.wireguard_port = (wg_pub && wg_pub[0]) ? 51820 : 0;
-    desc.supports_overlay = (wg_pub && wg_pub[0]) ? true : false;
+    desc.wireguard_public_key = strdup(wg_pub[0] ? wg_pub : "");
+    desc.wireguard_port = (wg_pub[0] && cfg->wireguard_port > 0) ? cfg->wireguard_port : 0;
+    desc.supports_overlay = (wg_pub[0]) ? true : false;
     portillia_settings *settings = portillia_server_get_settings();
     desc.supports_udp = settings ? settings->udp_enabled : false;
     desc.supports_tcp = settings ? settings->tcp_port_enabled : true;
@@ -474,6 +500,37 @@ static void discovery_task(ttak_task_t *task, void *arg) {
     }
     
     portillia_discovery_announce(cfg, &desc);
+    
+    // Sync peer list to Go overlay stack
+    if (cfg->relay_set) {
+        cJSON *arr = cJSON_CreateArray();
+        pthread_mutex_lock(&cfg->relay_set->mu);
+        for (int i = 0; i < cfg->relay_set->count; i++) {
+            portillia_relay_descriptor *d = &cfg->relay_set->relays[i].descriptor;
+            cJSON *state = cJSON_CreateObject();
+            cJSON *dj = cJSON_CreateObject();
+            cJSON_AddStringToObject(dj, "address", d->address ? d->address : "");
+            cJSON_AddStringToObject(dj, "version", d->version ? d->version : "");
+            cJSON_AddStringToObject(dj, "api_https_addr", d->api_https_addr ? d->api_https_addr : "");
+            cJSON_AddStringToObject(dj, "wireguard_public_key", d->wireguard_public_key ? d->wireguard_public_key : "");
+            cJSON_AddNumberToObject(dj, "wireguard_port", (double)d->wireguard_port);
+            cJSON_AddBoolToObject(dj, "supports_overlay", d->supports_overlay);
+            cJSON_AddBoolToObject(dj, "supports_udp", d->supports_udp);
+            cJSON_AddBoolToObject(dj, "supports_tcp", d->supports_tcp);
+            cJSON_AddNumberToObject(dj, "active_connections", (double)d->active_connections);
+            cJSON_AddNumberToObject(dj, "tcp_bps", d->tcp_bps);
+            cJSON_AddStringToObject(dj, "signature", d->signature ? d->signature : "");
+            cJSON_AddItemToObject(state, "Descriptor", dj);
+            cJSON_AddItemToArray(arr, state);
+        }
+        pthread_mutex_unlock(&cfg->relay_set->mu);
+        char *sync_json = cJSON_PrintUnformatted(arr);
+        cJSON_Delete(arr);
+        if (sync_json) {
+            OverlaySyncJSON(sync_json);
+            free(sync_json);
+        }
+    }
     
     free(desc.address);
     free(desc.api_https_addr);

@@ -101,6 +101,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=lego-bin /lego /usr/bin/lego
 COPY --from=c-builder /src/bin/relay-server /usr/bin/relay-server
 COPY --from=c-builder /src/bin/portal-tunnel /usr/bin/portal-tunnel
+COPY --from=c-builder /src/bin/libportal_bridge.so /usr/bin/libportal_bridge.so
 COPY --from=frontend-builder /src/cmd/relay-server/dist/app /app/dist
 
 ENV STATIC_DIR=/app/dist

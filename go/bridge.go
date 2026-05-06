@@ -11,16 +11,15 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 	"unsafe"
 
 	"github.com/gosuda/portal-tunnel/v2/portal/auth"
+	"github.com/gosuda/portal-tunnel/v2/portal/discovery"
 	"github.com/gosuda/portal-tunnel/v2/portal/overlay"
 	"github.com/gosuda/portal-tunnel/v2/types"
-	"github.com/spruceid/siwe-go"
 )
 
 var (
@@ -102,6 +101,21 @@ func OverlayInit(cPrivateKey, cPublicKey *C.char, cListenPort C.int) C.int {
 	return 0
 }
 
+//export OverlaySyncJSON
+func OverlaySyncJSON(cRelaysJSON *C.char) C.int {
+	if globalOverlay == nil {
+		return -1
+	}
+	var relays []discovery.RelayState
+	if err := json.Unmarshal([]byte(C.GoString(cRelaysJSON)), &relays); err != nil {
+		return -1
+	}
+	if err := globalOverlay.Sync(relays); err != nil {
+		return -1
+	}
+	return 0
+}
+
 //export HopMuxOpenStreamFD
 func HopMuxOpenStreamFD(cOverlayIPv4, cToken *C.char) C.int {
 	if globalHopMux == nil {
@@ -138,28 +152,6 @@ func HopMuxAcceptFD(cTokenOut **C.char) C.int {
 //export FreeCString
 func FreeCString(s *C.char) {
 	C.free(unsafe.Pointer(s))
-}
-
-// ---------- SIWE ----------
-
-//export VerifySIWESignature
-func VerifySIWESignature(cMessage, cSignature, cExpectedAddress *C.char) C.int {
-	message := C.GoString(cMessage)
-	signature := C.GoString(cSignature)
-	expectedAddress := C.GoString(cExpectedAddress)
-
-	msg, err := siwe.ParseMessage(message)
-	if err != nil {
-		return 0
-	}
-	if !strings.EqualFold(msg.GetAddress().Hex(), expectedAddress) {
-		return 0
-	}
-	_, err = msg.VerifyEIP191(signature)
-	if err != nil {
-		return 0
-	}
-	return 1
 }
 
 // ---------- Descriptor ----------
