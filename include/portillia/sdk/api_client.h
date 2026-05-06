@@ -28,6 +28,11 @@ void portillia_http_client_destroy(portillia_http_client_t *client);
 void portillia_http_client_close_idle(portillia_http_client_t *client);
 
 /**
+ * @brief Last API envelope error code from a failed HTTP request, or NULL.
+ */
+const char *portillia_http_client_last_error_code(portillia_http_client_t *client);
+
+/**
  * @brief Check relay domain compatibility.
  * @return 0 on success, -1 on error.
  */

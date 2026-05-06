@@ -25,6 +25,11 @@ extern "C" {
 #define PORTILLIA_OFFICIAL_RELEASE_BASE_URL "https://github.com/gosuda/portal-tunnel/releases"
 
 #define PORTILLIA_HEADER_ACCESS_TOKEN     "X-Portal-Access-Token"
+
+#define PORTILLIA_API_ERROR_FEATURE_UNAVAILABLE "feature_unavailable"
+#define PORTILLIA_API_ERROR_HOSTNAME_CONFLICT   "hostname_conflict"
+#define PORTILLIA_API_ERROR_IP_BANNED           "ip_banned"
+#define PORTILLIA_API_ERROR_TRANSPORT_MISMATCH  "transport_mismatch"
 #define PORTILLIA_MARKER_KEEPALIVE        0x00
 #define PORTILLIA_MARKER_RAW_START        0x01
 #define PORTILLIA_MARKER_TLS_START        0x02

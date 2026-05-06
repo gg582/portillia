@@ -447,6 +447,18 @@ static void *listener_run_thread(void *arg) {
         int err = register_and_configure(l);
         if (err != 0) {
             if (l->cancelled) break;
+
+            int registration_errno = errno;
+            const char *code = portillia_http_client_last_error_code(l->http_client);
+            if (registration_errno == EPROTO ||
+                (code && (strcmp(code, PORTILLIA_API_ERROR_FEATURE_UNAVAILABLE) == 0 ||
+                          strcmp(code, PORTILLIA_API_ERROR_TRANSPORT_MISMATCH) == 0 ||
+                          strcmp(code, PORTILLIA_API_ERROR_HOSTNAME_CONFLICT) == 0 ||
+                          strcmp(code, PORTILLIA_API_ERROR_IP_BANNED) == 0))) {
+                LOG_ERROR("SDK: Lease registration failed for %s, closing listener", l->relay_url);
+                break;
+            }
+
             retries++;
             if (l->retry_count > 0 && retries > l->retry_count) {
                 LOG_ERROR("SDK: Registration retry budget exhausted for %s", l->relay_url);

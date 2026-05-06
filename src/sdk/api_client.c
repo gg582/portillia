@@ -31,6 +31,7 @@ struct portillia_http_client {
     char *relay_url;
     CURL *curl;
     bool insecure_skip_verify;
+    char *last_error_code;
 };
 
 /* ---------- Normalization helpers ---------- */
@@ -555,6 +556,11 @@ static int http_json(portillia_http_client_t *client,
         }
     }
 
+    if (client->last_error_code) {
+        portillia_gc_free_later(client->last_error_code);
+        client->last_error_code = NULL;
+    }
+
     CURL *curl = client->curl;
     http_buffer_t buf = {0};
     char url[2048];
@@ -604,9 +610,19 @@ static int http_json(portillia_http_client_t *client,
     }
 
     if (out_status) *out_status = status;
+    cJSON *parsed = NULL;
+    if (buf.data && buf.data[0]) parsed = cJSON_Parse(buf.data);
+    if (parsed) {
+        cJSON *error = cJSON_GetObjectItem(parsed, "error");
+        cJSON *code = error ? cJSON_GetObjectItem(error, "code") : NULL;
+        if (code && cJSON_IsString(code) && code->valuestring) {
+            client->last_error_code = portillia_gc_strdup(code->valuestring);
+        }
+    }
     if (out_json) {
-        *out_json = NULL;
-        if (buf.data && buf.data[0]) *out_json = cJSON_Parse(buf.data);
+        *out_json = parsed;
+    } else {
+        cJSON_Delete(parsed);
     }
 
     if (status >= 400) {
@@ -723,12 +739,17 @@ void portillia_http_client_destroy(portillia_http_client_t *client) {
     if (!client) return;
     if (client->curl) curl_easy_cleanup(client->curl);
     if (client->relay_url) portillia_gc_free_later(client->relay_url);
+    if (client->last_error_code) portillia_gc_free_later(client->last_error_code);
     portillia_gc_free_later(client);
 }
 
 void portillia_http_client_close_idle(portillia_http_client_t *client) {
     if (!client || !client->curl) return;
     curl_easy_reset(client->curl);
+}
+
+const char *portillia_http_client_last_error_code(portillia_http_client_t *client) {
+    return client ? client->last_error_code : NULL;
 }
 
 int portillia_http_client_check_domain(portillia_http_client_t *client) {
