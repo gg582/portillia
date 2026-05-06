@@ -616,7 +616,7 @@ void handle_register_challenge(cwist_http_request *req, cwist_http_response *res
                 char *msg = CreateSIWEMessage(domain, addr, req_uri, nonce, "Register a portal lease", challenge_id, issued_at, expires_at, 1);
                 if (!msg) {
                     cJSON_Delete(req_root);
-                    res->status_code = CWIST_HTTP_INTERNAL_SERVER_ERROR;
+                    res->status_code = CWIST_HTTP_INTERNAL_ERROR;
                     cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"internal_error\", \"message\": \"failed to create siwe message\"}}");
                     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
                     return;
