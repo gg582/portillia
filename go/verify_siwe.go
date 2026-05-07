@@ -2,7 +2,9 @@ package main
 
 import "C"
 import (
+	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/spruceid/siwe-go"
 )
@@ -50,4 +52,33 @@ func CreateSIWEMessage(cDomain, cAddress, cURI, cNonce, cStatement, cRequestID, 
 		return nil
 	}
 	return C.CString(message.String())
+}
+
+//export VerifySIWEMessageJSON
+func VerifySIWEMessageJSON(cMessage, cSignature, cDomain, cNonce *C.char, cNowUnix C.longlong) *C.char {
+	message := C.GoString(cMessage)
+	signature := C.GoString(cSignature)
+	domain := C.GoString(cDomain)
+	nonce := C.GoString(cNonce)
+	verifiedAt := time.Unix(int64(cNowUnix), 0).UTC()
+
+	msg, err := siwe.ParseMessage(message)
+	if err != nil {
+		return nil
+	}
+	_, err = msg.Verify(signature, &domain, &nonce, &verifiedAt)
+	if err != nil {
+		return nil
+	}
+
+	out := struct {
+		Address string `json:"address"`
+	}{
+		Address: msg.GetAddress().Hex(),
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil
+	}
+	return C.CString(string(b))
 }

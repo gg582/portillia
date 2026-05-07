@@ -18,8 +18,8 @@ extern "C" {
 #endif
 
 /* ---------- Version constants ---------- */
-#define PORTILLIA_RELEASE_VERSION         "v2.1.9-c"
-#define PORTILLIA_SDK_VERSION             "6"
+#define PORTILLIA_RELEASE_VERSION         "v2.1.9"
+#define PORTILLIA_SDK_VERSION             "7"
 #define PORTILLIA_DISCOVERY_VERSION       "7"
 #define PORTILLIA_PORTAL_RELAY_REGISTRY_URL "https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json"
 #define PORTILLIA_OFFICIAL_RELEASE_BASE_URL "https://github.com/gosuda/portal-tunnel/releases"
@@ -87,6 +87,14 @@ typedef struct portillia_lease {
     char *tcp_addr;
     portillia_lease_metadata_t metadata;
     int ready;
+
+    /* Privacy / ECH fields */
+    char *client_ip;
+    char *reported_ip;
+    char *hostname_hash;
+    uint8_t *ech_config_list;
+    size_t ech_config_list_len;
+    char *ech_dns_hostname;
 
     /* Multi-hop fields */
     char *hop_token;
@@ -174,6 +182,10 @@ typedef struct portillia_register_challenge_request {
     bool udp_enabled;
     bool tcp_enabled;
     char *hop_token;
+    char *route_hostname;
+    char *hostname_hash;
+    uint8_t *ech_config_list;
+    size_t ech_config_list_len;
 } portillia_register_challenge_request_t;
 
 typedef struct portillia_register_challenge_response {
@@ -213,7 +225,11 @@ typedef struct portillia_unregister_request {
 typedef struct portillia_hop_route {
     char *owner_public_key;
     char *relay_url;
-    char *match_hostname;
+    char *public_hostname;
+    char *route_hostname;
+    char *hostname_hash;
+    uint8_t *ech_config_list;
+    size_t ech_config_list_len;
     char *match_token;
     portillia_lease_metadata_t metadata;
     portillia_relay_descriptor_t forward_relay;
@@ -292,8 +308,7 @@ typedef struct portillia_agent_multi_hop_request {
 
 typedef struct portillia_domain_response {
     char *protocol_version;
-    char *sdk_version;
-    char *discovery_version;
+    char *release_version;
 } portillia_domain_response_t;
 
 typedef struct portillia_tunnel_status_response {
@@ -304,42 +319,33 @@ typedef struct portillia_tunnel_status_response {
 } portillia_tunnel_status_response_t;
 
 typedef struct portillia_admin_login_request {
-    char *password;
+    char *key;
 } portillia_admin_login_request_t;
 
 typedef struct portillia_admin_login_response {
-    char *token;
-    time_t expires_at;
+    bool success;
 } portillia_admin_login_response_t;
 
 typedef struct portillia_admin_auth_status_response {
     bool authenticated;
+    bool auth_enabled;
     char *username;
 } portillia_admin_auth_status_response_t;
 
-typedef struct portillia_admin_snapshot_response {
-    portillia_admin_lease_t *leases;
-    size_t leases_count;
-} portillia_admin_snapshot_response_t;
-
 typedef struct portillia_admin_approval_mode_request {
-    bool manual_approval;
+    char *mode;
 } portillia_admin_approval_mode_request_t;
 
 typedef struct portillia_admin_approval_mode_response {
-    bool manual_approval;
+    char *approval_mode;
 } portillia_admin_approval_mode_response_t;
 
 typedef struct portillia_admin_landing_page_settings_request {
     bool enabled;
-    char *title;
-    char *description;
 } portillia_admin_landing_page_settings_request_t;
 
 typedef struct portillia_admin_landing_page_settings_response {
     bool enabled;
-    char *title;
-    char *description;
 } portillia_admin_landing_page_settings_response_t;
 
 typedef struct portillia_admin_bps_request {
@@ -349,27 +355,32 @@ typedef struct portillia_admin_bps_request {
 
 typedef struct portillia_admin_udp_settings_request {
     bool enabled;
-    int min_port;
-    int max_port;
+    int max_leases;
 } portillia_admin_udp_settings_request_t;
 
 typedef struct portillia_admin_udp_settings_response {
     bool enabled;
-    int min_port;
-    int max_port;
+    int max_leases;
 } portillia_admin_udp_settings_response_t;
 
 typedef struct portillia_admin_tcp_port_settings_request {
     bool enabled;
-    int min_port;
-    int max_port;
+    int max_leases;
 } portillia_admin_tcp_port_settings_request_t;
 
 typedef struct portillia_admin_tcp_port_settings_response {
     bool enabled;
-    int min_port;
-    int max_port;
+    int max_leases;
 } portillia_admin_tcp_port_settings_response_t;
+
+typedef struct portillia_admin_snapshot_response {
+    char *approval_mode;
+    bool landing_page_enabled;
+    portillia_admin_lease_t *leases;
+    size_t leases_count;
+    portillia_admin_udp_settings_response_t udp;
+    portillia_admin_tcp_port_settings_response_t tcp_port;
+} portillia_admin_snapshot_response_t;
 
 /* ---------- Lifecycle helpers ---------- */
 

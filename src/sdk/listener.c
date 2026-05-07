@@ -299,7 +299,7 @@ static void *renew_thread(void *arg) {
         int retries = 0;
         while (!l->cancelled) {
             int rc = portillia_api_renew_lease(l->http_client, l->lease_ttl_sec,
-                                                lease->access_token, &l->identity, l->relay_set,
+                                                lease->access_token, NULL, &l->identity, l->relay_set,
                                                 lease->hop_routes, lease->hop_routes_count, &resp);
             if (rc == 0) {
                 /* Update lease access token */

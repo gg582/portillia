@@ -99,6 +99,11 @@ void portillia_lease_cleanup(portillia_lease_t *l) {
     if (l->name) portillia_gc_free_later(l->name);
     if (l->hostname) portillia_gc_free_later(l->hostname);
     if (l->tcp_addr) portillia_gc_free_later(l->tcp_addr);
+    if (l->client_ip) portillia_gc_free_later(l->client_ip);
+    if (l->reported_ip) portillia_gc_free_later(l->reported_ip);
+    if (l->hostname_hash) portillia_gc_free_later(l->hostname_hash);
+    if (l->ech_config_list) portillia_gc_free_later(l->ech_config_list);
+    if (l->ech_dns_hostname) portillia_gc_free_later(l->ech_dns_hostname);
     if (l->hop_token) portillia_gc_free_later(l->hop_token);
     if (l->hop_next_overlay_ipv4) portillia_gc_free_later(l->hop_next_overlay_ipv4);
     if (l->hop_next_token) portillia_gc_free_later(l->hop_next_token);
@@ -117,6 +122,17 @@ void portillia_lease_copy(portillia_lease_t *dst, const portillia_lease_t *src) 
     dst->udp_enabled = src->udp_enabled;
     dst->tcp_enabled = src->tcp_enabled;
     if (src->tcp_addr) dst->tcp_addr = portillia_gc_strdup(src->tcp_addr);
+    if (src->client_ip) dst->client_ip = portillia_gc_strdup(src->client_ip);
+    if (src->reported_ip) dst->reported_ip = portillia_gc_strdup(src->reported_ip);
+    if (src->hostname_hash) dst->hostname_hash = portillia_gc_strdup(src->hostname_hash);
+    if (src->ech_config_list_len > 0 && src->ech_config_list) {
+        dst->ech_config_list = (uint8_t *)portillia_gc_alloc(src->ech_config_list_len);
+        if (dst->ech_config_list) {
+            dst->ech_config_list_len = src->ech_config_list_len;
+            memcpy(dst->ech_config_list, src->ech_config_list, src->ech_config_list_len);
+        }
+    }
+    if (src->ech_dns_hostname) dst->ech_dns_hostname = portillia_gc_strdup(src->ech_dns_hostname);
     portillia_lease_metadata_copy(&dst->metadata, &src->metadata);
     dst->ready = src->ready;
     if (src->hop_token) dst->hop_token = portillia_gc_strdup(src->hop_token);
@@ -202,7 +218,10 @@ void portillia_hop_route_cleanup(portillia_hop_route_t *r) {
     if (!r) return;
     if (r->owner_public_key) portillia_gc_free_later(r->owner_public_key);
     if (r->relay_url) portillia_gc_free_later(r->relay_url);
-    if (r->match_hostname) portillia_gc_free_later(r->match_hostname);
+    if (r->public_hostname) portillia_gc_free_later(r->public_hostname);
+    if (r->route_hostname) portillia_gc_free_later(r->route_hostname);
+    if (r->hostname_hash) portillia_gc_free_later(r->hostname_hash);
+    if (r->ech_config_list) portillia_gc_free_later(r->ech_config_list);
     if (r->match_token) portillia_gc_free_later(r->match_token);
     portillia_lease_metadata_cleanup(&r->metadata);
     portillia_relay_descriptor_cleanup(&r->forward_relay);
@@ -216,7 +235,16 @@ void portillia_hop_route_copy(portillia_hop_route_t *dst, const portillia_hop_ro
     portillia_hop_route_cleanup(dst);
     if (src->owner_public_key) dst->owner_public_key = portillia_gc_strdup(src->owner_public_key);
     if (src->relay_url) dst->relay_url = portillia_gc_strdup(src->relay_url);
-    if (src->match_hostname) dst->match_hostname = portillia_gc_strdup(src->match_hostname);
+    if (src->public_hostname) dst->public_hostname = portillia_gc_strdup(src->public_hostname);
+    if (src->route_hostname) dst->route_hostname = portillia_gc_strdup(src->route_hostname);
+    if (src->hostname_hash) dst->hostname_hash = portillia_gc_strdup(src->hostname_hash);
+    if (src->ech_config_list_len > 0 && src->ech_config_list) {
+        dst->ech_config_list = (uint8_t *)portillia_gc_alloc(src->ech_config_list_len);
+        if (dst->ech_config_list) {
+            dst->ech_config_list_len = src->ech_config_list_len;
+            memcpy(dst->ech_config_list, src->ech_config_list, src->ech_config_list_len);
+        }
+    }
     if (src->match_token) dst->match_token = portillia_gc_strdup(src->match_token);
     portillia_lease_metadata_copy(&dst->metadata, &src->metadata);
     portillia_relay_descriptor_copy(&dst->forward_relay, &src->forward_relay);
@@ -314,8 +342,7 @@ void portillia_discovery_response_cleanup(portillia_discovery_response_t *r) {
 void portillia_domain_response_cleanup(portillia_domain_response_t *r) {
     if (!r) return;
     if (r->protocol_version) portillia_gc_free_later(r->protocol_version);
-    if (r->sdk_version) portillia_gc_free_later(r->sdk_version);
-    if (r->discovery_version) portillia_gc_free_later(r->discovery_version);
+    if (r->release_version) portillia_gc_free_later(r->release_version);
     memset(r, 0, sizeof(*r));
 }
 

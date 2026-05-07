@@ -17,6 +17,10 @@
 #include <unistd.h>
 #include <errno.h>
 extern void portillia_registry_register(const char *hostname, const char *identity_key, int64_t bps_limit);
+extern void portillia_registry_register_ex(const char *hostname, const char *identity_key, int64_t bps_limit,
+                                           const char *client_ip, const char *reported_ip,
+                                           const char *hostname_hash, const uint8_t *ech_config_list, size_t ech_config_list_len,
+                                           const char *ech_dns_hostname);
 extern void portillia_registry_register_hop(const char *hop_token, const char *next_ipv4, const char *next_token, const char *identity_key);
 extern int portillia_registry_offer_conn(const char *hostname, int sdk_fd);
 extern char* portillia_registry_to_json();
@@ -40,6 +44,12 @@ typedef struct {
     char identity_address[96];
     bool udp_enabled;
     bool tcp_enabled;
+    char route_hostname[256];
+    char hostname_hash[256];
+    uint8_t ech_config_list[4096];
+    size_t ech_config_list_len;
+    char domain[256];
+    char nonce[32];
     time_t expires_at;
 } register_challenge_entry;
 
@@ -124,6 +134,12 @@ static const char* store_register_challenge(
     const char *siwe_message,
     bool udp_enabled,
     bool tcp_enabled,
+    const char *route_hostname,
+    const char *hostname_hash,
+    const uint8_t *ech_config_list,
+    size_t ech_config_list_len,
+    const char *domain,
+    const char *nonce,
     time_t expires_at,
     const char *challenge_id
 ) {
@@ -144,6 +160,14 @@ static const char* store_register_challenge(
     snprintf(entry->identity_address, sizeof(entry->identity_address), "%s", identity_address ? identity_address : "");
     entry->udp_enabled = udp_enabled;
     entry->tcp_enabled = tcp_enabled;
+    if (route_hostname) snprintf(entry->route_hostname, sizeof(entry->route_hostname), "%s", route_hostname);
+    if (hostname_hash) snprintf(entry->hostname_hash, sizeof(entry->hostname_hash), "%s", hostname_hash);
+    if (ech_config_list && ech_config_list_len > 0 && ech_config_list_len <= sizeof(entry->ech_config_list)) {
+        memcpy(entry->ech_config_list, ech_config_list, ech_config_list_len);
+        entry->ech_config_list_len = ech_config_list_len;
+    }
+    if (domain) snprintf(entry->domain, sizeof(entry->domain), "%s", domain);
+    if (nonce) snprintf(entry->nonce, sizeof(entry->nonce), "%s", nonce);
     entry->expires_at = expires_at;
     return entry->challenge_id;
 }
@@ -220,7 +244,6 @@ char* extract_client_ip(cwist_http_request *req) {
 void handle_register(cwist_http_request *req, cwist_http_response *res) {
     char *client_ip = extract_client_ip(req);
     LOG_INFO("Register request from %s", client_ip);
-    free(client_ip);
 
     if (req->body && req->body->size > 0) {
         cJSON *root = cJSON_Parse(req->body->data);
@@ -240,9 +263,15 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
             bool udp = udp_enabled ? cJSON_IsTrue(udp_enabled) : false;
             bool tcp = tcp_enabled ? cJSON_IsTrue(tcp_enabled) : true;
 
+            char *reported_ip = NULL;
+            cJSON *reported_ip_obj = cJSON_GetObjectItem(root, "reported_ip");
+            if (reported_ip_obj && cJSON_IsString(reported_ip_obj) && reported_ip_obj->valuestring)
+                reported_ip = reported_ip_obj->valuestring;
+
+            register_challenge_entry *challenge = NULL;
             if (challenge_id && cJSON_IsString(challenge_id) && challenge_id->valuestring &&
                 siwe_message && cJSON_IsString(siwe_message) && siwe_message->valuestring) {
-                register_challenge_entry *challenge = find_register_challenge(challenge_id->valuestring);
+                challenge = find_register_challenge(challenge_id->valuestring);
                 if (!challenge || !challenge->in_use || challenge->expires_at <= time(NULL)) {
                     res->status_code = CWIST_HTTP_NOT_FOUND;
                     cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"lease_not_found\", \"message\": \"register challenge not found\"}}");
@@ -257,14 +286,17 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
                     return;
                 }
-                if (!siwe_signature || !cJSON_IsString(siwe_signature) || !siwe_signature->valuestring ||
-                    !verify_siwe_signature_address(siwe_message->valuestring, siwe_signature->valuestring, challenge->identity_address)) {
+                /* Full SIWE verification with domain, nonce, expiration */
+                char *verify_json = VerifySIWEMessageJSON(siwe_message->valuestring, siwe_signature ? siwe_signature->valuestring : "",
+                                                          challenge->domain, challenge->nonce, (long long)time(NULL));
+                if (!verify_json) {
                     res->status_code = CWIST_HTTP_FORBIDDEN;
                     cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"unauthorized\", \"message\": \"siwe signature is invalid\"}}");
                     cJSON_Delete(root);
                     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
                     return;
                 }
+                FreeCString(verify_json);
                 snprintf(identity_name, sizeof(identity_name), "%s", challenge->identity_name);
                 snprintf(identity_address, sizeof(identity_address), "%s", challenge->identity_address);
                 udp = challenge->udp_enabled;
@@ -284,8 +316,65 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                 int64_t limit = bps_limit ? (int64_t)bps_limit->valuedouble : 0;
                 char hostname[256] = {0};
                 derive_hostname(identity_name, identity_address, hostname, sizeof(hostname));
+
+                /* Extract challenge fields for stream lease / ECH */
+                const char *route_hostname = NULL;
+                const char *hostname_hash = NULL;
+                const uint8_t *ech_config_list = NULL;
+                size_t ech_config_list_len = 0;
+                if (challenge) {
+                    route_hostname = challenge->route_hostname[0] ? challenge->route_hostname : NULL;
+                    hostname_hash = challenge->hostname_hash[0] ? challenge->hostname_hash : NULL;
+                    if (challenge->ech_config_list_len > 0) {
+                        ech_config_list = challenge->ech_config_list;
+                        ech_config_list_len = challenge->ech_config_list_len;
+                    }
+                }
+
+                /* Validate transport constraints (Go parity) */
+                bool stream_lease = !udp && !tcp;
+                if (!stream_lease && (route_hostname || hostname_hash || ech_config_list_len > 0)) {
+                    res->status_code = CWIST_HTTP_BAD_REQUEST;
+                    cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"transport_mismatch\", \"message\": \"route hostname / hostname hash / ech config list require stream lease\"}}");
+                    cJSON_Delete(root);
+                    cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                    return;
+                }
+                if (hostname_hash && !route_hostname) {
+                    res->status_code = CWIST_HTTP_BAD_REQUEST;
+                    cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"invalid_request\", \"message\": \"hostname hash requires route hostname\"}}");
+                    cJSON_Delete(root);
+                    cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                    return;
+                }
+                if (ech_config_list_len > 0 && !route_hostname) {
+                    res->status_code = CWIST_HTTP_BAD_REQUEST;
+                    cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"invalid_request\", \"message\": \"ech config list requires route hostname\"}}");
+                    cJSON_Delete(root);
+                    cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                    return;
+                }
+                /* Validate route_hostname is child of root hostname */
+                if (route_hostname) {
+                    const char *root = portillia_server_root_hostname();
+                    if (!root || !root[0]) root = "localhost";
+                    size_t root_len = strlen(root);
+                    size_t route_len = strlen(route_hostname);
+                    if (route_len <= root_len + 1 || route_hostname[route_len - root_len - 1] != '.' ||
+                        strcasecmp(route_hostname + route_len - root_len, root) != 0) {
+                        res->status_code = CWIST_HTTP_BAD_REQUEST;
+                        cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"invalid_request\", \"message\": \"route hostname must be a child of relay root hostname\"}}");
+                        cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                        return;
+                    }
+                }
+
                 LOG_INFO("Registering lease for %s (bps_limit=%ld, udp=%d, tcp=%d)", hostname, limit, udp, tcp);
                 portillia_registry_register(hostname, identity_address, limit);
+                /* Register with extended fields */
+                portillia_registry_register_ex(hostname, identity_address, limit,
+                                               client_ip, reported_ip, hostname_hash, ech_config_list, ech_config_list_len, NULL);
+                free(client_ip);
 
                 time_t expires_at = time(NULL) + 300;
                 char expires_at_str[64] = {0};
@@ -310,8 +399,11 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                 cJSON_AddStringToObject(data, "access_token", access_token);
                 cJSON_AddBoolToObject(data, "udp_enabled", udp);
                 cJSON_AddBoolToObject(data, "tcp_enabled", tcp);
+                cJSON_AddNumberToObject(data, "sni_port", (double)portillia_server_sni_port());
                 if (udp) {
-                    cJSON_AddNumberToObject(data, "sni_port", (double)portillia_server_sni_port());
+                    char udp_addr[64];
+                    snprintf(udp_addr, sizeof(udp_addr), "localhost:%d", portillia_server_sni_port());
+                    cJSON_AddStringToObject(data, "udp_addr", udp_addr);
                 }
                 if (tcp) {
                     cJSON_AddStringToObject(data, "tcp_addr", "localhost:4017");
@@ -399,6 +491,7 @@ void handle_hop(cwist_http_request *req, cwist_http_response *res) {
     if (req->body && req->body->size > 0) {
         cJSON *root = cJSON_Parse(req->body->data);
         if (root) {
+            cJSON *public_hostname = cJSON_GetObjectItem(root, "public_hostname");
             cJSON *match_hostname = cJSON_GetObjectItem(root, "match_hostname");
             cJSON *match_token = cJSON_GetObjectItem(root, "match_token");
             cJSON *forward_token = cJSON_GetObjectItem(root, "forward_token");
@@ -408,10 +501,12 @@ void handle_hop(cwist_http_request *req, cwist_http_response *res) {
             if (identity && forward_token && forward_relay) {
                 cJSON *next_ipv4 = cJSON_GetObjectItem(forward_relay, "wireguard_ipv4");
                 if (next_ipv4) {
-                    if (match_hostname && match_hostname->valuestring) {
-                        portillia_registry_register_hop(match_hostname->valuestring, next_ipv4->valuestring, forward_token->valuestring, identity->valuestring);
-                    } else if (match_token && match_token->valuestring) {
-                        portillia_registry_register_hop(match_token->valuestring, next_ipv4->valuestring, forward_token->valuestring, identity->valuestring);
+                    const char *hop_key = NULL;
+                    if (public_hostname && public_hostname->valuestring) hop_key = public_hostname->valuestring;
+                    else if (match_hostname && match_hostname->valuestring) hop_key = match_hostname->valuestring;
+                    else if (match_token && match_token->valuestring) hop_key = match_token->valuestring;
+                    if (hop_key) {
+                        portillia_registry_register_hop(hop_key, next_ipv4->valuestring, forward_token->valuestring, identity->valuestring);
                     }
                     cwist_sstring_assign(res->body, "{\"ok\": true}");
                 }
@@ -601,12 +696,27 @@ void handle_register_challenge(cwist_http_request *req, cwist_http_response *res
                 cJSON *ttl_obj = cJSON_GetObjectItem(req_root, "ttl");
                 cJSON *udp_obj = cJSON_GetObjectItem(req_root, "udp_enabled");
                 cJSON *tcp_obj = cJSON_GetObjectItem(req_root, "tcp_enabled");
+                cJSON *route_obj = cJSON_GetObjectItem(req_root, "route_hostname");
+                cJSON *hash_obj = cJSON_GetObjectItem(req_root, "hostname_hash");
+                cJSON *ech_obj = cJSON_GetObjectItem(req_root, "ech_config_list");
                 const char *addr = (addr_obj && cJSON_IsString(addr_obj)) ? addr_obj->valuestring : "";
                 const char *name = (name_obj && cJSON_IsString(name_obj)) ? name_obj->valuestring : "";
                 int ttl = (ttl_obj && cJSON_IsNumber(ttl_obj)) ? ttl_obj->valueint : 300;
                 if (ttl <= 0) ttl = 300;
                 bool udp = udp_obj ? cJSON_IsTrue(udp_obj) : false;
                 bool tcp = tcp_obj ? cJSON_IsTrue(tcp_obj) : true;
+                const char *route_hostname = (route_obj && cJSON_IsString(route_obj)) ? route_obj->valuestring : NULL;
+                const char *hostname_hash = (hash_obj && cJSON_IsString(hash_obj)) ? hash_obj->valuestring : NULL;
+                uint8_t ech_buf[4096] = {0};
+                size_t ech_len = 0;
+                if (ech_obj && cJSON_IsString(ech_obj) && ech_obj->valuestring) {
+                    int decoded = EVP_DecodeBlock(ech_buf, (const unsigned char *)ech_obj->valuestring, (int)strlen(ech_obj->valuestring));
+                    if (decoded > 0) {
+                        size_t b64_len = strlen(ech_obj->valuestring);
+                        while (b64_len > 0 && ech_obj->valuestring[b64_len - 1] == '=') { decoded--; b64_len--; }
+                        ech_len = (size_t)decoded;
+                    }
+                }
                 char domain[256] = {0};
                 char *host_header = cwist_http_header_get(req->headers, "Host");
                 if (host_header && host_header[0]) {
@@ -644,7 +754,8 @@ void handle_register_challenge(cwist_http_request *req, cwist_http_response *res
                     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
                     return;
                 }
-                store_register_challenge(name, addr, msg, udp, tcp, exp, challenge_id);
+                store_register_challenge(name, addr, msg, udp, tcp, route_hostname, hostname_hash,
+                                         ech_len > 0 ? ech_buf : NULL, ech_len, domain, nonce, exp, challenge_id);
                 cJSON *root = cJSON_CreateObject();
                 cJSON *data = cJSON_CreateObject();
                 cJSON_AddStringToObject(data, "challenge_id", challenge_id);

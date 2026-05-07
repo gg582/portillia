@@ -6,11 +6,16 @@ package main
 import "C"
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/base32"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,8 +24,10 @@ import (
 
 	"github.com/gosuda/portal-tunnel/v2/portal/auth"
 	"github.com/gosuda/portal-tunnel/v2/portal/discovery"
+	"github.com/gosuda/portal-tunnel/v2/portal/keyless"
 	"github.com/gosuda/portal-tunnel/v2/portal/overlay"
 	"github.com/gosuda/portal-tunnel/v2/types"
+	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
 var (
@@ -320,6 +327,193 @@ func DiscoveryAnnounceJSON(cURL, cDescriptorJSON *C.char) *C.char {
 		return nil
 	}
 	return C.CString(string(respBody))
+}
+
+// ---------- ECH helpers ----------
+
+//export ECHMaterialsJSON
+func ECHMaterialsJSON(cSeed, cPublicName *C.char) *C.char {
+	seed := C.GoString(cSeed)
+	publicName := C.GoString(cPublicName)
+	keys, configList, err := keyless.EncryptedClientHelloMaterials(seed, publicName)
+	if err != nil {
+		return nil
+	}
+	out := struct {
+		Keys       []tls.EncryptedClientHelloKey `json:"keys"`
+		ConfigList string                        `json:"config_list"`
+	}{
+		Keys:       keys,
+		ConfigList: base64.StdEncoding.EncodeToString(configList),
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil
+	}
+	return C.CString(string(b))
+}
+
+//export NormalizeECHConfigListJSON
+func NormalizeECHConfigListJSON(cConfigListB64 *C.char) *C.char {
+	raw, err := base64.StdEncoding.DecodeString(C.GoString(cConfigListB64))
+	if err != nil {
+		return nil
+	}
+	normalized, err := keyless.NormalizeEncryptedClientHelloConfigList(raw)
+	if err != nil {
+		return nil
+	}
+	return C.CString(base64.StdEncoding.EncodeToString(normalized))
+}
+
+// ---------- Compatibility helpers (100% Go parity) ----------
+
+//export HostnameHashJSON
+func HostnameHashJSON(cHostname *C.char) *C.char {
+	return C.CString(utils.HostnameHash(C.GoString(cHostname)))
+}
+
+//export DeriveTokenJSON
+func DeriveTokenJSON(cIdentityJSON, cPartsJSON *C.char) *C.char {
+	var identity types.Identity
+	if err := json.Unmarshal([]byte(C.GoString(cIdentityJSON)), &identity); err != nil {
+		return nil
+	}
+	var parts []string
+	if err := json.Unmarshal([]byte(C.GoString(cPartsJSON)), &parts); err != nil {
+		return nil
+	}
+	token, err := identity.DeriveToken(parts...)
+	if err != nil {
+		return nil
+	}
+	return C.CString(token)
+}
+
+//export PortalRootHostJSON
+func PortalRootHostJSON(cRelayURL *C.char) *C.char {
+	u, err := url.Parse(C.GoString(cRelayURL))
+	if err != nil {
+		return nil
+	}
+	return C.CString(utils.PortalRootHost(u.String()))
+}
+
+//export LeaseHostnameJSON
+func LeaseHostnameJSON(cName, cRootHost *C.char) *C.char {
+	h, err := utils.LeaseHostname(C.GoString(cName), C.GoString(cRootHost))
+	if err != nil {
+		return nil
+	}
+	return C.CString(h)
+}
+
+//export NormalizeDNSLabelJSON
+func NormalizeDNSLabelJSON(cLabel *C.char) *C.char {
+	out, err := utils.NormalizeDNSLabel(C.GoString(cLabel))
+	if err != nil {
+		return nil
+	}
+	return C.CString(out)
+}
+
+//export StreamLeaseECHJSON
+func StreamLeaseECHJSON(cIdentityJSON, cPublicHostname, cRootHost *C.char) *C.char {
+	var identity types.Identity
+	if err := json.Unmarshal([]byte(C.GoString(cIdentityJSON)), &identity); err != nil {
+		return nil
+	}
+	publicHostname := C.GoString(cPublicHostname)
+	rootHost := C.GoString(cRootHost)
+
+	routeToken, err := identity.DeriveToken("ech-route", publicHostname, rootHost)
+	if err != nil {
+		return nil
+	}
+	routeSum := sha256.Sum256([]byte(routeToken))
+	routeLabel := "ech-" + base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(routeSum[:20])
+	routeHostname, err := utils.LeaseHostname(routeLabel, rootHost)
+	if err != nil {
+		return nil
+	}
+
+	echSeed, err := identity.DeriveToken("tenant-ech", publicHostname, routeHostname)
+	if err != nil {
+		return nil
+	}
+	_, configList, err := keyless.EncryptedClientHelloMaterials(echSeed, routeHostname)
+	if err != nil {
+		return nil
+	}
+
+	out := struct {
+		RouteHostname string `json:"route_hostname"`
+		ConfigListB64 string `json:"config_list_b64"`
+		HostnameHash  string `json:"hostname_hash"`
+	}{
+		RouteHostname: routeHostname,
+		ConfigListB64: base64.StdEncoding.EncodeToString(configList),
+		HostnameHash:  utils.HostnameHash(publicHostname),
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil
+	}
+	return C.CString(string(b))
+}
+
+//export StreamLeaseExtrasJSON
+func StreamLeaseExtrasJSON(cIdentityJSON, cRelayURL *C.char) *C.char {
+	var identity types.Identity
+	if err := json.Unmarshal([]byte(C.GoString(cIdentityJSON)), &identity); err != nil {
+		return nil
+	}
+	u, err := url.Parse(C.GoString(cRelayURL))
+	if err != nil {
+		return nil
+	}
+	rootHost := utils.PortalRootHost(u.String())
+	publicHostname, err := utils.LeaseHostname(identity.Name, rootHost)
+	if err != nil {
+		return nil
+	}
+
+	routeToken, err := identity.DeriveToken("ech-route", publicHostname, rootHost)
+	if err != nil {
+		return nil
+	}
+	routeSum := sha256.Sum256([]byte(routeToken))
+	routeLabel := "ech-" + base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(routeSum[:20])
+	routeHostname, err := utils.LeaseHostname(routeLabel, rootHost)
+	if err != nil {
+		return nil
+	}
+
+	echSeed, err := identity.DeriveToken("tenant-ech", publicHostname, routeHostname)
+	if err != nil {
+		return nil
+	}
+	_, configList, err := keyless.EncryptedClientHelloMaterials(echSeed, routeHostname)
+	if err != nil {
+		return nil
+	}
+
+	out := struct {
+		PublicHostname string `json:"public_hostname"`
+		RouteHostname  string `json:"route_hostname"`
+		HostnameHash   string `json:"hostname_hash"`
+		ConfigListB64  string `json:"config_list_b64"`
+	}{
+		PublicHostname: publicHostname,
+		RouteHostname:  routeHostname,
+		HostnameHash:   utils.HostnameHash(publicHostname),
+		ConfigListB64:  base64.StdEncoding.EncodeToString(configList),
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil
+	}
+	return C.CString(string(b))
 }
 
 func main() {}

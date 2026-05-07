@@ -16,6 +16,7 @@ require (
 	github.com/ethereum/go-ethereum v1.17.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/google/btree v1.1.2 // indirect
+	github.com/gosuda/keyless_tls v0.0.2-0.20260507061030-5128be6b5008 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
 	github.com/holiman/uint256 v1.3.2 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
@@ -40,4 +41,4 @@ require (
 	gvisor.dev/gvisor v0.0.0-20250503011706-39ed1f5ac29c // indirect
 )
 
-replace github.com/gosuda/portal-tunnel/v2 => ../portal-tunnel
+replace github.com/gosuda/portal-tunnel/v2 => ../../portal-tunnel

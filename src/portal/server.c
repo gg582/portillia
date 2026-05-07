@@ -46,6 +46,14 @@ typedef struct lease_record {
     int64_t bps_limit;
     relay_stream *stream;
 
+    // Privacy / ECH
+    char *client_ip;
+    char *reported_ip;
+    char *hostname_hash;
+    uint8_t *ech_config_list;
+    size_t ech_config_list_len;
+    char *ech_dns_hostname;
+
     // Multi-hop
     char *hop_token;
     char *hop_next_overlay_ipv4;
@@ -67,6 +75,18 @@ typedef struct portillia_server {
 } portillia_server;
 
 static portillia_server *global_server = NULL;
+
+extern void portillia_proxy_bridge(int client_fd, int target_fd);
+
+static char *base64_std_encode(const uint8_t *data, size_t len) {
+    size_t b64_len = ((len + 2) / 3) * 4;
+    char *b64 = (char *)malloc(b64_len + 1);
+    if (!b64) return NULL;
+    int out_len = EVP_EncodeBlock((unsigned char *)b64, data, (int)len);
+    if (out_len < 0) { free(b64); return NULL; }
+    b64[out_len] = '\0';
+    return b64;
+}
 
 void relay_stream_free(relay_stream *s) {
     if (!s) return;
@@ -213,7 +233,10 @@ bool lease_registry_is_allowed(lease_registry *r, const char *identity_key) {
     return true;
 }
 
-void lease_registry_register(lease_registry *r, const char *hostname, const char *identity_key, int64_t bps_limit) {
+void lease_registry_register(lease_registry *r, const char *hostname, const char *identity_key, int64_t bps_limit,
+                               const char *client_ip, const char *reported_ip,
+                               const char *hostname_hash, const uint8_t *ech_config_list, size_t ech_config_list_len,
+                               const char *ech_dns_hostname) {
     if (!lease_registry_is_allowed(r, identity_key)) return;
     pthread_mutex_lock(&r->mu);
     time_t now = time(NULL);
@@ -222,6 +245,18 @@ void lease_registry_register(lease_registry *r, const char *hostname, const char
             r->records[i]->expires_at = now + 300;
             r->records[i]->last_seen_at = now;
             r->records[i]->bps_limit = bps_limit;
+            if (client_ip) { free(r->records[i]->client_ip); r->records[i]->client_ip = strdup(client_ip); }
+            if (reported_ip) { free(r->records[i]->reported_ip); r->records[i]->reported_ip = strdup(reported_ip); }
+            if (hostname_hash) { free(r->records[i]->hostname_hash); r->records[i]->hostname_hash = strdup(hostname_hash); }
+            if (ech_config_list && ech_config_list_len > 0) {
+                free(r->records[i]->ech_config_list);
+                r->records[i]->ech_config_list = (uint8_t *)malloc(ech_config_list_len);
+                if (r->records[i]->ech_config_list) {
+                    memcpy(r->records[i]->ech_config_list, ech_config_list, ech_config_list_len);
+                    r->records[i]->ech_config_list_len = ech_config_list_len;
+                }
+            }
+            if (ech_dns_hostname) { free(r->records[i]->ech_dns_hostname); r->records[i]->ech_dns_hostname = strdup(ech_dns_hostname); }
             pthread_mutex_unlock(&r->mu);
             return;
         }
@@ -235,6 +270,17 @@ void lease_registry_register(lease_registry *r, const char *hostname, const char
         rec->expires_at = now + 300;
         rec->bps_limit = bps_limit;
         rec->stream = relay_stream_new();
+        if (client_ip) rec->client_ip = strdup(client_ip);
+        if (reported_ip) rec->reported_ip = strdup(reported_ip);
+        if (hostname_hash) rec->hostname_hash = strdup(hostname_hash);
+        if (ech_config_list && ech_config_list_len > 0) {
+            rec->ech_config_list = (uint8_t *)malloc(ech_config_list_len);
+            if (rec->ech_config_list) {
+                memcpy(rec->ech_config_list, ech_config_list, ech_config_list_len);
+                rec->ech_config_list_len = ech_config_list_len;
+            }
+        }
+        if (ech_dns_hostname) rec->ech_dns_hostname = strdup(ech_dns_hostname);
         r->records[r->count++] = rec;
     }
     pthread_mutex_unlock(&r->mu);
@@ -245,6 +291,13 @@ void portillia_registry_register_hop(const char *hop_token, const char *next_ipv
     lease_registry *r = global_server->registry;
     pthread_mutex_lock(&r->mu);
     time_t now = time(NULL);
+    for (int i = 0; i < r->count; i++) {
+        if (r->records[i]->hop_token && strcmp(r->records[i]->hop_token, hop_token) == 0) {
+            r->records[i]->expires_at = now + 300;
+            pthread_mutex_unlock(&r->mu);
+            return;
+        }
+    }
     if (r->count < MAX_RECORDS) {
         lease_record *rec = calloc(1, sizeof(lease_record));
         rec->hop_token = strdup(hop_token);
@@ -281,6 +334,20 @@ lease_record *lease_registry_lookup(lease_registry *r, const char *hostname) {
                 return r->records[i];
             }
         }
+    }
+    // Hostname hash match
+    char *computed_hash = HostnameHashJSON(hostname);
+    if (computed_hash) {
+        for (int i = 0; i < r->count; i++) {
+            if (r->records[i]->hostname_hash && strcmp(r->records[i]->hostname_hash, computed_hash) == 0) {
+                if (r->records[i]->expires_at > now) {
+                    FreeCString(computed_hash);
+                    pthread_mutex_unlock(&r->mu);
+                    return r->records[i];
+                }
+            }
+        }
+        FreeCString(computed_hash);
     }
     // Pattern match
     for (int i = 0; i < r->count; i++) {
@@ -323,6 +390,11 @@ void *lease_janitor_thread(void *arg) {
                 if (rec->stream) relay_stream_free(rec->stream);
                 if (rec->hostname) free(rec->hostname);
                 if (rec->identity_key) free(rec->identity_key);
+                if (rec->client_ip) free(rec->client_ip);
+                if (rec->reported_ip) free(rec->reported_ip);
+                if (rec->hostname_hash) free(rec->hostname_hash);
+                if (rec->ech_config_list) free(rec->ech_config_list);
+                if (rec->ech_dns_hostname) free(rec->ech_dns_hostname);
                 if (rec->hop_token) free(rec->hop_token);
                 if (rec->hop_next_overlay_ipv4) free(rec->hop_next_overlay_ipv4);
                 if (rec->hop_next_token) free(rec->hop_next_token);
@@ -481,7 +553,17 @@ bool portillia_registry_tunnel_status(const char *hostname, char *resolved_hostn
 
 void portillia_registry_register(const char *hostname, const char *identity_key, int64_t bps_limit) {
     if (!global_server) return;
-    lease_registry_register(global_server->registry, hostname, identity_key, bps_limit);
+    lease_registry_register(global_server->registry, hostname, identity_key, bps_limit,
+                            NULL, NULL, NULL, NULL, 0, NULL);
+}
+
+void portillia_registry_register_ex(const char *hostname, const char *identity_key, int64_t bps_limit,
+                                    const char *client_ip, const char *reported_ip,
+                                    const char *hostname_hash, const uint8_t *ech_config_list, size_t ech_config_list_len,
+                                    const char *ech_dns_hostname) {
+    if (!global_server) return;
+    lease_registry_register(global_server->registry, hostname, identity_key, bps_limit,
+                            client_ip, reported_ip, hostname_hash, ech_config_list, ech_config_list_len, ech_dns_hostname);
 }
 
 char* portillia_registry_to_json() {
@@ -496,6 +578,17 @@ char* portillia_registry_to_json() {
         cJSON *item = cJSON_CreateObject();
         cJSON_AddStringToObject(item, "hostname", rec->hostname ? rec->hostname : "");
         cJSON_AddStringToObject(item, "identity_key", rec->identity_key);
+        cJSON_AddStringToObject(item, "client_ip", rec->client_ip ? rec->client_ip : "");
+        cJSON_AddStringToObject(item, "reported_ip", rec->reported_ip ? rec->reported_ip : "");
+        cJSON_AddStringToObject(item, "hostname_hash", rec->hostname_hash ? rec->hostname_hash : "");
+        if (rec->ech_config_list && rec->ech_config_list_len > 0) {
+            char *b64 = base64_std_encode(rec->ech_config_list, rec->ech_config_list_len);
+            if (b64) {
+                cJSON_AddStringToObject(item, "ech_config_list", b64);
+                free(b64);
+            }
+        }
+        cJSON_AddStringToObject(item, "ech_dns_hostname", rec->ech_dns_hostname ? rec->ech_dns_hostname : "");
         cJSON_AddNumberToObject(item, "expires_in", (double)(rec->expires_at - now));
         cJSON_AddNumberToObject(item, "ready", (double)(rec->stream ? rec->stream->count : 0));
         cJSON_AddNumberToObject(item, "bps_limit", (double)rec->bps_limit);

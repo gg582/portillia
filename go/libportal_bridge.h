@@ -101,8 +101,18 @@ extern char* IssueLeaseTokenJSON(char* cPrivateKeyHex, char* cKeyID, char* cIssu
 extern char* VerifyLeaseTokenJSON(char* cToken, char* cPublicKeyHex, char* cIssuer, long long int cNowUnix);
 extern char* DiscoveryPollJSON(char* cURL);
 extern char* DiscoveryAnnounceJSON(char* cURL, char* cDescriptorJSON);
+extern char* ECHMaterialsJSON(char* cSeed, char* cPublicName);
+extern char* NormalizeECHConfigListJSON(char* cConfigListB64);
+extern char* HostnameHashJSON(char* cHostname);
+extern char* DeriveTokenJSON(char* cIdentityJSON, char* cPartsJSON);
+extern char* PortalRootHostJSON(char* cRelayURL);
+extern char* LeaseHostnameJSON(char* cName, char* cRootHost);
+extern char* NormalizeDNSLabelJSON(char* cLabel);
+extern char* StreamLeaseECHJSON(char* cIdentityJSON, char* cPublicHostname, char* cRootHost);
+extern char* StreamLeaseExtrasJSON(char* cIdentityJSON, char* cRelayURL);
 extern int VerifySIWESignature(char* cMessage, char* cSignature, char* cExpectedAddress);
 extern char* CreateSIWEMessage(char* cDomain, char* cAddress, char* cURI, char* cNonce, char* cStatement, char* cRequestID, char* cIssuedAt, char* cExpirationTime, int cChainId);
+extern char* VerifySIWEMessageJSON(char* cMessage, char* cSignature, char* cDomain, char* cNonce, long long int cNowUnix);
 
 #ifdef __cplusplus
 }

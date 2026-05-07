@@ -6,6 +6,7 @@
 #include <portillia/utils/crypto.h>
 #include <portillia/utils/log.h>
 #include <portillia/utils/network.h>
+#include "portal_bridge.h"
 #include <cjson/cJSON.h>
 #include <curl/curl.h>
 #include <openssl/sha.h>
@@ -211,6 +212,29 @@ static char *base64_raw_url_encode(const uint8_t *data, size_t len) {
     out[j] = '\0';
     free(b64);
     return out;
+}
+
+static char *base64_std_encode(const uint8_t *data, size_t len) {
+    size_t b64_len = ((len + 2) / 3) * 4;
+    char *b64 = (char *)malloc(b64_len + 1);
+    if (!b64) return NULL;
+    int out_len = EVP_EncodeBlock((unsigned char *)b64, data, (int)len);
+    if (out_len < 0) { free(b64); return NULL; }
+    b64[out_len] = '\0';
+    return b64;
+}
+
+static uint8_t *base64_std_decode(const char *b64, size_t *out_len) {
+    if (!b64 || !out_len) return NULL;
+    *out_len = 0;
+    size_t len = strlen(b64);
+    uint8_t *buf = (uint8_t *)malloc(len + 1);
+    if (!buf) return NULL;
+    int rc = EVP_DecodeBlock(buf, (const unsigned char *)b64, (int)len);
+    if (rc < 0) { free(buf); return NULL; }
+    while (len > 0 && b64[len - 1] == '=') { rc--; len--; }
+    *out_len = (size_t)rc;
+    return buf;
 }
 
 static char *derive_hop_token(const portillia_identity_t *identity,
@@ -522,7 +546,16 @@ static int build_hop_route_payload(const char *method, const portillia_hop_route
 
     cJSON_AddStringToObject(root, "owner_public_key", route->owner_public_key ? route->owner_public_key : "");
     cJSON_AddStringToObject(root, "relay_url", route->relay_url ? route->relay_url : "");
-    cJSON_AddStringToObject(root, "match_hostname", route->match_hostname ? route->match_hostname : "");
+    cJSON_AddStringToObject(root, "public_hostname", route->public_hostname ? route->public_hostname : "");
+    cJSON_AddStringToObject(root, "route_hostname", route->route_hostname ? route->route_hostname : "");
+    cJSON_AddStringToObject(root, "hostname_hash", route->hostname_hash ? route->hostname_hash : "");
+    if (route->ech_config_list && route->ech_config_list_len > 0) {
+        char *b64 = base64_std_encode(route->ech_config_list, route->ech_config_list_len);
+        cJSON_AddStringToObject(root, "ech_config_list", b64 ? b64 : "");
+        free(b64);
+    } else {
+        cJSON_AddStringToObject(root, "ech_config_list", "");
+    }
     cJSON_AddStringToObject(root, "match_token", route->match_token ? route->match_token : "");
     cJSON_AddItemToObject(root, "forward_relay", relay_descriptor_to_canonical_json(&route->forward_relay, false));
     cJSON_AddStringToObject(root, "forward_token", route->forward_token ? route->forward_token : "");
@@ -565,12 +598,12 @@ static int sign_hop_route(const char *method, portillia_hop_route_t *route, cons
         }
     }
 
-    /* Normalize match_hostname */
-    if (route->match_hostname) {
-        char *norm = normalize_hostname(route->match_hostname);
+    /* Normalize public_hostname */
+    if (route->public_hostname) {
+        char *norm = normalize_hostname(route->public_hostname);
         if (norm) {
-            portillia_gc_free_later(route->match_hostname);
-            route->match_hostname = portillia_gc_strdup(norm);
+            portillia_gc_free_later(route->public_hostname);
+            route->public_hostname = portillia_gc_strdup(norm);
             free(norm);
         }
     }
@@ -613,7 +646,16 @@ static cJSON *hop_route_to_request_json(const portillia_hop_route_t *route, cons
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "owner_public_key", route->owner_public_key ? route->owner_public_key : "");
     cJSON_AddStringToObject(root, "relay_url", route->relay_url ? route->relay_url : "");
-    if (route->match_hostname && route->match_hostname[0]) cJSON_AddStringToObject(root, "match_hostname", route->match_hostname);
+    if (route->public_hostname && route->public_hostname[0]) cJSON_AddStringToObject(root, "public_hostname", route->public_hostname);
+    if (route->route_hostname && route->route_hostname[0]) cJSON_AddStringToObject(root, "route_hostname", route->route_hostname);
+    if (route->hostname_hash && route->hostname_hash[0]) cJSON_AddStringToObject(root, "hostname_hash", route->hostname_hash);
+    if (route->ech_config_list && route->ech_config_list_len > 0) {
+        char *b64 = base64_std_encode(route->ech_config_list, route->ech_config_list_len);
+        if (b64) {
+            cJSON_AddStringToObject(root, "ech_config_list", b64);
+            free(b64);
+        }
+    }
     if (route->match_token && route->match_token[0]) cJSON_AddStringToObject(root, "match_token", route->match_token);
     if (route->forward_token && route->forward_token[0]) cJSON_AddStringToObject(root, "forward_token", route->forward_token);
     if (route->signature && route->signature[0]) cJSON_AddStringToObject(root, "signature", route->signature);
@@ -736,21 +778,14 @@ static int http_json(portillia_http_client_t *client,
 static int parse_domain_response_json(cJSON *root, portillia_domain_response_t *out) {
     cJSON *data = envelope_data_or_root(root);
     cJSON *protocol_version = data ? cJSON_GetObjectItem(data, "protocol_version") : NULL;
-    cJSON *sdk_version = data ? cJSON_GetObjectItem(data, "sdk_version") : NULL;
-    cJSON *discovery_version = data ? cJSON_GetObjectItem(data, "discovery_version") : NULL;
     cJSON *release_version = data ? cJSON_GetObjectItem(data, "release_version") : NULL;
 
     memset(out, 0, sizeof(*out));
     if (protocol_version && cJSON_IsString(protocol_version) && protocol_version->valuestring) {
         out->protocol_version = portillia_gc_strdup(protocol_version->valuestring);
     }
-    if (sdk_version && cJSON_IsString(sdk_version) && sdk_version->valuestring) {
-        out->sdk_version = portillia_gc_strdup(sdk_version->valuestring);
-    } else if (release_version && cJSON_IsString(release_version) && release_version->valuestring) {
-        out->sdk_version = portillia_gc_strdup(release_version->valuestring);
-    }
-    if (discovery_version && cJSON_IsString(discovery_version) && discovery_version->valuestring) {
-        out->discovery_version = portillia_gc_strdup(discovery_version->valuestring);
+    if (release_version && cJSON_IsString(release_version) && release_version->valuestring) {
+        out->release_version = portillia_gc_strdup(release_version->valuestring);
     }
     return out->protocol_version ? 0 : -1;
 }
@@ -872,14 +907,12 @@ int portillia_http_client_check_domain(portillia_http_client_t *client) {
     cJSON_Delete(root);
     if (rc != 0 || !resp.protocol_version || strcmp(resp.protocol_version, PORTILLIA_SDK_VERSION) != 0) {
         if (resp.protocol_version) portillia_gc_free_later(resp.protocol_version);
-        if (resp.sdk_version) portillia_gc_free_later(resp.sdk_version);
-        if (resp.discovery_version) portillia_gc_free_later(resp.discovery_version);
+        if (resp.release_version) portillia_gc_free_later(resp.release_version);
         errno = EPROTO;
         return -1;
     }
     if (resp.protocol_version) portillia_gc_free_later(resp.protocol_version);
-    if (resp.sdk_version) portillia_gc_free_later(resp.sdk_version);
-    if (resp.discovery_version) portillia_gc_free_later(resp.discovery_version);
+    if (resp.release_version) portillia_gc_free_later(resp.release_version);
     return 0;
 }
 
@@ -906,6 +939,16 @@ int portillia_api_register_lease(portillia_http_client_t *client,
     portillia_hop_route_t *hop_routes = NULL;
     size_t hop_routes_count = 0;
 
+    char derived_address[43] = {0};
+    const char *identity_address = identity->address ? identity->address : "";
+    if (identity->private_key &&
+        derive_address_from_private_key(identity->private_key, derived_address, sizeof(derived_address)) == 0) {
+        if (identity->address && identity->address[0] && strcasecmp(identity->address, derived_address) != 0) {
+            LOG_WARN("SDK: Identity address %s does not match signing key; using derived address %s for SIWE",
+                     identity->address, derived_address);
+        }
+        identity_address = derived_address;
+    }
     if (multi_hop_count > 0) {
         if (!multi_hop || multi_hop_count < 2 || !relay_set || !identity->name) {
             errno = EINVAL;
@@ -976,6 +1019,7 @@ int portillia_api_register_lease(portillia_http_client_t *client,
         }
         snprintf(public_hostname, strlen(label) + 1 + strlen(norm_root) + 1, "%s.%s", label, norm_root);
         free(label);
+        char *root_host_str = strdup(norm_root);
         free(norm_root);
         keyless_url = strdup(norm_entry);
         free(norm_entry);
@@ -1008,7 +1052,7 @@ int portillia_api_register_lease(portillia_http_client_t *client,
             portillia_relay_descriptor_copy(&hop_routes[i].forward_relay, &path[i + 1]);
             hop_routes[i].forward_token = portillia_gc_strdup(forward_token);
             if (i == 0) {
-                hop_routes[i].match_hostname = portillia_gc_strdup(public_hostname);
+                hop_routes[i].public_hostname = portillia_gc_strdup(public_hostname);
                 if (metadata) portillia_lease_metadata_copy(&hop_routes[i].metadata, metadata);
             } else if (previous_token) {
                 hop_routes[i].match_token = portillia_gc_strdup(previous_token);
@@ -1019,17 +1063,71 @@ int portillia_api_register_lease(portillia_http_client_t *client,
         exit_hop_token = previous_token;
         for (size_t i = 0; i < multi_hop_count; i++) portillia_relay_descriptor_cleanup(&path[i]);
         free(path);
+
+        /* Compute ECH materials for multihop stream lease (first hop) */
+        if (!udp_enabled && !tcp_enabled && public_hostname && root_host_str) {
+            cJSON *id_json = cJSON_CreateObject();
+            cJSON_AddStringToObject(id_json, "name", identity->name ? identity->name : "");
+            cJSON_AddStringToObject(id_json, "address", identity_address);
+            char *id_str = cJSON_PrintUnformatted(id_json);
+            cJSON_Delete(id_json);
+            char *ech_json = StreamLeaseECHJSON(id_str, public_hostname, root_host_str);
+            free(id_str);
+            if (ech_json) {
+                cJSON *ej = cJSON_Parse(ech_json);
+                cJSON *rh = cJSON_GetObjectItem(ej, "route_hostname");
+                cJSON *hh = cJSON_GetObjectItem(ej, "hostname_hash");
+                cJSON *cb = cJSON_GetObjectItem(ej, "config_list_b64");
+                if (rh && cJSON_IsString(rh) && rh->valuestring)
+                    hop_routes[0].route_hostname = portillia_gc_strdup(rh->valuestring);
+                if (hh && cJSON_IsString(hh) && hh->valuestring)
+                    hop_routes[0].hostname_hash = portillia_gc_strdup(hh->valuestring);
+                if (cb && cJSON_IsString(cb) && cb->valuestring) {
+                    size_t bin_len = 0;
+                    uint8_t *bin = base64_std_decode(cb->valuestring, &bin_len);
+                    if (bin && bin_len > 0) {
+                        hop_routes[0].ech_config_list = (uint8_t *)portillia_gc_alloc(bin_len);
+                        if (hop_routes[0].ech_config_list) {
+                            memcpy(hop_routes[0].ech_config_list, bin, bin_len);
+                            hop_routes[0].ech_config_list_len = bin_len;
+                        }
+                    }
+                    free(bin);
+                }
+                cJSON_Delete(ej);
+                FreeCString(ech_json);
+            }
+        }
+        free(root_host_str);
     }
 
-    char derived_address[43] = {0};
-    const char *identity_address = identity->address ? identity->address : "";
-    if (identity->private_key &&
-        derive_address_from_private_key(identity->private_key, derived_address, sizeof(derived_address)) == 0) {
-        if (identity->address && identity->address[0] && strcasecmp(identity->address, derived_address) != 0) {
-            LOG_WARN("SDK: Identity address %s does not match signing key; using derived address %s for SIWE",
-                     identity->address, derived_address);
+
+    /* Compute ECH materials for non-multihop stream lease */
+    char *route_hostname = NULL;
+    char *hostname_hash = NULL;
+    uint8_t *ech_config_list = NULL;
+    size_t ech_config_list_len = 0;
+    if (!udp_enabled && !tcp_enabled && multi_hop_count == 0) {
+        cJSON *id_json = cJSON_CreateObject();
+        cJSON_AddStringToObject(id_json, "name", identity->name ? identity->name : "");
+        cJSON_AddStringToObject(id_json, "address", identity_address);
+        char *id_str = cJSON_PrintUnformatted(id_json);
+        cJSON_Delete(id_json);
+        char *extras_json = StreamLeaseExtrasJSON(id_str, client->relay_url);
+        free(id_str);
+        if (extras_json) {
+            cJSON *ej = cJSON_Parse(extras_json);
+            cJSON *rh = cJSON_GetObjectItem(ej, "route_hostname");
+            cJSON *hh = cJSON_GetObjectItem(ej, "hostname_hash");
+            cJSON *cb = cJSON_GetObjectItem(ej, "config_list_b64");
+            if (rh && cJSON_IsString(rh) && rh->valuestring) route_hostname = strdup(rh->valuestring);
+            if (hh && cJSON_IsString(hh) && hh->valuestring) hostname_hash = strdup(hh->valuestring);
+            if (cb && cJSON_IsString(cb) && cb->valuestring) {
+                ech_config_list = base64_std_decode(cb->valuestring, &ech_config_list_len);
+            }
+            cJSON_Delete(ej);
+            FreeCString(extras_json);
         }
-        identity_address = derived_address;
     }
 
     cJSON *challenge_req = cJSON_CreateObject();
@@ -1056,6 +1154,15 @@ int portillia_api_register_lease(portillia_http_client_t *client,
     cJSON_AddBoolToObject(challenge_req, "udp_enabled", udp_enabled);
     cJSON_AddBoolToObject(challenge_req, "tcp_enabled", tcp_enabled);
     if (exit_hop_token) cJSON_AddStringToObject(challenge_req, "hop_token", exit_hop_token);
+    if (route_hostname) cJSON_AddStringToObject(challenge_req, "route_hostname", route_hostname);
+    if (hostname_hash) cJSON_AddStringToObject(challenge_req, "hostname_hash", hostname_hash);
+    if (ech_config_list && ech_config_list_len > 0) {
+        char *b64 = base64_std_encode(ech_config_list, ech_config_list_len);
+        if (b64) {
+            cJSON_AddStringToObject(challenge_req, "ech_config_list", b64);
+            free(b64);
+        }
+    }
     char *challenge_body = cJSON_PrintUnformatted(challenge_req);
     cJSON_Delete(challenge_req);
     if (!challenge_body) {
@@ -1130,12 +1237,16 @@ int portillia_api_register_lease(portillia_http_client_t *client,
     free(public_hostname);
     free(keyless_url);
     free(exit_hop_token);
+    free(route_hostname);
+    free(hostname_hash);
+    free(ech_config_list);
     return 0;
 }
 
 int portillia_api_renew_lease(portillia_http_client_t *client,
                               int ttl_sec,
                               const char *access_token,
+                              const char *reported_ip,
                               const portillia_identity_t *identity,
                               portillia_relay_set_t *relay_set,
                               portillia_hop_route_t *hops, size_t hop_count,
@@ -1147,6 +1258,7 @@ int portillia_api_renew_lease(portillia_http_client_t *client,
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "access_token", access_token);
     cJSON_AddNumberToObject(req, "ttl", ttl_sec);
+    if (reported_ip && reported_ip[0]) cJSON_AddStringToObject(req, "reported_ip", reported_ip);
     char *body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     if (!body) {
