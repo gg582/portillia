@@ -433,7 +433,7 @@ void portillia_server_handle_connect(const char *hostname, int client_fd) {
         struct sockaddr_in target = { .sin_family = AF_INET, .sin_port = htons(global_server->api_port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
         if (connect(target_fd, (struct sockaddr *)&target, sizeof(target)) == 0) {
             LOG_INFO("sni_connect root proxy to api_port=%d", global_server->api_port);
-            portillia_proxy_bridge(client_fd, target_fd);
+            portillia_tls_proxy_bridge(client_fd, target_fd);
         } else {
             LOG_WARN("sni_connect root connect to api_port=%d failed errno=%d", global_server->api_port, errno);
             close(target_fd);
