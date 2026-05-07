@@ -24,7 +24,9 @@ static void *tls_client_to_target(void *arg) {
     while ((n = SSL_read(args->ssl, buf, sizeof(buf))) > 0) {
         if (write(args->fd, buf, n) < 0) break;
     }
-    shutdown(args->fd, SHUT_WR);
+    shutdown(args->fd, SHUT_RDWR);
+    int ssl_fd = SSL_get_fd(args->ssl);
+    if (ssl_fd >= 0) shutdown(ssl_fd, SHUT_RDWR);
     free(args);
     return NULL;
 }
@@ -36,6 +38,9 @@ static void *tls_target_to_client(void *arg) {
     while ((n = read(args->fd, buf, sizeof(buf))) > 0) {
         if (SSL_write(args->ssl, buf, n) <= 0) break;
     }
+    shutdown(args->fd, SHUT_RDWR);
+    int ssl_fd = SSL_get_fd(args->ssl);
+    if (ssl_fd >= 0) shutdown(ssl_fd, SHUT_RDWR);
     free(args);
     return NULL;
 }
@@ -65,18 +70,22 @@ int portillia_tls_proxy_init(const char *cert_path, const char *key_path) {
     return 0;
 }
 
-void portillia_tls_proxy_bridge(int client_fd, int target_fd) {
-    if (!tls_ctx) {
-        close(client_fd);
-        close(target_fd);
-        return;
-    }
-    
+typedef struct {
+    int client_fd;
+    int target_fd;
+} tls_bridge_args;
+
+static void *tls_bridge_thread(void *arg) {
+    tls_bridge_args *b_args = (tls_bridge_args *)arg;
+    int client_fd = b_args->client_fd;
+    int target_fd = b_args->target_fd;
+    free(b_args);
+
     SSL *ssl = SSL_new(tls_ctx);
     if (!ssl) {
         close(client_fd);
         close(target_fd);
-        return;
+        return NULL;
     }
     SSL_set_fd(ssl, client_fd);
     
@@ -89,25 +98,57 @@ void portillia_tls_proxy_bridge(int client_fd, int target_fd) {
         SSL_free(ssl);
         close(client_fd);
         close(target_fd);
-        return;
+        return NULL;
     }
     
     pthread_t t1, t2;
     tls_copy_args *args1 = malloc(sizeof(tls_copy_args));
     args1->ssl = ssl;
     args1->fd = target_fd;
-    pthread_create(&t1, NULL, tls_client_to_target, args1);
+    if (pthread_create(&t1, NULL, tls_client_to_target, args1) != 0) {
+        free(args1);
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        close(client_fd);
+        close(target_fd);
+        return NULL;
+    }
     
     tls_copy_args *args2 = malloc(sizeof(tls_copy_args));
     args2->ssl = ssl;
     args2->fd = target_fd;
-    pthread_create(&t2, NULL, tls_target_to_client, args2);
+    if (pthread_create(&t2, NULL, tls_target_to_client, args2) != 0) {
+        free(args2);
+        shutdown(client_fd, SHUT_RDWR);
+        shutdown(target_fd, SHUT_RDWR);
+    }
     
     pthread_join(t1, NULL);
-    pthread_join(t2, NULL);
+    if (t2) pthread_join(t2, NULL);
     
     SSL_shutdown(ssl);
     SSL_free(ssl);
     close(client_fd);
     close(target_fd);
+    return NULL;
+}
+
+void portillia_tls_proxy_bridge(int client_fd, int target_fd) {
+    if (!tls_ctx) {
+        close(client_fd);
+        close(target_fd);
+        return;
+    }
+
+    pthread_t tid;
+    tls_bridge_args *args = malloc(sizeof(tls_bridge_args));
+    args->client_fd = client_fd;
+    args->target_fd = target_fd;
+    if (pthread_create(&tid, NULL, tls_bridge_thread, args) != 0) {
+        free(args);
+        close(client_fd);
+        close(target_fd);
+    } else {
+        pthread_detach(tid);
+    }
 }

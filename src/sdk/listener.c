@@ -17,10 +17,10 @@
 
 /* ---------- Constants ---------- */
 
-#define DEFAULT_DIAL_TIMEOUT_SEC      5
-#define DEFAULT_REQUEST_TIMEOUT_SEC   15
-#define DEFAULT_HANDSHAKE_TIMEOUT_SEC 15
-#define DEFAULT_LEASE_TTL_SEC         30
+#define DEFAULT_DIAL_TIMEOUT_SEC      10
+#define DEFAULT_REQUEST_TIMEOUT_SEC   30
+#define DEFAULT_HANDSHAKE_TIMEOUT_SEC 30
+#define DEFAULT_LEASE_TTL_SEC         300
 #define DEFAULT_RENEW_BEFORE_SEC      5
 #define DEFAULT_READY_TARGET          2
 #define DEFAULT_RETRY_WAIT_SEC        3
@@ -201,20 +201,29 @@ static int open_reverse_session(portillia_listener_t *l, SSL **out_outer_ssl) {
         }
     }
 
-    char resp[1024];
-    ssize_t nr;
-    if (outer_ssl) {
-        nr = SSL_read(outer_ssl, resp, sizeof(resp) - 1);
-    } else {
-        nr = read(conn_fd, resp, sizeof(resp) - 1);
+    char resp[4096];
+    size_t resp_idx = 0;
+    while (resp_idx < sizeof(resp) - 1) {
+        char c;
+        ssize_t n;
+        if (outer_ssl) {
+            n = SSL_read(outer_ssl, &c, 1);
+        } else {
+            n = read(conn_fd, &c, 1);
+        }
+        if (n <= 0) {
+            if (outer_ssl) SSL_free(outer_ssl);
+            close(conn_fd);
+            errno = EIO;
+            return -1;
+        }
+        resp[resp_idx++] = c;
+        resp[resp_idx] = '\0';
+        if (resp_idx >= 4 && strcmp(resp + resp_idx - 4, "\r\n\r\n") == 0) {
+            break;
+        }
     }
-    if (nr <= 0) {
-        if (outer_ssl) SSL_free(outer_ssl);
-        close(conn_fd);
-        errno = EIO;
-        return -1;
-    }
-    resp[nr] = '\0';
+
     if (!strstr(resp, " 200 ") && !strstr(resp, " 200\r") && !strstr(resp, " 200\n")) {
         if (outer_ssl) SSL_free(outer_ssl);
         close(conn_fd);

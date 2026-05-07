@@ -962,6 +962,5 @@ void portillia_api_server_setup(cwist_app *app) {
     cwist_app_post(app, "/admin/settings/approval-mode", handle_admin_approval_mode);
 
     cwist_app_post(app, "/api/v2/register", handle_register);
-    cwist_app_post(app, "/api/v2/unregister", handle_unregister);
     cwist_app_get(app, "/api/v2/discovery", handle_discovery);
 }

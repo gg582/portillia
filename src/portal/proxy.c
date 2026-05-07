@@ -38,8 +38,9 @@ void *telemetry_sampler_thread(void *arg) {
 
 void portillia_proxy_init_telemetry() {
     pthread_t tid;
-    pthread_create(&tid, NULL, telemetry_sampler_thread, NULL);
-    pthread_detach(tid);
+    if (pthread_create(&tid, NULL, telemetry_sampler_thread, NULL) == 0) {
+        pthread_detach(tid);
+    }
 }
 
 int64_t portillia_proxy_get_active_conns() {
@@ -69,7 +70,8 @@ void *copy_thread(void *arg) {
         }
     }
     atomic_fetch_add(&global_active_conns, -1);
-    shutdown(args->dst, SHUT_WR);
+    shutdown(args->dst, SHUT_RDWR);
+    shutdown(args->src, SHUT_RDWR);
     free(args);
     return NULL;
 }
@@ -86,16 +88,25 @@ void *bridge_thread_func(void *arg) {
     args1->src = client_fd;
     args1->dst = target_fd;
     args1->bps_limit = bps_limit;
-    pthread_create(&t1, NULL, copy_thread, args1);
+    if (pthread_create(&t1, NULL, copy_thread, args1) != 0) {
+        free(args1);
+        close(client_fd);
+        close(target_fd);
+        return NULL;
+    }
     
     copy_args *args2 = malloc(sizeof(copy_args));
     args2->src = target_fd;
     args2->dst = client_fd;
     args2->bps_limit = bps_limit;
-    pthread_create(&t2, NULL, copy_thread, args2);
+    if (pthread_create(&t2, NULL, copy_thread, args2) != 0) {
+        free(args2);
+        shutdown(client_fd, SHUT_RDWR);
+        shutdown(target_fd, SHUT_RDWR);
+    }
     
     pthread_join(t1, NULL);
-    pthread_join(t2, NULL);
+    if (t2) pthread_join(t2, NULL);
 
     close(client_fd);
     close(target_fd);
@@ -108,8 +119,13 @@ void portillia_proxy_bridge_ex(int client_fd, int target_fd, int64_t bps_limit) 
     args->client_fd = client_fd;
     args->target_fd = target_fd;
     args->bps_limit = bps_limit;
-    pthread_create(&t, NULL, bridge_thread_func, args);
-    pthread_detach(t);
+    if (pthread_create(&t, NULL, bridge_thread_func, args) != 0) {
+        free(args);
+        close(client_fd);
+        close(target_fd);
+    } else {
+        pthread_detach(t);
+    }
 }
 
 void portillia_proxy_bridge(int client_fd, int target_fd) {

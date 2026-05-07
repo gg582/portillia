@@ -686,8 +686,8 @@ static int http_json(portillia_http_client_t *client,
     configure_curl_handle(curl, client->context);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -1247,7 +1247,7 @@ int portillia_api_sync_hop_routes(portillia_http_client_t *client,
         portillia_hop_route_t route;
         portillia_hop_route_init(&route);
         portillia_hop_route_copy(&route, &ordered[i]);
-        route.first_seen_at = is_post ? (expires_at - 30) : 0;
+        route.first_seen_at = is_post ? (expires_at - 300) : 0;
         if (is_post && sign_hop_route(method, &route, identity, expires_at) != 0) {
             rc = -1;
             portillia_hop_route_cleanup(&route);

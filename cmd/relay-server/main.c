@@ -56,25 +56,8 @@ void *sni_listener_thread(void *arg) {
         
         char *sni = get_sni_hostname(client);
         if (sni) {
-            extern const char* portillia_server_root_hostname();
-            const char *root = portillia_server_root_hostname();
-            LOG_DEBUG("sni_listener: SNI=%s root=%s", sni, root ? root : "(null)");
-            if (root && strcmp(sni, root) == 0) {
-                LOG_INFO("sni_listener: TLS proxy for root hostname %s", sni);
-                int target_fd = socket(AF_INET, SOCK_STREAM, 0);
-                struct sockaddr_in target = { .sin_family = AF_INET, .sin_port = htons(args->api_port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
-                if (connect(target_fd, (struct sockaddr *)&target, sizeof(target)) == 0) {
-                    extern void portillia_tls_proxy_bridge(int client_fd, int target_fd);
-                    portillia_tls_proxy_bridge(client, target_fd);
-                } else {
-                    LOG_ERROR("sni_listener: connect to api_port %d failed: %s", args->api_port, strerror(errno));
-                    close(target_fd);
-                    close(client);
-                }
-            } else {
-                extern void portillia_server_handle_connect(const char *hostname, int client_fd);
-                portillia_server_handle_connect(sni, client);
-            }
+            extern void portillia_server_handle_connect(const char *hostname, int client_fd);
+            portillia_server_handle_connect(sni, client);
             free(sni);
         } else {
             LOG_DEBUG("sni_listener: no SNI, closing client");
@@ -616,20 +599,14 @@ int main(void) {
             char *cert_file = NULL, *key_file = NULL;
             if (portillia_acme_manager_ensure_certificate(acme, &cert_file, &key_file) == CWIST_SUCCESS) {
                 LOG_INFO("Using certificate: %s", cert_file);
-                cwist_error_t https_err = cwist_app_use_https(app, cert_file, key_file);
+                // TLS is terminated by sni_listener offloading to plain HTTP API port.
+                extern int portillia_tls_proxy_init(const char *cert_path, const char *key_path);
+                if (portillia_tls_proxy_init(cert_file, key_file) == 0) {
+                    LOG_INFO("TLS proxy initialized for port %d", sni_port);
+                }
                 free(cert_file); free(key_file);
 
-                if (https_err.errtype != CWIST_ERR_INT16 || https_err.error.err_i16 != 0) {
-                    if (https_err.errtype == CWIST_ERR_JSON && https_err.error.err_json) {
-                        char *json = cJSON_PrintUnformatted(https_err.error.err_json);
-                        LOG_ERROR("Failed to initialize HTTPS context error=%s", json ? json : "{}");
-                        free(json);
-                    } else {
-                        LOG_ERROR("Failed to initialize HTTPS context errtype=%d code=%d",
-                                  https_err.errtype,
-                                  https_err.error.err_i16);
-                    }
-                } else if (ech_enabled) {
+                if (ech_enabled) {
                     // Encrypted Client Hello (ECH) setup is only safe on supported OpenSSL builds.
                     ensure_descriptor_identity();
                     if (g_desc_priv_hex[0]) {

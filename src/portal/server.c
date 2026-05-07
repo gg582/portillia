@@ -7,11 +7,14 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <time.h>
+#include <stdbool.h>
 #include <portillia/types/types.h>
 #include <portillia/utils/log.h>
 #include <portillia/utils/network.h>
 #include <portillia/portal/settings.h>
+#include <portillia/portal/tls_proxy.h>
 #include <cjson/cJSON.h>
+#include <errno.h>
 #include "portal_bridge.h"
 
 #define MAX_RECORDS 1024
@@ -30,6 +33,8 @@ typedef struct relay_stream {
     int count;
     pthread_mutex_t mu;
     pthread_cond_t cond;
+    pthread_t tid;
+    bool stop;
 } relay_stream;
 
 typedef struct lease_record {
@@ -65,6 +70,14 @@ static portillia_server *global_server = NULL;
 
 void relay_stream_free(relay_stream *s) {
     if (!s) return;
+    
+    pthread_mutex_lock(&s->mu);
+    s->stop = true;
+    pthread_cond_broadcast(&s->cond);
+    pthread_mutex_unlock(&s->mu);
+
+    pthread_join(s->tid, NULL);
+
     pthread_mutex_lock(&s->mu);
     relay_session *curr = s->ready_head;
     while (curr) {
@@ -83,8 +96,21 @@ void *stream_keepalive_thread(void *arg) {
     relay_stream *s = (relay_stream *)arg;
     uint8_t marker = 0x00; // MarkerKeepalive
     while (1) {
-        sleep(15);
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += 15;
+
         pthread_mutex_lock(&s->mu);
+        while (!s->stop) {
+            int rc = pthread_cond_timedwait(&s->cond, &s->mu, &ts);
+            if (rc == ETIMEDOUT) break;
+        }
+
+        if (s->stop) {
+            pthread_mutex_unlock(&s->mu);
+            break;
+        }
+
         relay_session *curr = s->ready_head;
         while (curr) {
             if (write(curr->fd, &marker, 1) != 1) {
@@ -101,10 +127,9 @@ relay_stream *relay_stream_new() {
     relay_stream *s = calloc(1, sizeof(relay_stream));
     pthread_mutex_init(&s->mu, NULL);
     pthread_cond_init(&s->cond, NULL);
+    s->stop = false;
 
-    pthread_t tid;
-    pthread_create(&tid, NULL, stream_keepalive_thread, s);
-    pthread_detach(tid);
+    pthread_create(&s->tid, NULL, stream_keepalive_thread, s);
 
     return s;
 }
@@ -194,7 +219,7 @@ void lease_registry_register(lease_registry *r, const char *hostname, const char
     time_t now = time(NULL);
     for (int i = 0; i < r->count; i++) {
         if (r->records[i]->hostname && strcmp(r->records[i]->hostname, hostname) == 0) {
-            r->records[i]->expires_at = now + 30;
+            r->records[i]->expires_at = now + 300;
             r->records[i]->last_seen_at = now;
             r->records[i]->bps_limit = bps_limit;
             pthread_mutex_unlock(&r->mu);
@@ -207,7 +232,7 @@ void lease_registry_register(lease_registry *r, const char *hostname, const char
         rec->identity_key = strdup(identity_key);
         rec->first_seen_at = now;
         rec->last_seen_at = now;
-        rec->expires_at = now + 30;
+        rec->expires_at = now + 300;
         rec->bps_limit = bps_limit;
         rec->stream = relay_stream_new();
         r->records[r->count++] = rec;
@@ -334,8 +359,7 @@ void portillia_server_handle_connect(const char *hostname, int client_fd) {
         int target_fd = socket(AF_INET, SOCK_STREAM, 0);
         struct sockaddr_in target = { .sin_family = AF_INET, .sin_port = htons(global_server->api_port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
         if (connect(target_fd, (struct sockaddr *)&target, sizeof(target)) == 0) {
-            extern void portillia_proxy_bridge(int client_fd, int target_fd);
-            portillia_proxy_bridge(client_fd, target_fd);
+            portillia_tls_proxy_bridge(client_fd, target_fd);
         } else {
             close(target_fd);
             close(client_fd);
