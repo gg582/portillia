@@ -42,6 +42,21 @@ static unsigned int retry_sleep_seconds(int base_sec, bool relaxed) {
     return (unsigned int)scaled;
 }
 
+static int retry_increment(int retries) {
+    return retries < INT_MAX ? retries + 1 : retries;
+}
+
+static bool retry_budget_exhausted(int retry_count, int retries) {
+    return retry_count > 0 && retries > retry_count;
+}
+
+static void log_relaxed_retry_once(bool *logged, const char *operation, const char *relay_url) {
+    if (!logged || *logged) return;
+    LOG_WARN("SDK: %s retry budget exhausted for %s; continuing with relaxed retries",
+             operation ? operation : "Operation", relay_url ? relay_url : "(none)");
+    *logged = true;
+}
+
 /* ---------- Lease helpers ---------- */
 
 static void lease_cleanup(portillia_listener_lease_t *lease) {
@@ -262,13 +277,9 @@ static void *reverse_session_thread(void *arg) {
         int conn_fd = open_reverse_session(l, &outer_ssl);
         if (conn_fd < 0) {
             if (l->cancelled) break;
-            if (retries < INT_MAX) retries++;
-            if (l->retry_count > 0 && retries > l->retry_count) {
-                if (!relaxed_mode_logged) {
-                    LOG_WARN("SDK: Reverse session retry budget exhausted for %s; continuing with relaxed retries",
-                             l->relay_url);
-                    relaxed_mode_logged = true;
-                }
+            retries = retry_increment(retries);
+            if (retry_budget_exhausted(l->retry_count, retries)) {
+                log_relaxed_retry_once(&relaxed_mode_logged, "Reverse session", l->relay_url);
                 sleep(retry_sleep_seconds(l->retry_wait_sec, true));
                 continue;
             }
@@ -335,13 +346,9 @@ static void *renew_thread(void *arg) {
                 break;
             }
 
-            if (retries < INT_MAX) retries++;
-            if (l->retry_count > 0 && retries > l->retry_count) {
-                if (!relaxed_mode_logged) {
-                    LOG_WARN("SDK: Lease renewal retry budget exhausted for %s; continuing with relaxed retries",
-                             l->relay_url);
-                    relaxed_mode_logged = true;
-                }
+            retries = retry_increment(retries);
+            if (retry_budget_exhausted(l->retry_count, retries)) {
+                log_relaxed_retry_once(&relaxed_mode_logged, "Lease renewal", l->relay_url);
                 sleep(retry_sleep_seconds(l->retry_wait_sec, true));
                 continue;
             }
@@ -479,13 +486,9 @@ static void *listener_run_thread(void *arg) {
         int err = register_and_configure(l);
         if (err != 0) {
             if (l->cancelled) break;
-            if (retries < INT_MAX) retries++;
-            if (l->retry_count > 0 && retries > l->retry_count) {
-                if (!relaxed_mode_logged) {
-                    LOG_WARN("SDK: Registration retry budget exhausted for %s; continuing with relaxed retries",
-                             l->relay_url);
-                    relaxed_mode_logged = true;
-                }
+            retries = retry_increment(retries);
+            if (retry_budget_exhausted(l->retry_count, retries)) {
+                log_relaxed_retry_once(&relaxed_mode_logged, "Registration", l->relay_url);
                 sleep(retry_sleep_seconds(l->retry_wait_sec, true));
                 continue;
             }
