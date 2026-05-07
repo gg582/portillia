@@ -25,18 +25,20 @@
 #define DEFAULT_RENEW_BEFORE_SEC      5
 #define DEFAULT_READY_TARGET          2
 #define DEFAULT_RETRY_WAIT_SEC        3
+#define RELAXED_RETRY_BACKOFF_MULTIPLIER 5
+#define MAX_RETRY_SLEEP_SEC              300
 
 static unsigned int retry_sleep_seconds(int base_sec, bool relaxed) {
     int safe_base = base_sec > 0 ? base_sec : DEFAULT_RETRY_WAIT_SEC;
     if (!relaxed) return (unsigned int)safe_base;
     /* Relaxed backoff after retry budget exhaustion; keep bounded. */
     int scaled = safe_base;
-    if (safe_base > INT_MAX / 5) {
-        scaled = 300;
+    if (safe_base > INT_MAX / RELAXED_RETRY_BACKOFF_MULTIPLIER) {
+        scaled = MAX_RETRY_SLEEP_SEC;
     } else {
-        scaled = safe_base * 5;
+        scaled = safe_base * RELAXED_RETRY_BACKOFF_MULTIPLIER;
     }
-    if (scaled > 300) scaled = 300;
+    if (scaled > MAX_RETRY_SLEEP_SEC) scaled = MAX_RETRY_SLEEP_SEC;
     return (unsigned int)scaled;
 }
 
