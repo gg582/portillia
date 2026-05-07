@@ -353,14 +353,17 @@ static int dial_next_hop(const char *ipv4, const char *token) {
 }
 
 void portillia_server_handle_connect(const char *hostname, int client_fd) {
-    if (!global_server) { close(client_fd); return; }
+    if (!global_server) { LOG_WARN("server not ready, closing client"); close(client_fd); return; }
     
+    LOG_INFO("sni_connect hostname=%s root=%s", hostname, global_server->registry->root_hostname);
     if (strcmp(hostname, global_server->registry->root_hostname) == 0) {
         int target_fd = socket(AF_INET, SOCK_STREAM, 0);
         struct sockaddr_in target = { .sin_family = AF_INET, .sin_port = htons(global_server->api_port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
         if (connect(target_fd, (struct sockaddr *)&target, sizeof(target)) == 0) {
-            portillia_tls_proxy_bridge(client_fd, target_fd);
+            LOG_INFO("sni_connect root proxy to api_port=%d", global_server->api_port);
+            portillia_proxy_bridge(client_fd, target_fd);
         } else {
+            LOG_WARN("sni_connect root connect to api_port=%d failed errno=%d", global_server->api_port, errno);
             close(target_fd);
             close(client_fd);
         }
@@ -369,49 +372,61 @@ void portillia_server_handle_connect(const char *hostname, int client_fd) {
 
     lease_record *rec = lease_registry_lookup(global_server->registry, hostname);
     if (rec) {
+        LOG_INFO("sni_connect lease found hostname=%s bps=%ld", hostname, (long)rec->bps_limit);
         if (rec->hop_next_overlay_ipv4) {
             int next_fd = dial_next_hop(rec->hop_next_overlay_ipv4, rec->hop_next_token);
             if (next_fd >= 0) {
+                LOG_INFO("sni_connect hop opened fd=%d", next_fd);
                 extern void portillia_proxy_bridge_ex(int client_fd, int target_fd, int64_t bps_limit);
                 portillia_proxy_bridge_ex(client_fd, next_fd, rec->bps_limit);
             } else {
+                LOG_WARN("sni_connect hop open failed hostname=%s next=%s", hostname, rec->hop_next_overlay_ipv4);
                 close(client_fd);
             }
         } else {
             int sdk_fd = relay_stream_claim(rec->stream);
             if (sdk_fd >= 0) {
+                LOG_INFO("sni_connect sdk claimed fd=%d", sdk_fd);
                 extern void portillia_proxy_bridge_ex(int client_fd, int target_fd, int64_t bps_limit);
                 portillia_proxy_bridge_ex(client_fd, sdk_fd, rec->bps_limit);
             } else {
+                LOG_WARN("sni_connect sdk claim failed hostname=%s", hostname);
                 close(client_fd);
             }
         }
     } else {
+        LOG_WARN("sni_connect no lease for hostname=%s", hostname);
         close(client_fd);
     }
 }
 
 void portillia_server_handle_hop_stream(int hop_fd, const char *token) {
+    LOG_INFO("hop_stream token=%.8s... fd=%d", token, hop_fd);
     lease_record *rec = lease_registry_lookup_hop(global_server->registry, token);
     if (rec) {
         if (rec->hop_next_overlay_ipv4) {
              int next_fd = dial_next_hop(rec->hop_next_overlay_ipv4, rec->hop_next_token);
              if (next_fd >= 0) {
+                 LOG_INFO("hop_stream next hop fd=%d", next_fd);
                  extern void portillia_proxy_bridge_ex(int client_fd, int target_fd, int64_t bps_limit);
                  portillia_proxy_bridge_ex(hop_fd, next_fd, rec->bps_limit);
              } else {
+                 LOG_WARN("hop_stream next hop failed token=%.8s... next=%s", token, rec->hop_next_overlay_ipv4);
                  close(hop_fd);
              }
         } else {
              int sdk_fd = relay_stream_claim(rec->stream);
              if (sdk_fd >= 0) {
+                 LOG_INFO("hop_stream sdk claimed fd=%d", sdk_fd);
                  extern void portillia_proxy_bridge_ex(int client_fd, int target_fd, int64_t bps_limit);
                  portillia_proxy_bridge_ex(hop_fd, sdk_fd, rec->bps_limit);
              } else {
+                 LOG_WARN("hop_stream sdk claim failed token=%.8s...", token);
                  close(hop_fd);
              }
         }
     } else {
+        LOG_WARN("hop_stream no lease for token=%.8s...", token);
         close(hop_fd);
     }
 }

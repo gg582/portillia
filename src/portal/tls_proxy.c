@@ -11,6 +11,7 @@
 #include <portillia/utils/log.h>
 
 static SSL_CTX *tls_ctx = NULL;
+static pthread_mutex_t ssl_mu = PTHREAD_MUTEX_INITIALIZER;
 
 typedef struct {
     SSL *ssl;
@@ -21,7 +22,11 @@ static void *tls_client_to_target(void *arg) {
     tls_copy_args *args = (tls_copy_args *)arg;
     char buf[32768];
     int n;
-    while ((n = SSL_read(args->ssl, buf, sizeof(buf))) > 0) {
+    while (1) {
+        pthread_mutex_lock(&ssl_mu);
+        n = SSL_read(args->ssl, buf, sizeof(buf));
+        pthread_mutex_unlock(&ssl_mu);
+        if (n <= 0) break;
         if (write(args->fd, buf, n) < 0) break;
     }
     shutdown(args->fd, SHUT_RDWR);
@@ -36,7 +41,10 @@ static void *tls_target_to_client(void *arg) {
     char buf[32768];
     int n;
     while ((n = read(args->fd, buf, sizeof(buf))) > 0) {
-        if (SSL_write(args->ssl, buf, n) <= 0) break;
+        pthread_mutex_lock(&ssl_mu);
+        int w = SSL_write(args->ssl, buf, n);
+        pthread_mutex_unlock(&ssl_mu);
+        if (w <= 0) break;
     }
     shutdown(args->fd, SHUT_RDWR);
     int ssl_fd = SSL_get_fd(args->ssl);

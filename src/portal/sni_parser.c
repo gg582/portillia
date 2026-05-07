@@ -125,7 +125,7 @@ static char *parse_client_hello_record(const unsigned char *record_body, int rec
         return NULL;
     }
     int compression_len = msg[pos++];
-    if (compression_len < 1 || pos + compression_len > msg_len) {
+    if (compression_len < 0 || pos + compression_len > msg_len) {
         return NULL;
     }
     pos += compression_len;
@@ -186,6 +186,11 @@ static char *parse_client_hello_stream(const unsigned char *stream, size_t strea
         }
         if (content_type != TLS_CONTENT_TYPE_HANDSHAKE) {
             if (!started) {
+                // TLS 1.3 middlebox compatibility: skip ChangeCipherSpec(20)
+                if (content_type == 20) {
+                    pos = record_end;
+                    continue;
+                }
                 break;
             }
             pos = record_end;
@@ -258,7 +263,7 @@ char *get_sni_hostname(int client_fd) {
         if (ioctl(client_fd, FIONREAD, &available) != 0 || available <= 0) {
             long remaining_ms = deadline_ms - monotonic_ms();
             if (remaining_ms <= 0) {
-                LOG_DEBUG("get_sni_hostname: timeout waiting for ClientHello data");
+                LOG_WARN("get_sni_hostname: timeout waiting for ClientHello data");
                 return NULL;
             }
             struct pollfd pfd = { .fd = client_fd, .events = POLLIN };
@@ -267,7 +272,7 @@ char *get_sni_hostname(int client_fd) {
                 rc = poll(&pfd, 1, (int)remaining_ms);
             } while (rc < 0 && errno == EINTR);
             if (rc <= 0) {
-                LOG_DEBUG("get_sni_hostname: poll failed rc=%d errno=%d", rc, errno);
+                LOG_WARN("get_sni_hostname: poll failed rc=%d errno=%d", rc, errno);
                 return NULL;
             }
             continue;
@@ -284,23 +289,23 @@ char *get_sni_hostname(int client_fd) {
         } while (n < 0 && errno == EINTR);
         if (n <= 0) {
             free(peeked);
-            LOG_DEBUG("get_sni_hostname: recv failed n=%zd errno=%d", n, errno);
+            LOG_WARN("get_sni_hostname: recv failed n=%zd errno=%d", n, errno);
             return NULL;
         }
         int need_more = 0;
         char *hostname = parse_client_hello_stream(peeked, (size_t)n, &need_more);
         free(peeked);
         if (hostname) {
-            LOG_DEBUG("get_sni_hostname: parsed hostname=%s", hostname);
+            LOG_INFO("get_sni_hostname: parsed hostname=%s", hostname);
             return hostname;
         }
         if (!need_more) {
-            LOG_DEBUG("get_sni_hostname: parse_client_hello_stream failed, need_more=0");
+            LOG_WARN("get_sni_hostname: parse_client_hello_stream failed, need_more=0");
             return NULL;
         }
         long remaining_ms = deadline_ms - monotonic_ms();
         if (remaining_ms <= 0) {
-            LOG_DEBUG("get_sni_hostname: timeout after need_more");
+            LOG_WARN("get_sni_hostname: timeout after need_more");
             return NULL;
         }
         long sleep_us = remaining_ms > 10 ? 10000L : remaining_ms * 1000L;
