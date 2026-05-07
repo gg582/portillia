@@ -9,6 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <limits.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
@@ -29,8 +30,12 @@ static unsigned int retry_sleep_seconds(int base_sec, bool relaxed) {
     int safe_base = base_sec > 0 ? base_sec : DEFAULT_RETRY_WAIT_SEC;
     if (!relaxed) return (unsigned int)safe_base;
     /* Relaxed backoff after retry budget exhaustion; keep bounded. */
-    int scaled = safe_base * 5;
-    if (scaled < safe_base) scaled = safe_base;
+    int scaled = safe_base;
+    if (safe_base > INT_MAX / 5) {
+        scaled = 300;
+    } else {
+        scaled = safe_base * 5;
+    }
     if (scaled > 300) scaled = 300;
     return (unsigned int)scaled;
 }
@@ -248,17 +253,20 @@ static int open_reverse_session(portillia_listener_t *l, SSL **out_outer_ssl) {
 static void *reverse_session_thread(void *arg) {
     portillia_listener_t *l = (portillia_listener_t *)arg;
     int retries = 0;
+    bool relaxed_mode_logged = false;
 
     while (!l->cancelled) {
         SSL *outer_ssl = NULL;
         int conn_fd = open_reverse_session(l, &outer_ssl);
         if (conn_fd < 0) {
             if (l->cancelled) break;
-            retries++;
+            if (retries < INT_MAX) retries++;
             if (l->retry_count > 0 && retries > l->retry_count) {
-                LOG_WARN("SDK: Reverse session retry budget exhausted for %s; continuing with relaxed retries",
-                         l->relay_url);
-                retries = 0;
+                if (!relaxed_mode_logged) {
+                    LOG_WARN("SDK: Reverse session retry budget exhausted for %s; continuing with relaxed retries",
+                             l->relay_url);
+                    relaxed_mode_logged = true;
+                }
                 sleep(retry_sleep_seconds(l->retry_wait_sec, true));
                 continue;
             }
@@ -269,6 +277,7 @@ static void *reverse_session_thread(void *arg) {
         }
 
         retries = 0;
+        relaxed_mode_logged = false;
         int err = 0;
         portillia_listener_lease_t *lease = lease_snapshot(l);
         SSL_CTX *inner_ctx = lease ? (SSL_CTX *)lease->tls_ctx : NULL;
@@ -306,6 +315,7 @@ static void *renew_thread(void *arg) {
 
         portillia_renew_response_t resp = {0};
         int retries = 0;
+        bool relaxed_mode_logged = false;
         while (!l->cancelled) {
             int rc = portillia_api_renew_lease(l->http_client, l->lease_ttl_sec,
                                                 lease->access_token, NULL, &l->identity, l->relay_set,
@@ -323,11 +333,13 @@ static void *renew_thread(void *arg) {
                 break;
             }
 
-            retries++;
+            if (retries < INT_MAX) retries++;
             if (l->retry_count > 0 && retries > l->retry_count) {
-                LOG_WARN("SDK: Lease renewal retry budget exhausted for %s; continuing with relaxed retries",
-                         l->relay_url);
-                retries = 0;
+                if (!relaxed_mode_logged) {
+                    LOG_WARN("SDK: Lease renewal retry budget exhausted for %s; continuing with relaxed retries",
+                             l->relay_url);
+                    relaxed_mode_logged = true;
+                }
                 sleep(retry_sleep_seconds(l->retry_wait_sec, true));
                 continue;
             }
@@ -460,15 +472,18 @@ static void *listener_run_thread(void *arg) {
     LOG_INFO("SDK: Listener thread started for %s", l->relay_url ? l->relay_url : "(none)");
 
     int retries = 0;
+    bool relaxed_mode_logged = false;
     while (!l->cancelled) {
         int err = register_and_configure(l);
         if (err != 0) {
             if (l->cancelled) break;
-            retries++;
+            if (retries < INT_MAX) retries++;
             if (l->retry_count > 0 && retries > l->retry_count) {
-                LOG_WARN("SDK: Registration retry budget exhausted for %s; continuing with relaxed retries",
-                         l->relay_url);
-                retries = 0;
+                if (!relaxed_mode_logged) {
+                    LOG_WARN("SDK: Registration retry budget exhausted for %s; continuing with relaxed retries",
+                             l->relay_url);
+                    relaxed_mode_logged = true;
+                }
                 sleep(retry_sleep_seconds(l->retry_wait_sec, true));
                 continue;
             }
@@ -479,6 +494,7 @@ static void *listener_run_thread(void *arg) {
         }
 
         retries = 0;
+        relaxed_mode_logged = false;
         LOG_INFO("SDK: Service ready at %s", l->relay_url);
 
         err = run_lease(l);
