@@ -57,6 +57,10 @@ RUN if ! pkg-config --exists libngtcp2_crypto_quictls 2>/dev/null && ! pkg-confi
 
 COPY . .
 
+# Go module replace expects ../../portal-tunnel from /src/go, which resolves to /portal-tunnel.
+# Create a symlink so the local replace works inside Docker.
+RUN ln -s /src/portal-tunnel /portal-tunnel
+
 # Robustly handle missing cwist submodule (e.g. when built without local submodules initialized)
 RUN if [ ! -f libs/cwist/Makefile ]; then \
         echo "cwist submodule missing, cloning..." && \

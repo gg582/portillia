@@ -7,7 +7,6 @@ import "C"
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
@@ -331,46 +330,17 @@ func DiscoveryAnnounceJSON(cURL, cDescriptorJSON *C.char) *C.char {
 
 // ---------- ECH helpers ----------
 
-//export ECHMaterialsJSON
-func ECHMaterialsJSON(cSeed, cPublicName *C.char) *C.char {
-	seed := C.GoString(cSeed)
-	publicName := C.GoString(cPublicName)
-	keys, configList, err := keyless.EncryptedClientHelloMaterials(seed, publicName)
-	if err != nil {
-		return nil
-	}
-	out := struct {
-		Keys       []tls.EncryptedClientHelloKey `json:"keys"`
-		ConfigList string                        `json:"config_list"`
-	}{
-		Keys:       keys,
-		ConfigList: base64.StdEncoding.EncodeToString(configList),
-	}
-	b, err := json.Marshal(out)
-	if err != nil {
-		return nil
-	}
-	return C.CString(string(b))
-}
-
-//export NormalizeECHConfigListJSON
-func NormalizeECHConfigListJSON(cConfigListB64 *C.char) *C.char {
-	raw, err := base64.StdEncoding.DecodeString(C.GoString(cConfigListB64))
-	if err != nil {
-		return nil
-	}
-	normalized, err := keyless.NormalizeEncryptedClientHelloConfigList(raw)
-	if err != nil {
-		return nil
-	}
-	return C.CString(base64.StdEncoding.EncodeToString(normalized))
-}
-
 // ---------- Compatibility helpers (100% Go parity) ----------
+
+func hostnameHash(hostname string) string {
+	hostname = strings.ToLower(strings.TrimSpace(hostname))
+	sum := sha256.Sum256([]byte(hostname))
+	return base32.StdEncoding.EncodeToString(sum[:])
+}
 
 //export HostnameHashJSON
 func HostnameHashJSON(cHostname *C.char) *C.char {
-	return C.CString(utils.HostnameHash(C.GoString(cHostname)))
+	return C.CString(hostnameHash(C.GoString(cHostname)))
 }
 
 //export DeriveTokenJSON
@@ -441,10 +411,14 @@ func StreamLeaseECHJSON(cIdentityJSON, cPublicHostname, cRootHost *C.char) *C.ch
 	if err != nil {
 		return nil
 	}
-	_, configList, err := keyless.EncryptedClientHelloMaterials(echSeed, routeHostname)
+	keys, err := keyless.EncryptedClientHelloKeys(identity.PrivateKey, echSeed, routeHostname)
 	if err != nil {
 		return nil
 	}
+	if len(keys) == 0 {
+		return nil
+	}
+	configList := keys[0].Config
 
 	out := struct {
 		RouteHostname string `json:"route_hostname"`
@@ -453,7 +427,7 @@ func StreamLeaseECHJSON(cIdentityJSON, cPublicHostname, cRootHost *C.char) *C.ch
 	}{
 		RouteHostname: routeHostname,
 		ConfigListB64: base64.StdEncoding.EncodeToString(configList),
-		HostnameHash:  utils.HostnameHash(publicHostname),
+		HostnameHash:  hostnameHash(publicHostname),
 	}
 	b, err := json.Marshal(out)
 	if err != nil {
@@ -493,10 +467,14 @@ func StreamLeaseExtrasJSON(cIdentityJSON, cRelayURL *C.char) *C.char {
 	if err != nil {
 		return nil
 	}
-	_, configList, err := keyless.EncryptedClientHelloMaterials(echSeed, routeHostname)
+	keys, err := keyless.EncryptedClientHelloKeys(identity.PrivateKey, echSeed, routeHostname)
 	if err != nil {
 		return nil
 	}
+	if len(keys) == 0 {
+		return nil
+	}
+	configList := keys[0].Config
 
 	out := struct {
 		PublicHostname string `json:"public_hostname"`
@@ -506,7 +484,7 @@ func StreamLeaseExtrasJSON(cIdentityJSON, cRelayURL *C.char) *C.char {
 	}{
 		PublicHostname: publicHostname,
 		RouteHostname:  routeHostname,
-		HostnameHash:   utils.HostnameHash(publicHostname),
+		HostnameHash:   hostnameHash(publicHostname),
 		ConfigListB64:  base64.StdEncoding.EncodeToString(configList),
 	}
 	b, err := json.Marshal(out)
