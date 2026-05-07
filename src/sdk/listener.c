@@ -32,18 +32,13 @@ static unsigned int retry_sleep_seconds(int base_sec, bool relaxed) {
     int safe_base = base_sec > 0 ? base_sec : DEFAULT_RETRY_WAIT_SEC;
     if (!relaxed) return (unsigned int)safe_base;
     /* Relaxed backoff after retry budget exhaustion; keep bounded. */
-    int scaled = safe_base;
-    if (safe_base > INT_MAX / RELAXED_RETRY_BACKOFF_MULTIPLIER) {
-        scaled = MAX_RETRY_SLEEP_SEC;
-    } else {
-        scaled = safe_base * RELAXED_RETRY_BACKOFF_MULTIPLIER;
-    }
+    long long scaled = (long long)safe_base * (long long)RELAXED_RETRY_BACKOFF_MULTIPLIER;
     if (scaled > MAX_RETRY_SLEEP_SEC) scaled = MAX_RETRY_SLEEP_SEC;
     return (unsigned int)scaled;
 }
 
 static int retry_increment(int retries) {
-    return retries < INT_MAX ? retries + 1 : retries;
+    return retries < INT_MAX - 1 ? retries + 1 : 1;
 }
 
 static bool retry_budget_exhausted(int retry_count, int retries) {
@@ -51,7 +46,7 @@ static bool retry_budget_exhausted(int retry_count, int retries) {
 }
 
 static void log_relaxed_retry_once(bool *logged, const char *operation, const char *relay_url) {
-    if (!logged || *logged) return;
+    if (*logged) return;
     LOG_WARN("SDK: %s retry budget exhausted for %s; continuing with relaxed retries",
              operation ? operation : "Operation", relay_url ? relay_url : "(none)");
     *logged = true;
