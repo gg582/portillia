@@ -710,16 +710,14 @@ int main(void) {
         snprintf(cert_path, sizeof(cert_path), "%s/fullchain.pem", identity_path);
         snprintf(key_path, sizeof(key_path), "%s/privatekey.pem", identity_path);
     }
-    extern int portillia_tls_proxy_init(const char *cert_path, const char *key_path);
-    extern int portillia_tls_proxy_apply_ech(const char *ech_pem_path);
-    if (portillia_tls_proxy_init(cert_path, key_path) == 0) {
-        LOG_INFO("TLS proxy initialized cert=%s on port %d", cert_path, sni_port);
-        const char *ech_pem = getenv("PORTILLIA_ECH_PEM");
-        if (ech_pem && ech_pem[0]) {
-            portillia_tls_proxy_apply_ech(ech_pem);
-        }
+    /* Terminate TLS at the API server (4017) instead of proxying through
+     * an OpenSSL pump on 443. Port 443 then becomes a raw TCP splice that
+     * forwards the original ClientHello straight to the API listener. */
+    cwist_error_t https_err = cwist_app_use_https(app, cert_path, key_path);
+    if (https_err.errtype == CWIST_ERR_INT16 && https_err.error.err_i16 == 0) {
+        LOG_INFO("API server HTTPS enabled cert=%s port=%d", cert_path, api_port);
     } else {
-        LOG_WARN("TLS proxy initialization failed cert=%s key=%s", cert_path, key_path);
+        LOG_WARN("API server HTTPS enable failed cert=%s key=%s errtype=%d", cert_path, key_path, https_err.errtype);
     }
     
     discovery_config *disc_cfg = malloc(sizeof(discovery_config));

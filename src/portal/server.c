@@ -12,7 +12,6 @@
 #include <portillia/utils/log.h>
 #include <portillia/utils/network.h>
 #include <portillia/portal/settings.h>
-#include <portillia/portal/tls_proxy.h>
 #include <cjson/cJSON.h>
 #include <errno.h>
 #include "portal_bridge.h"
@@ -77,6 +76,7 @@ typedef struct portillia_server {
 static portillia_server *global_server = NULL;
 
 extern void portillia_proxy_bridge(int client_fd, int target_fd);
+extern void portillia_proxy_bridge_ex(int client_fd, int target_fd, int64_t bps_limit);
 
 static char *base64_std_encode(const uint8_t *data, size_t len) {
     size_t b64_len = ((len + 2) / 3) * 4;
@@ -432,8 +432,11 @@ void portillia_server_handle_connect(const char *hostname, int client_fd) {
         int target_fd = socket(AF_INET, SOCK_STREAM, 0);
         struct sockaddr_in target = { .sin_family = AF_INET, .sin_port = htons(global_server->api_port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
         if (connect(target_fd, (struct sockaddr *)&target, sizeof(target)) == 0) {
-            LOG_INFO("sni_connect root proxy to api_port=%d", global_server->api_port);
-            portillia_tls_proxy_bridge(client_fd, target_fd);
+            LOG_INFO("sni_connect root forward to api_port=%d", global_server->api_port);
+            /* The API server now terminates TLS itself; replay the client's
+             * TLS bytes verbatim to it via zero-copy splice instead of pumping
+             * through OpenSSL twice. */
+            portillia_proxy_bridge_ex(client_fd, target_fd, 0);
         } else {
             LOG_WARN("sni_connect root connect to api_port=%d failed errno=%d", global_server->api_port, errno);
             close(target_fd);
@@ -449,7 +452,6 @@ void portillia_server_handle_connect(const char *hostname, int client_fd) {
             int next_fd = dial_next_hop(rec->hop_next_overlay_ipv4, rec->hop_next_token);
             if (next_fd >= 0) {
                 LOG_INFO("sni_connect hop opened fd=%d", next_fd);
-                extern void portillia_proxy_bridge_ex(int client_fd, int target_fd, int64_t bps_limit);
                 portillia_proxy_bridge_ex(client_fd, next_fd, rec->bps_limit);
             } else {
                 LOG_WARN("sni_connect hop open failed hostname=%s next=%s", hostname, rec->hop_next_overlay_ipv4);
@@ -459,7 +461,6 @@ void portillia_server_handle_connect(const char *hostname, int client_fd) {
             int sdk_fd = relay_stream_claim(rec->stream);
             if (sdk_fd >= 0) {
                 LOG_INFO("sni_connect sdk claimed fd=%d", sdk_fd);
-                extern void portillia_proxy_bridge_ex(int client_fd, int target_fd, int64_t bps_limit);
                 portillia_proxy_bridge_ex(client_fd, sdk_fd, rec->bps_limit);
             } else {
                 LOG_WARN("sni_connect sdk claim failed hostname=%s", hostname);
@@ -480,7 +481,6 @@ void portillia_server_handle_hop_stream(int hop_fd, const char *token) {
              int next_fd = dial_next_hop(rec->hop_next_overlay_ipv4, rec->hop_next_token);
              if (next_fd >= 0) {
                  LOG_INFO("hop_stream next hop fd=%d", next_fd);
-                 extern void portillia_proxy_bridge_ex(int client_fd, int target_fd, int64_t bps_limit);
                  portillia_proxy_bridge_ex(hop_fd, next_fd, rec->bps_limit);
              } else {
                  LOG_WARN("hop_stream next hop failed token=%.8s... next=%s", token, rec->hop_next_overlay_ipv4);
@@ -490,7 +490,6 @@ void portillia_server_handle_hop_stream(int hop_fd, const char *token) {
              int sdk_fd = relay_stream_claim(rec->stream);
              if (sdk_fd >= 0) {
                  LOG_INFO("hop_stream sdk claimed fd=%d", sdk_fd);
-                 extern void portillia_proxy_bridge_ex(int client_fd, int target_fd, int64_t bps_limit);
                  portillia_proxy_bridge_ex(hop_fd, sdk_fd, rec->bps_limit);
              } else {
                  LOG_WARN("hop_stream sdk claim failed token=%.8s...", token);

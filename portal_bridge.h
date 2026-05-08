@@ -101,8 +101,6 @@ extern char* IssueLeaseTokenJSON(char* cPrivateKeyHex, char* cKeyID, char* cIssu
 extern char* VerifyLeaseTokenJSON(char* cToken, char* cPublicKeyHex, char* cIssuer, long long int cNowUnix);
 extern char* DiscoveryPollJSON(char* cURL);
 extern char* DiscoveryAnnounceJSON(char* cURL, char* cDescriptorJSON);
-extern char* ECHMaterialsJSON(char* cSeed, char* cPublicName);
-extern char* NormalizeECHConfigListJSON(char* cConfigListB64);
 extern char* HostnameHashJSON(char* cHostname);
 extern char* DeriveTokenJSON(char* cIdentityJSON, char* cPartsJSON);
 extern char* PortalRootHostJSON(char* cRelayURL);
