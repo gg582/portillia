@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -307,6 +308,10 @@ static void *bridge_thread(void *arg) {
         return NULL;
     }
 
+    int nodelay = 1;
+    setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+    setsockopt(target_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+
     SSL *ssl = SSL_new(ctx);
     if (!ssl) {
         LOG_ERROR("tls_proxy: SSL_new failed");
@@ -368,20 +373,16 @@ static void *bridge_thread(void *arg) {
         struct pollfd pfds[2];
         pfds[0].fd = client_fd;
         pfds[0].events = 0;
-        if (!client_read_eof && c2t_len < TLS_PROXY_BUF_SZ && want_client_read) pfds[0].events |= POLLIN;
+        /* Gate POLLIN on c2t_len == 0 (the condition under which the next pump will SSL_read), not on want_client_read which would drop after a successful read and silently break keep-alive. */
+        if (!client_read_eof && c2t_len == 0) pfds[0].events |= POLLIN;
         if (t2c_len > 0 || want_client_write) pfds[0].events |= POLLOUT;
 
         pfds[1].fd = target_fd;
         pfds[1].events = 0;
-        if (!target_read_eof && t2c_len < TLS_PROXY_BUF_SZ && want_target_read) pfds[1].events |= POLLIN;
+        if (!target_read_eof && t2c_len == 0) pfds[1].events |= POLLIN;
         if (c2t_len > 0 || want_target_write) pfds[1].events |= POLLOUT;
 
-        if (pfds[0].events == 0 && pfds[1].events == 0) {
-            /* No I/O wanted but data still buffered: keep looping to flush. */
-            if (c2t_len == 0 && t2c_len == 0) break;
-            pfds[0].events = POLLIN;
-            pfds[1].events = POLLIN;
-        }
+        if (pfds[0].events == 0 && pfds[1].events == 0) break;
 
         int p;
         do { p = poll(pfds, 2, TLS_PROXY_IDLE_MS); } while (p < 0 && errno == EINTR);
