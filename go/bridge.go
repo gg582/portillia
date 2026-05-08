@@ -329,6 +329,46 @@ func DiscoveryAnnounceJSON(cURL, cDescriptorJSON *C.char) *C.char {
 
 // ---------- ECH helpers ----------
 
+//export ECHMaterialsJSON
+func ECHMaterialsJSON(cSeed, cPublicName *C.char) *C.char {
+	seed := C.GoString(cSeed)
+	publicName := C.GoString(cPublicName)
+	keys, configList, err := keyless.EncryptedClientHelloMaterials(seed, publicName)
+	if err != nil {
+		return nil
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	out := struct {
+		ConfigB64     string `json:"config_b64"`
+		ConfigListB64 string `json:"config_list_b64"`
+		PrivateKeyB64 string `json:"private_key_b64"`
+	}{
+		ConfigB64:     base64.StdEncoding.EncodeToString(keys[0].Config),
+		ConfigListB64: base64.StdEncoding.EncodeToString(configList),
+		PrivateKeyB64: base64.StdEncoding.EncodeToString(keys[0].PrivateKey),
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil
+	}
+	return C.CString(string(b))
+}
+
+//export NormalizeECHConfigListJSON
+func NormalizeECHConfigListJSON(cConfigListB64 *C.char) *C.char {
+	raw, err := base64.StdEncoding.DecodeString(C.GoString(cConfigListB64))
+	if err != nil {
+		return nil
+	}
+	normalized, err := keyless.NormalizeEncryptedClientHelloConfigList(raw)
+	if err != nil {
+		return nil
+	}
+	return C.CString(base64.StdEncoding.EncodeToString(normalized))
+}
+
 // ---------- Compatibility helpers (100% Go parity) ----------
 
 func hostnameHash(hostname string) string {
@@ -410,14 +450,10 @@ func StreamLeaseECHJSON(cIdentityJSON, cPublicHostname, cRootHost *C.char) *C.ch
 	if err != nil {
 		return nil
 	}
-	keys, err := keyless.EncryptedClientHelloKeys(identity.PrivateKey, echSeed, routeHostname)
+	_, configList, err := keyless.EncryptedClientHelloMaterials(echSeed, routeHostname)
 	if err != nil {
 		return nil
 	}
-	if len(keys) == 0 {
-		return nil
-	}
-	configList := keys[0].Config
 
 	out := struct {
 		RouteHostname string `json:"route_hostname"`
@@ -466,14 +502,10 @@ func StreamLeaseExtrasJSON(cIdentityJSON, cRelayURL *C.char) *C.char {
 	if err != nil {
 		return nil
 	}
-	keys, err := keyless.EncryptedClientHelloKeys(identity.PrivateKey, echSeed, routeHostname)
+	_, configList, err := keyless.EncryptedClientHelloMaterials(echSeed, routeHostname)
 	if err != nil {
 		return nil
 	}
-	if len(keys) == 0 {
-		return nil
-	}
-	configList := keys[0].Config
 
 	out := struct {
 		PublicHostname string `json:"public_hostname"`

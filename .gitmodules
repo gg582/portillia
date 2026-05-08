@@ -10,6 +10,3 @@
 [submodule "libs/keccak"]
 	path = libs/keccak
 	url = https://github.com/brainhub/SHA3IUF.git
-[submodule "portal-tunnel"]
-	path = portal-tunnel
-	url = https://github.com/gosuda/portal-tunnel.git

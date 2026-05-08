@@ -1,6 +1,6 @@
 module github.com/gosuda/portillia/go
 
-go 1.26.2
+go 1.26.3
 
 require (
 	github.com/gosuda/portal-tunnel/v2 v2.0.0
@@ -23,6 +23,7 @@ require (
 	github.com/mattn/go-isatty v0.0.21 // indirect
 	github.com/montanaflynn/stats v0.9.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
