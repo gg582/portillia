@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
         cfg.target_addr = (char *)target;
         cfg.relay_urls = (char **)&relay;
         cfg.relay_urls_count = 1;
-        cfg.tcp_enabled = true;
+        cfg.tcp_enabled = false;
         cfg.insecure_skip_verify = insecure_skip_verify;
 
         portillia_exposure_t *exp = portillia_expose(&cfg);

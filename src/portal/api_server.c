@@ -261,7 +261,10 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
             char identity_name[256] = {0};
             char identity_address[96] = {0};
             bool udp = udp_enabled ? cJSON_IsTrue(udp_enabled) : false;
-            bool tcp = tcp_enabled ? cJSON_IsTrue(tcp_enabled) : true;
+            bool tcp = tcp_enabled ? cJSON_IsTrue(tcp_enabled) : false;
+
+            cJSON *hop_token_obj = cJSON_GetObjectItem(root, "hop_token");
+            const char *hop_token = (hop_token_obj && cJSON_IsString(hop_token_obj) && hop_token_obj->valuestring && hop_token_obj->valuestring[0]) ? hop_token_obj->valuestring : NULL;
 
             char *reported_ip = NULL;
             cJSON *reported_ip_obj = cJSON_GetObjectItem(root, "reported_ip");
@@ -332,10 +335,16 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                 }
 
                 /* Validate transport constraints (Go parity) */
-                bool stream_lease = !udp && !tcp;
-                if (!stream_lease && (route_hostname || hostname_hash || ech_config_list_len > 0)) {
-                    res->status_code = CWIST_HTTP_BAD_REQUEST;
-                    cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"transport_mismatch\", \"message\": \"route hostname / hostname hash / ech config list require stream lease\"}}");
+                if (hop_token && (udp || tcp)) {
+                    res->status_code = 409;
+                    cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"transport_mismatch\", \"message\": \"transport mismatch\"}}");
+                    cJSON_Delete(root);
+                    cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                    return;
+                }
+                if ((route_hostname || hostname_hash) && (hop_token || udp || tcp)) {
+                    res->status_code = 409;
+                    cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"transport_mismatch\", \"message\": \"route hostname / hostname hash require stream lease\"}}");
                     cJSON_Delete(root);
                     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
                     return;
