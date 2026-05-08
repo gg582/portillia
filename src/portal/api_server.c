@@ -713,7 +713,7 @@ void handle_register_challenge(cwist_http_request *req, cwist_http_response *res
                 int ttl = (ttl_obj && cJSON_IsNumber(ttl_obj)) ? ttl_obj->valueint : 300;
                 if (ttl <= 0) ttl = 300;
                 bool udp = udp_obj ? cJSON_IsTrue(udp_obj) : false;
-                bool tcp = tcp_obj ? cJSON_IsTrue(tcp_obj) : true;
+                bool tcp = tcp_obj ? cJSON_IsTrue(tcp_obj) : false;
                 const char *route_hostname = (route_obj && cJSON_IsString(route_obj)) ? route_obj->valuestring : NULL;
                 const char *hostname_hash = (hash_obj && cJSON_IsString(hash_obj)) ? hash_obj->valuestring : NULL;
                 uint8_t ech_buf[4096] = {0};
