@@ -592,6 +592,9 @@ int main(void) {
 
     cwist_app *app = cwist_app_create();
 
+    char acme_cert_path[1024] = {0};
+    char acme_key_path[1024] = {0};
+
     if (strlen(root_hostname) > 0) {
         portillia_acme_manager *acme = portillia_acme_manager_new(acme_cfg);
         if (acme) {
@@ -599,11 +602,8 @@ int main(void) {
             char *cert_file = NULL, *key_file = NULL;
             if (portillia_acme_manager_ensure_certificate(acme, &cert_file, &key_file) == CWIST_SUCCESS) {
                 LOG_INFO("Using certificate: %s", cert_file);
-                // TLS is terminated by sni_listener offloading to plain HTTP API port.
-                extern int portillia_tls_proxy_init(const char *cert_path, const char *key_path);
-                if (portillia_tls_proxy_init(cert_file, key_file) == 0) {
-                    LOG_INFO("TLS proxy initialized for port %d", sni_port);
-                }
+                if (cert_file) snprintf(acme_cert_path, sizeof(acme_cert_path), "%s", cert_file);
+                if (key_file) snprintf(acme_key_path, sizeof(acme_key_path), "%s", key_file);
                 free(cert_file); free(key_file);
 
                 if (ech_enabled) {
@@ -645,14 +645,17 @@ int main(void) {
                                 if (ech_err.errtype != CWIST_ERR_INT16 || ech_err.error.err_i16 != 0) {
                                     if (ech_err.errtype == CWIST_ERR_JSON && ech_err.error.err_json) {
                                         char *json = cJSON_PrintUnformatted(ech_err.error.err_json);
-                                        LOG_WARN("ECH setup skipped after TLS init error=%s", json ? json : "{}");
+                                        LOG_WARN("ECH setup skipped on api app error=%s", json ? json : "{}");
                                         free(json);
                                     } else {
-                                        LOG_WARN("ECH setup skipped after TLS init errtype=%d code=%d",
+                                        LOG_WARN("ECH setup skipped on api app errtype=%d code=%d",
                                                  ech_err.errtype,
                                                  ech_err.error.err_i16);
                                     }
                                 }
+                                /* Apply ECH to the SNI-terminating proxy too,
+                                 * after the TLS context is created below. */
+                                setenv("PORTILLIA_ECH_PEM", ech_pem_path, 1);
                             }
                         }
                     }
@@ -686,14 +689,24 @@ int main(void) {
     sni_args->sni_port = sni_port;
     sni_args->api_port = api_port;
     
-    char cert_path[512], key_path[512];
-    snprintf(cert_path, sizeof(cert_path), "%s/fullchain.pem", identity_path);
-    snprintf(key_path, sizeof(key_path), "%s/privatekey.pem", identity_path);
-    extern int portillia_tls_proxy_init(const char *cert_path, const char *key_path);
-    if (portillia_tls_proxy_init(cert_path, key_path) == 0) {
-        LOG_INFO("TLS proxy initialized for root hostname on port %d", sni_port);
+    char cert_path[1024], key_path[1024];
+    if (acme_cert_path[0] && acme_key_path[0]) {
+        snprintf(cert_path, sizeof(cert_path), "%s", acme_cert_path);
+        snprintf(key_path, sizeof(key_path), "%s", acme_key_path);
     } else {
-        LOG_WARN("TLS proxy initialization failed");
+        snprintf(cert_path, sizeof(cert_path), "%s/fullchain.pem", identity_path);
+        snprintf(key_path, sizeof(key_path), "%s/privatekey.pem", identity_path);
+    }
+    extern int portillia_tls_proxy_init(const char *cert_path, const char *key_path);
+    extern int portillia_tls_proxy_apply_ech(const char *ech_pem_path);
+    if (portillia_tls_proxy_init(cert_path, key_path) == 0) {
+        LOG_INFO("TLS proxy initialized cert=%s on port %d", cert_path, sni_port);
+        const char *ech_pem = getenv("PORTILLIA_ECH_PEM");
+        if (ech_pem && ech_pem[0]) {
+            portillia_tls_proxy_apply_ech(ech_pem);
+        }
+    } else {
+        LOG_WARN("TLS proxy initialization failed cert=%s key=%s", cert_path, key_path);
     }
     
     discovery_config *disc_cfg = malloc(sizeof(discovery_config));

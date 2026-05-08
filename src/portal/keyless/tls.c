@@ -41,9 +41,12 @@ static char *fetch_cert_chain(const char *endpoint,
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
     portillia_network_configure_curl_tls(curl, insecure_skip_verify);
+    long status = 0;
     CURLcode rc = curl_easy_perform(curl);
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     curl_easy_cleanup(curl);
-    if (rc != CURLE_OK) {
+    if (rc != CURLE_OK || status >= 400) {
+        LOG_WARN("Keyless TLS: fetch cert chain failed rc=%d status=%ld server=%s", rc, status, server_name);
         free(buf);
         return NULL;
     }
@@ -57,6 +60,8 @@ typedef struct {
     char *server_name;
     bool insecure_skip_verify;
 } remote_signer_ctx_t;
+
+static int remote_signer_ex_index = -1;
 
 static char *base64_encode(const uint8_t *data, size_t len) {
     BIO *bio = BIO_new(BIO_s_mem());
@@ -97,12 +102,41 @@ static const char *detect_algorithm(int flen, int padding) {
     return "RSAPKCS1v15SHA256";
 }
 
+static void remote_signer_ctx_free(remote_signer_ctx_t *ctx) {
+    if (!ctx) return;
+    free(ctx->endpoint);
+    free(ctx->server_name);
+    free(ctx);
+}
+
+static remote_signer_ctx_t *remote_signer_ctx_new(const char *endpoint,
+                                                  const char *server_name,
+                                                  bool insecure_skip_verify) {
+    if (!endpoint) return NULL;
+    remote_signer_ctx_t *ctx = calloc(1, sizeof(remote_signer_ctx_t));
+    if (!ctx) return NULL;
+    ctx->endpoint = strdup(endpoint);
+    ctx->server_name = server_name ? strdup(server_name) : NULL;
+    ctx->insecure_skip_verify = insecure_skip_verify;
+    return ctx;
+}
+
 static int remote_rsa_priv_enc(int flen, const unsigned char *from, unsigned char *to, RSA *rsa, int padding) {
-    remote_signer_ctx_t *rs = (remote_signer_ctx_t *)RSA_get_app_data(rsa);
-    if (!rs || !rs->endpoint) return 0;
+    if (padding == RSA_NO_PADDING) {
+        /* TLS 1.3 PSS path supplies pre-encoded PSS messages with NO_PADDING.
+         * Our remote signer takes digests + algorithm name, not raw blocks,
+         * so we cannot service this; force the caller to negotiate TLS 1.2. */
+        LOG_WARN("Keyless TLS: remote signer received RSA_NO_PADDING (TLS 1.3 PSS) request; rejecting");
+        return -1;
+    }
+    remote_signer_ctx_t *rs = (remote_signer_ctx_t *)RSA_get_ex_data(rsa, remote_signer_ex_index);
+    if (!rs || !rs->endpoint) {
+        LOG_ERROR("Keyless TLS: missing remote signer context");
+        return -1;
+    }
 
     char *digest_b64 = base64_encode(from, (size_t)flen);
-    if (!digest_b64) return 0;
+    if (!digest_b64) return -1;
 
     char nonce[33] = {0};
     const char *hex = "0123456789abcdef";
@@ -119,16 +153,19 @@ static int remote_rsa_priv_enc(int flen, const unsigned char *from, unsigned cha
     cJSON_AddStringToObject(req, "digest", digest_b64);
     cJSON_AddNumberToObject(req, "timestamp_unix", (double)time(NULL));
     cJSON_AddStringToObject(req, "nonce", nonce);
+    if (rs->server_name) {
+        cJSON_AddStringToObject(req, "server_name", rs->server_name);
+    }
     char *req_json = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(digest_b64);
-    if (!req_json) return 0;
+    if (!req_json) return -1;
 
     char url[2048];
     snprintf(url, sizeof(url), "%s/v1/sign", rs->endpoint);
 
     CURL *curl = curl_easy_init();
-    if (!curl) { free(req_json); return 0; }
+    if (!curl) { free(req_json); return -1; }
     char *resp = NULL;
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -140,50 +177,72 @@ static int remote_rsa_priv_enc(int flen, const unsigned char *from, unsigned cha
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
     portillia_network_configure_curl_tls(curl, rs->insecure_skip_verify);
 
+    long status = 0;
     CURLcode rc = curl_easy_perform(curl);
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     free(req_json);
 
-    if (rc != CURLE_OK || !resp) {
+    if (rc != CURLE_OK || status >= 400 || !resp) {
+        LOG_WARN("Keyless TLS: remote sign failed rc=%d status=%ld", rc, status);
         free(resp);
-        return 0;
+        return -1;
     }
 
     cJSON *resp_json = cJSON_Parse(resp);
     free(resp);
-    if (!resp_json) return 0;
+    if (!resp_json) return -1;
 
-    cJSON *sig_b64 = cJSON_GetObjectItem(resp_json, "signature");
     int sig_len = 0;
+    cJSON *sig_b64 = cJSON_GetObjectItem(resp_json, "signature");
     if (cJSON_IsString(sig_b64)) {
-        uint8_t sig[512];
-        sig_len = base64_decode(sig_b64->valuestring, sig, sizeof(sig));
-        if (sig_len > 0) {
-            memcpy(to, sig, sig_len);
+        size_t key_size = (size_t)RSA_size(rsa);
+        if (key_size == 0) key_size = 4096; /* fallback for dummy key */
+        uint8_t *sig = malloc(key_size);
+        if (sig) {
+            int decoded = base64_decode(sig_b64->valuestring, sig, key_size);
+            if (decoded > 0) {
+                memcpy(to, sig, decoded);
+                sig_len = decoded;
+            }
+            free(sig);
         }
     }
     cJSON_Delete(resp_json);
     return sig_len;
 }
 
+static int remote_rsa_priv_dec(int flen, const unsigned char *from, unsigned char *to, RSA *rsa, int padding) {
+    /* RSA decryption is only used for static-RSA TLS 1.0/1.1 key exchange, which
+     * we do not support.  Fail closed so the handshake fails with a clean alert. */
+    (void)flen; (void)from; (void)to; (void)rsa; (void)padding;
+    LOG_WARN("Keyless TLS: priv_dec not supported for remote signer");
+    return -1;
+}
+
 static RSA_METHOD *get_remote_rsa_method(void) {
     static RSA_METHOD *method = NULL;
     if (method) return method;
-    method = RSA_meth_new("Portillia Remote RSA Signer", 0);
+    method = RSA_meth_dup(RSA_get_default_method());
     if (!method) return NULL;
+    RSA_meth_set1_name(method, "Portillia Remote RSA Signer");
+    RSA_meth_set_flags(method, 0);
     RSA_meth_set_priv_enc(method, remote_rsa_priv_enc);
+    RSA_meth_set_priv_dec(method, remote_rsa_priv_dec);
     return method;
 }
 
-static remote_signer_ctx_t *remote_signer_ctx_new(const char *endpoint,
-                                                  const char *server_name,
-                                                  bool insecure_skip_verify) {
-    remote_signer_ctx_t *ctx = calloc(1, sizeof(remote_signer_ctx_t));
-    ctx->endpoint = strdup(endpoint);
-    ctx->server_name = server_name ? strdup(server_name) : NULL;
-    ctx->insecure_skip_verify = insecure_skip_verify;
-    return ctx;
+static void remote_signer_ex_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad,
+                                  int idx, long argl, void *argp) {
+    (void)parent; (void)ad; (void)idx; (void)argl; (void)argp;
+    remote_signer_ctx_free((remote_signer_ctx_t *)ptr);
+}
+
+static void ensure_ex_index(void) {
+    if (remote_signer_ex_index < 0) {
+        remote_signer_ex_index = RSA_get_ex_new_index(0, NULL, NULL, NULL, remote_signer_ex_free);
+    }
 }
 
 /* ---------- Public API ---------- */
@@ -191,66 +250,151 @@ static remote_signer_ctx_t *remote_signer_ctx_new(const char *endpoint,
 /**
  * @brief Build a server-side TLS context for the leased hostname.
  *
- * Implements full remote signing via OpenSSL RSA_METHOD.  The private
- * key operations are forwarded to the keyless endpoint over HTTPS.
+ * Implements full remote signing via OpenSSL RSA_METHOD.  Negotiation is
+ * pinned to TLS 1.2 because the remote signer cannot service the raw RSA
+ * priv_enc invocations TLS 1.3 issues for PSS signatures.
  */
 void *portillia_keyless_build_tls_ctx(const char *keyless_url,
                                       const char *hostname,
                                       bool insecure_skip_verify) {
     if (!keyless_url) return NULL;
 
+    ensure_ex_index();
+
     SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
     if (!ctx) return NULL;
 
+    SSL_CTX_set_mode(ctx, SSL_MODE_AUTO_RETRY |
+                          SSL_MODE_ENABLE_PARTIAL_WRITE |
+                          SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+    /* TLS 1.3 issues raw RSA priv_enc with NO_PADDING for PSS, which the
+     * remote signer cannot service.  Pin to TLS 1.2 and PKCS#1 v1.5 sigalgs
+     * so the remote-signing path always sees pre-hashed digests with proper
+     * padding. */
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
+    SSL_CTX_set_options(ctx, SSL_OP_NO_COMPRESSION |
+                             SSL_OP_NO_RENEGOTIATION |
+                             SSL_OP_CIPHER_SERVER_PREFERENCE);
+    SSL_CTX_set_cipher_list(ctx,
+        "ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:"
+        "ECDHE-RSA-CHACHA20-POLY1305");
+    SSL_CTX_set1_groups_list(ctx, "X25519:P-256:P-384");
+    SSL_CTX_set1_sigalgs_list(ctx,
+        "RSA+SHA256:RSA+SHA384:RSA+SHA512");
+    /* No ALPN: leave selection to the underlying target; browsers default
+     * to HTTP/1.1 when no ALPN is offered, which is what the tunnel expects. */
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+
     char *cert_pem = fetch_cert_chain(keyless_url, hostname, insecure_skip_verify);
+    X509 *leaf = NULL;
     if (cert_pem) {
         BIO *bio = BIO_new_mem_buf(cert_pem, -1);
         if (bio) {
-            X509 *cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
-            if (cert) {
-                SSL_CTX_use_certificate(ctx, cert);
-                X509_free(cert);
-            }
-            while (1) {
-                X509 *ca = PEM_read_bio_X509(bio, NULL, NULL, NULL);
-                if (!ca) break;
-                SSL_CTX_add_extra_chain_cert(ctx, ca);
+            leaf = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+            if (leaf) {
+                if (SSL_CTX_use_certificate(ctx, leaf) <= 0) {
+                    LOG_ERROR("Keyless TLS: SSL_CTX_use_certificate failed");
+                }
+                while (1) {
+                    X509 *ca = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+                    if (!ca) break;
+                    SSL_CTX_add_extra_chain_cert(ctx, ca);
+                }
             }
             BIO_free(bio);
         }
         free(cert_pem);
     }
+    if (!leaf) {
+        LOG_ERROR("Keyless TLS: missing leaf certificate for %s", hostname ? hostname : "(none)");
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
 
-    /* Create an RSA key with our custom remote signing method */
+    /* Build an RSA key whose modulus matches the cert's public key, so that
+     * RSA_size and OpenSSL's TLS 1.2 signature length calculations are
+     * correct.  Private operations are forwarded to the keyless endpoint. */
+    EVP_PKEY *cert_pubkey = X509_get_pubkey(leaf);
+    if (!cert_pubkey || EVP_PKEY_base_id(cert_pubkey) != EVP_PKEY_RSA) {
+        LOG_ERROR("Keyless TLS: certificate public key is not RSA; remote signer requires RSA");
+        if (cert_pubkey) EVP_PKEY_free(cert_pubkey);
+        X509_free(leaf);
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+
+    RSA *cert_rsa = EVP_PKEY_get1_RSA(cert_pubkey);
+    EVP_PKEY_free(cert_pubkey);
+    X509_free(leaf);
+    if (!cert_rsa) {
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+
+    const BIGNUM *cert_n = NULL, *cert_e = NULL;
+    RSA_get0_key(cert_rsa, &cert_n, &cert_e, NULL);
+
     RSA_METHOD *method = get_remote_rsa_method();
     if (!method) {
+        RSA_free(cert_rsa);
         SSL_CTX_free(ctx);
         return NULL;
     }
     RSA *rsa = RSA_new();
     if (!rsa) {
+        RSA_free(cert_rsa);
         SSL_CTX_free(ctx);
         return NULL;
     }
     RSA_set_method(rsa, method);
-    /* Set a dummy modulus so OpenSSL knows the key size */
-    BIGNUM *n = BN_new();
-    BIGNUM *e = BN_new();
-    BN_set_word(e, RSA_F4);
-    BN_set_word(n, 0);
+    BIGNUM *n = BN_dup(cert_n);
+    BIGNUM *e = BN_dup(cert_e);
+    if (!n || !e) {
+        BN_free(n); BN_free(e);
+        RSA_free(rsa);
+        RSA_free(cert_rsa);
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
     RSA_set0_key(rsa, n, e, NULL);
-    RSA_set_app_data(rsa, remote_signer_ctx_new(keyless_url, hostname, insecure_skip_verify));
+    RSA_free(cert_rsa);
+
+    remote_signer_ctx_t *rsctx = remote_signer_ctx_new(keyless_url, hostname, insecure_skip_verify);
+    if (!rsctx) {
+        RSA_free(rsa);
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+    if (RSA_set_ex_data(rsa, remote_signer_ex_index, rsctx) != 1) {
+        remote_signer_ctx_free(rsctx);
+        RSA_free(rsa);
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
 
     EVP_PKEY *pkey = EVP_PKEY_new();
-    EVP_PKEY_assign_RSA(pkey, rsa);
-    SSL_CTX_use_PrivateKey(ctx, pkey);
+    if (!pkey || EVP_PKEY_assign_RSA(pkey, rsa) != 1) {
+        if (pkey) EVP_PKEY_free(pkey);
+        else RSA_free(rsa);
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+    if (SSL_CTX_use_PrivateKey(ctx, pkey) != 1) {
+        LOG_ERROR("Keyless TLS: SSL_CTX_use_PrivateKey failed");
+        EVP_PKEY_free(pkey);
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
     EVP_PKEY_free(pkey);
 
     if (!SSL_CTX_check_private_key(ctx)) {
-        LOG_WARN("Keyless TLS: private key does not match certificate (expected with remote signer)");
+        unsigned long e2 = ERR_get_error();
+        char buf[256];
+        ERR_error_string_n(e2, buf, sizeof(buf));
+        LOG_DEBUG("Keyless TLS: SSL_CTX_check_private_key (expected with remote signer) err=%s", buf);
     }
 
-    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     return ctx;
 }
 
