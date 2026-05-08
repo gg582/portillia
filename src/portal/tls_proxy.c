@@ -32,7 +32,9 @@
 
 #include <cwist/security/tls/ech.h>
 
-#define TLS_PROXY_BUF_SZ        16384
+/* 64 KiB batches ~4 TLS records per fill so one poll() wakeup drains the
+ * backlog instead of one record at a time. */
+#define TLS_PROXY_BUF_SZ        65536
 #define TLS_PROXY_HANDSHAKE_MS  15000
 #define TLS_PROXY_IDLE_MS       300000
 
@@ -161,19 +163,6 @@ typedef struct {
     int target_fd;
 } bridge_args;
 
-/* Drain any TLS writes queued in the BIO into the socket. */
-static int flush_outgoing(SSL *ssl, int *want_writable) {
-    *want_writable = 0;
-    while (1) {
-        int pending = SSL_pending(ssl);
-        (void)pending;
-        /* OpenSSL with default BIO automatically writes to the fd; nothing to
-         * drain here.  We use this stub to centralize semantics if BIO is
-         * later switched to memory BIOs. */
-        return 0;
-    }
-}
-
 static bool ssl_handshake(SSL *ssl, int client_fd) {
     long deadline = now_ms() + TLS_PROXY_HANDSHAKE_MS;
     while (1) {
@@ -213,17 +202,16 @@ static bool ssl_handshake(SSL *ssl, int client_fd) {
 /* Pump pending plaintext from target_fd into ssl. */
 static int pump_target_to_client(SSL *ssl, int target_fd, int *want_target_read,
                                  int *want_client_write, char *buf, int *buf_len, int buf_cap) {
-    if (*buf_len == 0) {
-        ssize_t n = read(target_fd, buf, buf_cap);
-        if (n == 0) return -1; /* target EOF */
-        if (n < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                *want_target_read = 1;
-                return 0;
-            }
-            return -1;
+    int read_eof = 0;
+    while (*buf_len < buf_cap) {
+        ssize_t n = read(target_fd, buf + *buf_len, buf_cap - *buf_len);
+        if (n > 0) { *buf_len += (int)n; continue; }
+        if (n == 0) { read_eof = 1; break; }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            *want_target_read = 1;
+            break;
         }
-        *buf_len = (int)n;
+        return -1;
     }
 
     int written = 0;
@@ -235,8 +223,10 @@ static int pump_target_to_client(SSL *ssl, int target_fd, int *want_target_read,
             continue;
         }
         int err = SSL_get_error(ssl, w);
-        if (err == SSL_ERROR_WANT_WRITE) { *want_client_write = 1; break; }
-        if (err == SSL_ERROR_WANT_READ)  { *want_client_write = 1; break; }
+        if (err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ) {
+            *want_client_write = 1;
+            break;
+        }
         return -1;
     }
     if (written == *buf_len) {
@@ -245,23 +235,24 @@ static int pump_target_to_client(SSL *ssl, int target_fd, int *want_target_read,
         memmove(buf, buf + written, *buf_len - written);
         *buf_len -= written;
     }
+    if (read_eof && *buf_len == 0) return -1;
     return 0;
 }
 
 static int pump_client_to_target(SSL *ssl, int target_fd, int *want_client_read,
                                  int *want_target_write, char *buf, int *buf_len, int buf_cap) {
-    if (*buf_len == 0) {
+    int read_eof = 0;
+    while (*buf_len < buf_cap) {
         ERR_clear_error();
-        int n = SSL_read(ssl, buf, buf_cap);
-        if (n > 0) {
-            *buf_len = n;
-        } else {
-            int err = SSL_get_error(ssl, n);
-            if (err == SSL_ERROR_WANT_READ)  { *want_client_read = 1; return 0; }
-            if (err == SSL_ERROR_WANT_WRITE) { *want_client_read = 1; return 0; }
-            if (err == SSL_ERROR_ZERO_RETURN) return -1;
-            return -1;
+        int n = SSL_read(ssl, buf + *buf_len, buf_cap - *buf_len);
+        if (n > 0) { *buf_len += n; continue; }
+        int err = SSL_get_error(ssl, n);
+        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+            *want_client_read = 1;
+            break;
         }
+        read_eof = 1;
+        break;
     }
 
     int written = 0;
@@ -283,6 +274,8 @@ static int pump_client_to_target(SSL *ssl, int target_fd, int *want_client_read,
         memmove(buf, buf + written, *buf_len - written);
         *buf_len -= written;
     }
+    /* Defer EOF until buffered plaintext is fully delivered. */
+    if (read_eof && *buf_len == 0) return -1;
     return 0;
 }
 
@@ -343,13 +336,6 @@ static void *bridge_thread(void *arg) {
     while (1) {
         int want_client_read = 0, want_client_write = 0;
         int want_target_read = 0, want_target_write = 0;
-
-        /* Drain SSL backlog before polling. */
-        if (SSL_pending(ssl) > 0 && c2t_len < TLS_PROXY_BUF_SZ) {
-            int w_cr = 0, w_tw = 0;
-            if (pump_client_to_target(ssl, target_fd, &w_cr, &w_tw,
-                                      c2t_buf, &c2t_len, TLS_PROXY_BUF_SZ) < 0) break;
-        }
 
         if (!client_read_eof && c2t_len < TLS_PROXY_BUF_SZ) {
             if (pump_client_to_target(ssl, target_fd, &want_client_read, &want_target_write,

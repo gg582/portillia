@@ -3,8 +3,8 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
-#include <string.h>
 #include <stdint.h>
 
 typedef struct {
@@ -82,6 +82,10 @@ void *bridge_thread_func(void *arg) {
     int target_fd = b_args->target_fd;
     int64_t bps_limit = b_args->bps_limit;
     free(b_args);
+
+    int nodelay = 1;
+    setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+    setsockopt(target_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
     pthread_t t1, t2;
     copy_args *args1 = malloc(sizeof(copy_args));
