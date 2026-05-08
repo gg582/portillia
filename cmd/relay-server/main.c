@@ -13,6 +13,7 @@
 #include <openssl/rand.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -38,6 +39,20 @@ typedef struct {
 #include <errno.h>
 #include <string.h>
 
+static void *sni_worker_thread(void *arg) {
+    int client = (int)(intptr_t)arg;
+    char *sni = get_sni_hostname(client);
+    if (sni) {
+        extern void portillia_server_handle_connect(const char *hostname, int client_fd);
+        portillia_server_handle_connect(sni, client);
+        free(sni);
+    } else {
+        LOG_DEBUG("sni_listener: no SNI, closing client");
+        close(client);
+    }
+    return NULL;
+}
+
 void *sni_listener_thread(void *arg) {
     listener_args *args = (listener_args *)arg;
     int port = args->sni_port;
@@ -53,16 +68,14 @@ void *sni_listener_thread(void *arg) {
     while (1) {
         int client = accept(fd, NULL, NULL);
         if (client < 0) continue;
-        
-        char *sni = get_sni_hostname(client);
-        if (sni) {
-            extern void portillia_server_handle_connect(const char *hostname, int client_fd);
-            portillia_server_handle_connect(sni, client);
-            free(sni);
-        } else {
-            LOG_DEBUG("sni_listener: no SNI, closing client");
+
+        pthread_t tid;
+        if (pthread_create(&tid, NULL, sni_worker_thread, (void *)(intptr_t)client) != 0) {
+            LOG_WARN("sni_listener: failed to spawn worker, closing client");
             close(client);
+            continue;
         }
+        pthread_detach(tid);
     }
     return NULL;
 }

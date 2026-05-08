@@ -169,7 +169,6 @@ void ensure_descriptor_identity() {
 
 static int sign_descriptor_compact_b64(const char *canonical_json, char *out_b64, size_t out_len) {
     ensure_descriptor_identity();
-    LOG_INFO("SIGN_PRIV_KEY priv=%s addr=%s", g_desc_priv_hex, g_desc_addr);
     if (!canonical_json || !canonical_json[0] || !g_desc_priv_hex[0]) return -1;
 
     uint8_t seckey[32];
@@ -314,7 +313,7 @@ void portillia_discovery_poll(discovery_config *cfg, const char *url) {
         cJSON *relays = discovery_relays_array(root);
         if (cJSON_IsArray(relays)) {
             int size = cJSON_GetArraySize(relays);
-            LOG_INFO("discovery poll succeeded url=%s relays=%d", url, size);
+            LOG_DEBUG("discovery poll succeeded url=%s relays=%d", url, size);
             for (int i = 0; i < size; i++) {
                 cJSON *item = cJSON_GetArrayItem(relays, i);
                 cJSON *addr = cJSON_GetObjectItem(item, "address");
@@ -360,66 +359,99 @@ void portillia_discovery_poll(discovery_config *cfg, const char *url) {
     }
 }
 
-void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descriptor *desc) {
-    // Periodic poll of bootstraps
-    if (cfg->bootstrap_urls) {
-        char *copy = strdup(cfg->bootstrap_urls);
-        char *saveptr = NULL;
-        char *token = strtok_r(copy, ",", &saveptr);
-        while (token) {
-            while (*token == ' ' || *token == '\t' || *token == '\n' || *token == '\r') token++;
-            size_t token_len = strlen(token);
-            while (token_len > 0 &&
-                   (token[token_len - 1] == ' ' || token[token_len - 1] == '\t' || token[token_len - 1] == '\n' || token[token_len - 1] == '\r')) {
-                token[--token_len] = '\0';
-            }
-            if (strcmp(token, cfg->relay_url) != 0) {
-                portillia_discovery_poll(cfg, token);
-                
-                // Also send self-announce
-                char announce_url[1024];
-                snprintf(announce_url, sizeof(announce_url), "%s/discovery/announce", token);
+typedef struct {
+    discovery_config *cfg;
+    char *peer_url;
+    const char *announce_json;
+} announce_peer_args;
 
-                cJSON *root = cJSON_CreateObject();
-                cJSON_AddStringToObject(root, "protocol_version", "7");
-                cJSON *d = cJSON_CreateObject();
-                char issued_at[64] = {0};
-                char expires_at[64] = {0};
-                format_rfc3339_utc(desc->issued_at, issued_at, sizeof(issued_at));
-                format_rfc3339_utc(desc->expires_at, expires_at, sizeof(expires_at));
-                cJSON_AddStringToObject(d, "address", desc->address ? desc->address : "");
-                cJSON_AddStringToObject(d, "version", desc->version ? desc->version : "7");
-                cJSON_AddStringToObject(d, "issued_at", issued_at);
-                cJSON_AddStringToObject(d, "expires_at", expires_at);
-                cJSON_AddStringToObject(d, "api_https_addr", desc->api_https_addr ? desc->api_https_addr : "");
-                cJSON_AddStringToObject(d, "wireguard_public_key", desc->wireguard_public_key ? desc->wireguard_public_key : "");
-                cJSON_AddNumberToObject(d, "wireguard_port", (double)desc->wireguard_port);
-                cJSON_AddBoolToObject(d, "supports_overlay", desc->supports_overlay);
-                cJSON_AddBoolToObject(d, "supports_udp", desc->supports_udp);
-                cJSON_AddBoolToObject(d, "supports_tcp", desc->supports_tcp);
-                cJSON_AddNumberToObject(d, "active_connections", (double)desc->active_connections);
-                cJSON_AddNumberToObject(d, "tcp_bps", desc->tcp_bps);
-                cJSON_AddStringToObject(d, "signature", desc->signature ? desc->signature : "");
-                cJSON_AddItemToObject(root, "descriptor", d);
+static void *announce_peer_worker(void *arg) {
+    announce_peer_args *a = (announce_peer_args *)arg;
+    portillia_discovery_poll(a->cfg, a->peer_url);
 
-                char *json = cJSON_PrintUnformatted(root);
-                LOG_INFO("relay discovery announce payload=%s", json);
-
-                char *res_data = DiscoveryAnnounceJSON(announce_url, json);
-                if (res_data) {
-                    LOG_INFO("relay discovery announce succeeded relay=%s", token);
-                    FreeCString(res_data);
-                } else {
-                    LOG_WARN("relay discovery announce failed relay=%s", token);
-                }
-
-                free(json);
-                cJSON_Delete(root);
-            }
-            token = strtok_r(NULL, ",", &saveptr);
-        }
-        free(copy);
+    char announce_url[1024];
+    snprintf(announce_url, sizeof(announce_url), "%s/discovery/announce", a->peer_url);
+    char *res_data = DiscoveryAnnounceJSON(announce_url, (char *)a->announce_json);
+    if (res_data) {
+        LOG_DEBUG("relay discovery announce succeeded relay=%s", a->peer_url);
+        FreeCString(res_data);
+    } else {
+        LOG_WARN("relay discovery announce failed relay=%s", a->peer_url);
     }
+    free(a->peer_url);
+    free(a);
+    return NULL;
+}
+
+static char *build_announce_payload(const portillia_relay_descriptor *desc) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "protocol_version", PORTILLIA_DISCOVERY_VERSION);
+    cJSON *d = cJSON_CreateObject();
+    char issued_at[64] = {0};
+    char expires_at[64] = {0};
+    format_rfc3339_utc(desc->issued_at, issued_at, sizeof(issued_at));
+    format_rfc3339_utc(desc->expires_at, expires_at, sizeof(expires_at));
+    cJSON_AddStringToObject(d, "address", desc->address ? desc->address : "");
+    cJSON_AddStringToObject(d, "version", desc->version ? desc->version : PORTILLIA_DISCOVERY_VERSION);
+    cJSON_AddStringToObject(d, "issued_at", issued_at);
+    cJSON_AddStringToObject(d, "expires_at", expires_at);
+    cJSON_AddStringToObject(d, "api_https_addr", desc->api_https_addr ? desc->api_https_addr : "");
+    cJSON_AddStringToObject(d, "wireguard_public_key", desc->wireguard_public_key ? desc->wireguard_public_key : "");
+    cJSON_AddNumberToObject(d, "wireguard_port", (double)desc->wireguard_port);
+    cJSON_AddBoolToObject(d, "supports_overlay", desc->supports_overlay);
+    cJSON_AddBoolToObject(d, "supports_udp", desc->supports_udp);
+    cJSON_AddBoolToObject(d, "supports_tcp", desc->supports_tcp);
+    cJSON_AddNumberToObject(d, "active_connections", (double)desc->active_connections);
+    cJSON_AddNumberToObject(d, "tcp_bps", desc->tcp_bps);
+    cJSON_AddStringToObject(d, "signature", desc->signature ? desc->signature : "");
+    cJSON_AddItemToObject(root, "descriptor", d);
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json;
+}
+
+static char *trim_inplace(char *s) {
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
+    size_t len = strlen(s);
+    while (len > 0 && (s[len - 1] == ' ' || s[len - 1] == '\t' || s[len - 1] == '\n' || s[len - 1] == '\r')) {
+        s[--len] = '\0';
+    }
+    return s;
+}
+
+void portillia_discovery_announce(discovery_config *cfg, portillia_relay_descriptor *desc) {
+    if (!cfg->bootstrap_urls) return;
+
+    char *json = build_announce_payload(desc);
+    if (!json) return;
+
+    char *copy = strdup(cfg->bootstrap_urls);
+    if (!copy) { free(json); return; }
+
+    pthread_t tids[MAX_RELAYS];
+    int n = 0;
+    char *saveptr = NULL;
+    for (char *token = strtok_r(copy, ",", &saveptr); token; token = strtok_r(NULL, ",", &saveptr)) {
+        token = trim_inplace(token);
+        if (!*token || strcmp(token, cfg->relay_url) == 0) continue;
+        if (n >= MAX_RELAYS) break;
+
+        announce_peer_args *a = malloc(sizeof(*a));
+        if (!a) continue;
+        a->cfg = cfg;
+        a->peer_url = strdup(token);
+        a->announce_json = json;
+        if (!a->peer_url || pthread_create(&tids[n], NULL, announce_peer_worker, a) != 0) {
+            free(a->peer_url);
+            free(a);
+            continue;
+        }
+        n++;
+    }
+    for (int i = 0; i < n; i++) pthread_join(tids[i], NULL);
+
+    free(copy);
+    free(json);
 }
 
 extern int64_t portillia_proxy_get_active_conns();
@@ -435,10 +467,9 @@ static void discovery_task(ttak_task_t *task, void *arg) {
 
     portillia_relay_descriptor desc = {0};
     ensure_descriptor_identity();
-    LOG_INFO("DISCOVERY_IDENTITY priv=%s addr=%s", g_desc_priv_hex, g_desc_addr);
     desc.address = strdup(g_desc_addr);
     desc.api_https_addr = strdup(cfg->advertise_url);
-    desc.version = strdup("7");
+    desc.version = strdup(PORTILLIA_DISCOVERY_VERSION);
     desc.wireguard_public_key = strdup("");
     desc.signature = strdup("");
     desc.issued_at = time(NULL);
@@ -485,7 +516,7 @@ static void discovery_task(ttak_task_t *task, void *arg) {
 
     char canonical[2048] = {0};
     build_canonical_descriptor_json(&desc, canonical, sizeof(canonical));
-    LOG_INFO("discovery canonical json=%s", canonical);
+    LOG_DEBUG("discovery canonical json=%s", canonical);
     char sig_b64[256] = {0};
     if (sign_descriptor_compact_b64(canonical, sig_b64, sizeof(sig_b64)) == 0) {
         free(desc.signature);

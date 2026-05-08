@@ -296,7 +296,7 @@ char *get_sni_hostname(int client_fd) {
         char *hostname = parse_client_hello_stream(peeked, (size_t)n, &need_more);
         free(peeked);
         if (hostname) {
-            LOG_INFO("get_sni_hostname: parsed hostname=%s", hostname);
+            LOG_DEBUG("get_sni_hostname: parsed hostname=%s", hostname);
             return hostname;
         }
         if (!need_more) {

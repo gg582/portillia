@@ -32,6 +32,8 @@ import (
 var (
 	globalOverlay *overlay.Overlay
 	globalHopMux  *overlay.HopMux
+
+	discoveryHTTPClient = &http.Client{Timeout: 8 * time.Second}
 )
 
 func bridgeConnToFD(conn net.Conn) (int, error) {
@@ -293,8 +295,7 @@ func VerifyLeaseTokenJSON(cToken, cPublicKeyHex, cIssuer *C.char, cNowUnix C.lon
 
 //export DiscoveryPollJSON
 func DiscoveryPollJSON(cURL *C.char) *C.char {
-	url := C.GoString(cURL)
-	resp, err := http.Get(url)
+	resp, err := discoveryHTTPClient.Get(C.GoString(cURL))
 	if err != nil {
 		return nil
 	}
@@ -311,9 +312,7 @@ func DiscoveryPollJSON(cURL *C.char) *C.char {
 
 //export DiscoveryAnnounceJSON
 func DiscoveryAnnounceJSON(cURL, cDescriptorJSON *C.char) *C.char {
-	url := C.GoString(cURL)
-	body := strings.NewReader(C.GoString(cDescriptorJSON))
-	resp, err := http.Post(url, "application/json", body)
+	resp, err := discoveryHTTPClient.Post(C.GoString(cURL), "application/json", strings.NewReader(C.GoString(cDescriptorJSON)))
 	if err != nil {
 		return nil
 	}

@@ -19,7 +19,7 @@ extern "C" {
 
 /* ---------- Version constants ---------- */
 #define PORTILLIA_RELEASE_VERSION         "v2.1.9"
-#define PORTILLIA_SDK_VERSION             "7"
+#define PORTILLIA_SDK_VERSION             "6"
 #define PORTILLIA_DISCOVERY_VERSION       "7"
 #define PORTILLIA_PORTAL_RELAY_REGISTRY_URL "https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json"
 #define PORTILLIA_OFFICIAL_RELEASE_BASE_URL "https://github.com/gosuda/portal-tunnel/releases"
