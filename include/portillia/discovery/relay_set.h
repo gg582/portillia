@@ -6,6 +6,7 @@
 
 #include <portillia/types/types.h>
 #include <portillia/mem/gc.h>
+#include <ttak/ht/table.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
@@ -39,6 +40,10 @@ typedef struct portillia_relay_state {
     int active_failures;
     time_t next_discovery_refresh_at;
     time_t suppress_active_until;
+
+    bool is_saturated;
+    uint32_t load_factor_fixed;
+    time_t load_factor_at;
 } portillia_relay_state_t;
 
 /* ---------- ClientState ---------- */

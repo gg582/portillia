@@ -42,4 +42,4 @@ require (
 	gvisor.dev/gvisor v0.0.0-20250503011706-39ed1f5ac29c // indirect
 )
 
-replace github.com/gosuda/portal-tunnel/v2 => ../../portal-tunnel
+replace github.com/gosuda/portal-tunnel/v2 => ../참고자료/portal-tunnel

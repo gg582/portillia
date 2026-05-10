@@ -538,10 +538,10 @@ void handle_discovery(cwist_http_request *req, cwist_http_response *res) {
     cJSON_AddStringToObject(data, "generated_at", generated_at);
     cJSON *relays = cJSON_CreateArray();
     if (global_disc_cfg && global_disc_cfg->relay_set) {
-        portillia_relay_set *set = global_disc_cfg->relay_set;
-        pthread_mutex_lock(&set->mu);
-        for (int i = 0; i < set->count; i++) {
-            portillia_relay_descriptor *d = &set->relays[i].descriptor;
+        portillia_relay_descriptor_t *descs = NULL;
+        size_t count = portillia_relay_set_descriptors(global_disc_cfg->relay_set, NULL, &descs);
+        for (size_t i = 0; i < count; i++) {
+            portillia_relay_descriptor_t *d = &descs[i];
             cJSON *item = cJSON_CreateObject();
             char issued_at[64] = {0};
             char expires_at[64] = {0};
@@ -562,7 +562,7 @@ void handle_discovery(cwist_http_request *req, cwist_http_response *res) {
             cJSON_AddStringToObject(item, "signature", d->signature ? d->signature : "");
             cJSON_AddItemToArray(relays, item);
         }
-        pthread_mutex_unlock(&set->mu);
+        if (descs) free(descs);
     }
     cJSON_AddItemToObject(data, "relays", relays);
     cJSON *root = cJSON_CreateObject();

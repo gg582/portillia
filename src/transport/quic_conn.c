@@ -2,12 +2,6 @@
 #include <portillia/utils/log.h>
 #include <portillia/utils/network.h>
 #include <portillia/mem/gc.h>
-#include <ngtcp2/ngtcp2.h>
-#include <ngtcp2/ngtcp2_crypto.h>
-#include <ngtcp2/ngtcp2_crypto_ossl.h>
-#include <openssl/ssl.h>
-#include <openssl/err.h>
-#include <openssl/rand.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -19,6 +13,24 @@
 #include <poll.h>
 #include <time.h>
 #include <errno.h>
+
+#if defined(__has_include)
+  #if __has_include(<ngtcp2/ngtcp2.h>)
+    #define HAS_NGTCP2 1
+  #endif
+#elif defined(__linux__) || defined(__APPLE__)
+  #include <ngtcp2/ngtcp2.h>
+  #define HAS_NGTCP2 1
+#endif
+
+#if HAS_NGTCP2
+
+#include <ngtcp2/ngtcp2.h>
+#include <ngtcp2/ngtcp2_crypto.h>
+#include <ngtcp2/ngtcp2_crypto_ossl.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/rand.h>
 
 #define MAX_UDP_PAYLOAD 65535
 #define NGTCP2_DEFAULT_MAX_DATAGRAM_FRAME_SIZE 1200
@@ -429,3 +441,34 @@ bool portillia_quic_conn_handshake_done(portillia_quic_conn_t *qc_) {
     pthread_mutex_unlock(&qc->mu);
     return done;
 }
+
+#else /* !HAS_NGTCP2 */
+
+/* Stubs when ngtcp2 is unavailable */
+
+portillia_quic_conn_t *portillia_quic_conn_new(const char *host, int port) {
+    (void)host; (void)port;
+    LOG_WARN("QUIC support is not available (ngtcp2 not found)");
+    return NULL;
+}
+
+void portillia_quic_conn_free(portillia_quic_conn_t *qc_) {
+    (void)qc_;
+}
+
+int portillia_quic_conn_send_datagram(portillia_quic_conn_t *qc_, const uint8_t *data, size_t len) {
+    (void)qc_; (void)data; (void)len;
+    return -1;
+}
+
+void portillia_quic_conn_set_recv_handler(portillia_quic_conn_t *qc_,
+    void (*cb)(void *user_data, const uint8_t *data, size_t len), void *user_data) {
+    (void)qc_; (void)cb; (void)user_data;
+}
+
+bool portillia_quic_conn_handshake_done(portillia_quic_conn_t *qc_) {
+    (void)qc_;
+    return false;
+}
+
+#endif

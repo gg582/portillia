@@ -61,17 +61,13 @@ int portillia_keyless_ech_generate_keys(const char *siwe_private_key, const char
     if (strlen(seed) == 0) return -1;
     if (strlen(public_name) > 255) return -1;
 
-    uint8_t ikm[32];
-    if (hex_to_bytes32(siwe_private_key, ikm) != 0) return -1;
-
-    // HKDF-SHA256 derive X25519 private key
+    // Go parity: IKM = seed, salt = nil
     uint8_t x25519_priv[32];
     EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, NULL);
     if (!pctx) return -1;
     if (EVP_PKEY_derive_init(pctx) <= 0) { EVP_PKEY_CTX_free(pctx); return -1; }
     if (EVP_PKEY_CTX_set_hkdf_md(pctx, EVP_sha256()) <= 0) { EVP_PKEY_CTX_free(pctx); return -1; }
-    if (EVP_PKEY_CTX_set1_hkdf_key(pctx, ikm, 32) <= 0) { EVP_PKEY_CTX_free(pctx); return -1; }
-    if (EVP_PKEY_CTX_set1_hkdf_salt(pctx, (const uint8_t *)seed, (int)strlen(seed)) <= 0) { EVP_PKEY_CTX_free(pctx); return -1; }
+    if (EVP_PKEY_CTX_set1_hkdf_key(pctx, (const uint8_t *)seed, (int)strlen(seed)) <= 0) { EVP_PKEY_CTX_free(pctx); return -1; }
     const char *info_prefix = "portal relay ech v1:";
     size_t info_len = strlen(info_prefix) + strlen(public_name);
     uint8_t *info = malloc(info_len);

@@ -7,35 +7,9 @@
 #define PORTILLIA_PORTAL_DISCOVERY_H
 
 #include <portillia/types/types.h>
+#include <portillia/discovery/relay_set.h>
 #include <cwist/core/sstring/sstring.h>
 #include <pthread.h>
-
-/**
- * @brief Maximum number of relays to track in the local discovery set.
- */
-#define MAX_RELAYS 256
-
-/**
- * @struct portillia_relay_state
- * @brief Local tracking state for a discovered relay.
- */
-typedef struct {
-    portillia_relay_descriptor descriptor; /**< The cryptographically signed descriptor */
-    bool bootstrap; /**< Whether this is a hardcoded bootstrap relay */
-    bool banned; /**< Whether this relay is locally banned */
-    int discovery_failures; /**< Count of consecutive poll failures */
-    time_t next_discovery_refresh_at; /**< Next scheduled poll time */
-} portillia_relay_state;
-
-/**
- * @struct portillia_relay_set
- * @brief Thread-safe collection of all known relays.
- */
-typedef struct {
-    portillia_relay_state relays[MAX_RELAYS]; /**< Array of relay states */
-    int count; /**< Current number of tracked relays */
-    pthread_mutex_t mu; /**< Mutex for concurrent access */
-} portillia_relay_set;
 
 /**
  * @struct discovery_config
@@ -45,7 +19,7 @@ typedef struct {
     char *relay_url; /**< This relay's own public relay URL */
     char *advertise_url; /**< Public relay URL advertised in descriptors */
     char *bootstrap_urls; /**< Comma-separated list of bootstrap URLs */
-    portillia_relay_set *relay_set; /**< The set to manage */
+    portillia_relay_set_t *relay_set; /**< The set to manage (new ttak-based) */
     int wireguard_port; /**< WireGuard listen port for overlay */
 } discovery_config;
 
@@ -61,19 +35,9 @@ void *discovery_maintenance_loop(void *arg);
 void portillia_discovery_publish_self(discovery_config *cfg);
 
 /**
- * @brief Creates a new relay set.
+ * @brief Poll discovery endpoint of a peer relay.
  */
-portillia_relay_set* portillia_relay_set_new();
-
-/**
- * @brief Frees a relay set and all its descriptors.
- */
-void portillia_discovery_relay_set_free(portillia_relay_set *set);
-
-/**
- * @brief Updates or inserts a relay descriptor into the set.
- */
-void portillia_relay_set_upsert(portillia_relay_set *set, portillia_relay_descriptor desc);
+void portillia_discovery_poll(discovery_config *cfg, const char *url);
 
 extern char g_desc_priv_hex[65];
 extern char g_desc_addr[43];

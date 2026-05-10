@@ -8,12 +8,12 @@ NGTCP2_LDFLAGS := $(shell pkg-config --libs-only-L libngtcp2 2>/dev/null)
 NGTCP2_LIBS := $(shell pkg-config --libs-only-l libngtcp2 2>/dev/null)
 NGTCP2_CRYPTO_LIBS := $(shell pkg-config --libs-only-l libngtcp2_crypto_quictls 2>/dev/null || pkg-config --libs-only-l libngtcp2_crypto_ossl 2>/dev/null)
 
-# Fallback if pkg-config doesn't find ngtcp2
+# If ngtcp2 is not available, leave flags empty
 ifeq ($(NGTCP2_LIBS),)
-    NGTCP2_CFLAGS := -I/usr/local/include
-    NGTCP2_LDFLAGS := -L/usr/local/lib
-    NGTCP2_LIBS := -lngtcp2
-    NGTCP2_CRYPTO_LIBS := $(shell test -f /usr/local/lib/libngtcp2_crypto_quictls.a && echo -lngtcp2_crypto_quictls || echo -lngtcp2_crypto_ossl)
+    NGTCP2_CFLAGS :=
+    NGTCP2_LDFLAGS :=
+    NGTCP2_LIBS :=
+    NGTCP2_CRYPTO_LIBS :=
 endif
 
 CFLAGS += $(NGTCP2_CFLAGS)
@@ -25,14 +25,18 @@ CFLAGS += -I./libs/cwist/lib/libttak/include -I./libs/cwist/lib -I./libs/cwist/l
 SRC_MEM = src/mem/gc.c
 SRC_TYPES = src/types/types.c
 SRC_UTILS = src/utils/crypto.c src/utils/network.c src/utils/log.c src/utils/ttak_stubs.c
-SRC_DISCOVERY = src/discovery/relay_set.c
+NGTCP2_HEADER := $(shell test -f /usr/include/ngtcp2/ngtcp2.h || test -f /usr/local/include/ngtcp2/ngtcp2.h && echo yes || echo no)
+
+# quic_conn.c contains its own HAS_NGTCP2 guards, so always compile it
 SRC_TRANSPORT = src/transport/stream_client.c src/transport/datagram_client.c src/transport/quic_conn.c
+
+SRC_DISCOVERY = src/portal/discovery/relay_set.c src/portal/discovery/mols.c
 SRC_PORTAL = src/portal/server.c src/portal/proxy.c src/portal/sni_parser.c \
              src/portal/transport/quic_backhaul.c src/portal/keyless/tls.c src/portal/keyless/ech.c \
              src/portal/acme/manager.c src/portal/acme/cloudflare/provider.c src/portal/acme/route53/provider.c src/portal/acme/gcloud/provider.c \
-             src/portal/discovery/discovery.c src/portal/settings.c src/portal/agent/control.c \
+             src/portal/discovery/discovery.c src/portal/policy/policy.c src/portal/settings.c src/portal/agent/control.c \
              libs/cwist/src/net/http/mux.c
-SRC_SDK = src/sdk/expose.c src/sdk/listener.c src/sdk/api_client.c src/sdk/http_runtime.c
+SRC_SDK = src/sdk/expose.c src/sdk/listener.c src/sdk/api_client.c src/sdk/http_runtime.c 
 SRC_COMMON_API = src/portal/api_server.c
 SRC_RELAY_API = src/portal/api_server_relay.c
 

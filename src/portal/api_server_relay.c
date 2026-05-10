@@ -68,7 +68,7 @@ void handle_discovery_announce(cwist_http_request *req, cwist_http_response *res
                     d.active_connections = (active_connections && cJSON_IsNumber(active_connections)) ? (int64_t)active_connections->valuedouble : 0;
                     d.tcp_bps = (tcp_bps && cJSON_IsNumber(tcp_bps)) ? tcp_bps->valuedouble : 0.0;
 
-                    portillia_relay_set_upsert(global_disc_cfg->relay_set, d);
+                    portillia_relay_set_insert_announced(global_disc_cfg->relay_set, &d, 0);
 
                     char *source_ip = cwist_http_header_get(req->headers, "X-Real-IP");
                     if (!source_ip || source_ip[0] == '\0') {
