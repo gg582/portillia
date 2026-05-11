@@ -20,14 +20,17 @@ typedef struct {
     bool udp_enabled; /**< Global UDP tunnel toggle */
     bool tcp_port_enabled; /**< Global raw TCP port toggle */
     char *encrypted_client_hello_seed; /**< Seed for ECH key derivation */
-    
+
     // Policy Engine
     char **banned_identities; /**< List of banned Ethereum addresses */
     int banned_count; /**< Number of banned identities */
+    int banned_capacity; /**< Allocated capacity of banned_identities */
     char **approved_identities; /**< List of manually approved addresses */
     int approved_count; /**< Number of approved identities */
+    int approved_capacity; /**< Allocated capacity of approved_identities */
     char **trusted_proxy_cidrs; /**< CIDR ranges for trusted proxies */
     int trusted_proxy_count; /**< Number of trusted proxy CIDRs */
+    int trusted_proxy_capacity; /**< Allocated capacity of trusted_proxy_cidrs */
     bool trust_proxy_headers; /**< Whether to trust X-Forwarded-For etc. */
     char *path; /**< The file path where these settings are stored */
 } portillia_settings;

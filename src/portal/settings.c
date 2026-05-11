@@ -41,10 +41,13 @@ portillia_settings* portillia_settings_load(const char *path) {
 
     s->banned_identities = calloc(INITIAL_LIST_CAPACITY, sizeof(char*));
     s->banned_count = 0;
+    s->banned_capacity = INITIAL_LIST_CAPACITY;
     s->approved_identities = calloc(INITIAL_LIST_CAPACITY, sizeof(char*));
     s->approved_count = 0;
+    s->approved_capacity = INITIAL_LIST_CAPACITY;
     s->trusted_proxy_cidrs = calloc(INITIAL_LIST_CAPACITY, sizeof(char*));
     s->trusted_proxy_count = 0;
+    s->trusted_proxy_capacity = INITIAL_LIST_CAPACITY;
 
     FILE *f = fopen(path, "rb");
     if (!f) return s;
@@ -85,7 +88,7 @@ portillia_settings* portillia_settings_load(const char *path) {
             // Load banned identities
             cJSON *banned_arr = cJSON_GetObjectItem(root, "banned_identities");
             if (cJSON_IsArray(banned_arr)) {
-                s->banned_identities = resize_list(s->banned_identities, &s->banned_count, &s->banned_count, cJSON_GetArraySize(banned_arr));
+                s->banned_identities = resize_list(s->banned_identities, &s->banned_count, &s->banned_capacity, cJSON_GetArraySize(banned_arr));
                 cJSON *item;
                 cJSON_ArrayForEach(item, banned_arr) {
                     s->banned_identities[s->banned_count++] = strdup(item->valuestring);
@@ -94,7 +97,7 @@ portillia_settings* portillia_settings_load(const char *path) {
             // Load approved identities
             cJSON *approved_arr = cJSON_GetObjectItem(root, "approved_identities");
             if (cJSON_IsArray(approved_arr)) {
-                s->approved_identities = resize_list(s->approved_identities, &s->approved_count, &s->approved_count, cJSON_GetArraySize(approved_arr));
+                s->approved_identities = resize_list(s->approved_identities, &s->approved_count, &s->approved_capacity, cJSON_GetArraySize(approved_arr));
                 cJSON *item;
                 cJSON_ArrayForEach(item, approved_arr) {
                     s->approved_identities[s->approved_count++] = strdup(item->valuestring);
@@ -103,7 +106,7 @@ portillia_settings* portillia_settings_load(const char *path) {
             // Load trusted proxy CIDRs
             cJSON *cidrs_arr = cJSON_GetObjectItem(root, "trusted_proxy_cidrs");
             if (cJSON_IsArray(cidrs_arr)) {
-                s->trusted_proxy_cidrs = resize_list(s->trusted_proxy_cidrs, &s->trusted_proxy_count, &s->trusted_proxy_count, cJSON_GetArraySize(cidrs_arr));
+                s->trusted_proxy_cidrs = resize_list(s->trusted_proxy_cidrs, &s->trusted_proxy_count, &s->trusted_proxy_capacity, cJSON_GetArraySize(cidrs_arr));
                 cJSON *item;
                 cJSON_ArrayForEach(item, cidrs_arr) {
                     s->trusted_proxy_cidrs[s->trusted_proxy_count++] = strdup(item->valuestring);
@@ -189,7 +192,7 @@ void portillia_settings_ban_identity(portillia_settings *s, const char *addr) {
     for (int i = 0; i < s->banned_count; i++) {
         if (strcmp(s->banned_identities[i], addr) == 0) return;
     }
-    s->banned_identities = resize_list(s->banned_identities, &s->banned_count, &s->banned_count, 1);
+    s->banned_identities = resize_list(s->banned_identities, &s->banned_count, &s->banned_capacity, 1);
     s->banned_identities[s->banned_count++] = strdup(addr);
 }
 
@@ -216,6 +219,6 @@ void portillia_settings_approve_identity(portillia_settings *s, const char *addr
     for (int i = 0; i < s->approved_count; i++) {
         if (strcmp(s->approved_identities[i], addr) == 0) return;
     }
-    s->approved_identities = resize_list(s->approved_identities, &s->approved_count, &s->approved_count, 1);
+    s->approved_identities = resize_list(s->approved_identities, &s->approved_count, &s->approved_capacity, 1);
     s->approved_identities[s->approved_count++] = strdup(addr);
 }

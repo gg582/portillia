@@ -16,6 +16,7 @@
 #include <openssl/sha.h>
 #include <unistd.h>
 #include <errno.h>
+#include <arpa/inet.h>
 extern void portillia_registry_register(const char *hostname, const char *identity_key, int64_t bps_limit);
 extern void portillia_registry_register_ex(const char *hostname, const char *identity_key, int64_t bps_limit,
                                            const char *client_ip, const char *reported_ip,
@@ -224,7 +225,6 @@ static bool verify_siwe_signature_address(const char *siwe_message, const char *
  */
 char* extract_client_ip(cwist_http_request *req) {
     portillia_settings *s = portillia_server_get_settings();
-    char *remote_ip = cwist_http_header_get(req->headers, "X-Real-IP");
     if (s && s->trust_proxy_headers) {
         char *forwarded = cwist_http_header_get(req->headers, "X-Forwarded-For");
         if (forwarded) {
@@ -233,9 +233,17 @@ char* extract_client_ip(cwist_http_request *req) {
             if (comma) *comma = '\0';
             return strdup(forwarded);
         }
+        char *real_ip = cwist_http_header_get(req->headers, "X-Real-IP");
+        if (real_ip) return strdup(real_ip);
     }
-    // Fallback to real remote IP if available from socket (mocked here)
-    return remote_ip ? strdup(remote_ip) : strdup("127.0.0.1");
+    // Use actual peer address from the socket
+    struct sockaddr_in peer_addr;
+    socklen_t peer_len = sizeof(peer_addr);
+    if (getpeername(req->client_fd, (struct sockaddr *)&peer_addr, &peer_len) == 0) {
+        char *ip = inet_ntoa(peer_addr.sin_addr);
+        return strdup(ip);
+    }
+    return strdup("127.0.0.1");
 }
 
 /**
@@ -280,6 +288,7 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                     cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"lease_not_found\", \"message\": \"register challenge not found\"}}");
                     cJSON_Delete(root);
                     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                    free(client_ip);
                     return;
                 }
                 if (strcmp(challenge->siwe_message, siwe_message->valuestring) != 0) {
@@ -287,6 +296,7 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                     cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"invalid_request\", \"message\": \"siwe message mismatch\"}}");
                     cJSON_Delete(root);
                     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                    free(client_ip);
                     return;
                 }
                 /* Full SIWE verification with domain, nonce, expiration */
@@ -297,6 +307,7 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                     cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"unauthorized\", \"message\": \"siwe signature is invalid\"}}");
                     cJSON_Delete(root);
                     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                    free(client_ip);
                     return;
                 }
                 FreeCString(verify_json);
@@ -340,6 +351,7 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                     cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"transport_mismatch\", \"message\": \"transport mismatch\"}}");
                     cJSON_Delete(root);
                     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                    free(client_ip);
                     return;
                 }
                 if ((route_hostname || hostname_hash) && (hop_token || udp || tcp)) {
@@ -347,6 +359,7 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                     cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"transport_mismatch\", \"message\": \"route hostname / hostname hash require stream lease\"}}");
                     cJSON_Delete(root);
                     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                    free(client_ip);
                     return;
                 }
                 if (hostname_hash && !route_hostname) {
@@ -354,6 +367,7 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                     cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"invalid_request\", \"message\": \"hostname hash requires route hostname\"}}");
                     cJSON_Delete(root);
                     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                    free(client_ip);
                     return;
                 }
                 if (ech_config_list_len > 0 && !route_hostname) {
@@ -361,19 +375,22 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                     cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"invalid_request\", \"message\": \"ech config list requires route hostname\"}}");
                     cJSON_Delete(root);
                     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                    free(client_ip);
                     return;
                 }
                 /* Validate route_hostname is child of root hostname */
                 if (route_hostname) {
-                    const char *root = portillia_server_root_hostname();
-                    if (!root || !root[0]) root = "localhost";
-                    size_t root_len = strlen(root);
+                    const char *root_host = portillia_server_root_hostname();
+                    if (!root_host || !root_host[0]) root_host = "localhost";
+                    size_t root_len = strlen(root_host);
                     size_t route_len = strlen(route_hostname);
                     if (route_len <= root_len + 1 || route_hostname[route_len - root_len - 1] != '.' ||
-                        strcasecmp(route_hostname + route_len - root_len, root) != 0) {
+                        strcasecmp(route_hostname + route_len - root_len, root_host) != 0) {
                         res->status_code = CWIST_HTTP_BAD_REQUEST;
                         cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"invalid_request\", \"message\": \"route hostname must be a child of relay root hostname\"}}");
+                        cJSON_Delete(root);
                         cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                        free(client_ip);
                         return;
                     }
                 }
@@ -383,7 +400,6 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                 /* Register with extended fields */
                 portillia_registry_register_ex(hostname, identity_address, limit,
                                                client_ip, reported_ip, hostname_hash, ech_config_list, ech_config_list_len, NULL);
-                free(client_ip);
 
                 time_t expires_at = time(NULL) + 300;
                 char expires_at_str[64] = {0};
@@ -433,6 +449,7 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
             cJSON_Delete(root);
         }
     }
+    free(client_ip);
     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
 }
 
