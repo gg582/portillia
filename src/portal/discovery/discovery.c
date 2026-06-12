@@ -504,7 +504,7 @@ static void discovery_task(ttak_task_t *task, void *arg) {
     desc.api_https_addr = strdup(cfg->advertise_url);
     desc.version = strdup(PORTILLIA_DISCOVERY_VERSION);
     desc.sequence = (uint64_t)time(NULL);
-    desc.version_val = 6; /* ProtocolVersion = 6 in tor-vpn-relay branch */
+    desc.version_val = atoi(PORTILLIA_DISCOVERY_VERSION); /* Dynamic protocol version */
     desc.wireguard_public_key = strdup("");
     desc.signature = strdup("");
     desc.issued_at = time(NULL);

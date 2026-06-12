@@ -5,6 +5,8 @@
 #include <portillia/types/types.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdio.h>
+#include <ctype.h>
 
 /* ---------- Identity ---------- */
 
@@ -228,10 +230,6 @@ void portillia_datagram_frame_copy(portillia_datagram_frame_t *dst, const portil
     if (src->address) dst->address = portillia_gc_strdup(src->address);
     if (src->relay_url) dst->relay_url = portillia_gc_strdup(src->relay_url);
     if (src->udp_addr) dst->udp_addr = portillia_gc_strdup(src->udp_addr);
-    dst->segmented = src->segmented;
-    dst->message_id = src->message_id;
-    dst->segment_index = src->segment_index;
-    dst->segment_count = src->segment_count;
 }
 
 /* ---------- Hop Route ---------- */
@@ -395,4 +393,80 @@ void portillia_renew_response_cleanup(portillia_renew_response_t *r) {
     if (!r) return;
     if (r->access_token) portillia_gc_free_later(r->access_token);
     memset(r, 0, sizeof(*r));
+}
+
+const char *PORTILLIA_RELEASE_VERSION = "v2.3.2+c";
+const char *PORTILLIA_SDK_VERSION = "8";
+const char *PORTILLIA_DISCOVERY_VERSION = "8";
+const char *PORTILLIA_PORTAL_RELAY_REGISTRY_URL = "https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json";
+const char *PORTILLIA_OFFICIAL_RELEASE_BASE_URL = "https://github.com/gosuda/portal-tunnel/releases";
+
+void portillia_manifest_init(void) {
+    FILE *f = fopen("config.toml", "r");
+    if (!f) {
+        f = fopen("../config.toml", "r");
+    }
+    if (!f) return;
+
+    char buf[1024];
+    char section[64] = "";
+
+    while (fgets(buf, sizeof(buf), f)) {
+        char *p = buf;
+        while (*p && isspace((unsigned char)*p)) p++;
+        if (*p == '#' || *p == '\0') continue;
+
+        if (*p == '[') {
+            char *end = strchr(p, ']');
+            if (end) {
+                *end = '\0';
+                strncpy(section, p + 1, sizeof(section) - 1);
+            }
+            continue;
+        }
+
+        char *eq = strchr(p, '=');
+        if (eq) {
+            *eq = '\0';
+            char *key = p;
+            char *val = eq + 1;
+
+            // trim key
+            char *key_end = key + strlen(key) - 1;
+            while (key_end > key && isspace((unsigned char)*key_end)) {
+                *key_end = '\0';
+                key_end--;
+            }
+            while (*key && isspace((unsigned char)*key)) key++;
+
+            // trim val
+            while (*val && isspace((unsigned char)*val)) val++;
+            if (*val == '"') {
+                val++;
+                char *quote_end = strrchr(val, '"');
+                if (quote_end) *quote_end = '\0';
+            } else {
+                char *val_end = val + strlen(val) - 1;
+                while (val_end > val && isspace((unsigned char)*val_end)) {
+                    *val_end = '\0';
+                    val_end--;
+                }
+            }
+
+            if (strcmp(section, "release") == 0) {
+                if (strcmp(key, "version") == 0) {
+                    PORTILLIA_RELEASE_VERSION = strdup(val);
+                } else if (strcmp(key, "base_url") == 0) {
+                    PORTILLIA_OFFICIAL_RELEASE_BASE_URL = strdup(val);
+                }
+            } else if (strcmp(section, "protocol") == 0) {
+                if (strcmp(key, "tunnel") == 0) {
+                    PORTILLIA_SDK_VERSION = strdup(val);
+                } else if (strcmp(key, "discovery") == 0) {
+                    PORTILLIA_DISCOVERY_VERSION = strdup(val);
+                }
+            }
+        }
+    }
+    fclose(f);
 }

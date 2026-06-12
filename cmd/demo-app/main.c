@@ -24,6 +24,7 @@ void demo_handler(cwist_http_request *req, cwist_http_response *res) {
  * @return int result
  */
 int main(int argc, char **argv) {
+    portillia_manifest_init();
     LOG_INFO("Starting Portal Demo App (C Implementation)...");
     
     // In a real implementation, this would use the SDK to expose itself

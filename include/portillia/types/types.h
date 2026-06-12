@@ -18,11 +18,13 @@ extern "C" {
 #endif
 
 /* ---------- Version constants ---------- */
-#define PORTILLIA_RELEASE_VERSION         "v2.2.1"
-#define PORTILLIA_SDK_VERSION             "6"
-#define PORTILLIA_DISCOVERY_VERSION       "7"
-#define PORTILLIA_PORTAL_RELAY_REGISTRY_URL "https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json"
-#define PORTILLIA_OFFICIAL_RELEASE_BASE_URL "https://github.com/gosuda/portal-tunnel/releases"
+extern const char *PORTILLIA_RELEASE_VERSION;
+extern const char *PORTILLIA_SDK_VERSION;
+extern const char *PORTILLIA_DISCOVERY_VERSION;
+extern const char *PORTILLIA_PORTAL_RELAY_REGISTRY_URL;
+extern const char *PORTILLIA_OFFICIAL_RELEASE_BASE_URL;
+
+void portillia_manifest_init(void);
 
 #define PORTILLIA_HEADER_ACCESS_TOKEN     "X-Portal-Access-Token"
 #define PORTILLIA_MARKER_KEEPALIVE        0x00
@@ -146,10 +148,6 @@ typedef struct portillia_relay_descriptor portillia_relay_descriptor;
 
 /* ---------- Transport ---------- */
 
-#define PORTILLIA_DATAGRAM_FLAG_NONE               0x00
-#define PORTILLIA_DATAGRAM_FLAG_SEGMENTED          0x01
-#define PORTILLIA_DEFAULT_DATAGRAM_SEGMENT_PAYLOAD 1024
-
 typedef struct portillia_datagram_frame {
     uint32_t flow_id;
     uint8_t *payload;
@@ -157,10 +155,6 @@ typedef struct portillia_datagram_frame {
     char *address;
     char *relay_url;
     char *udp_addr;
-    bool segmented;
-    uint64_t message_id;
-    uint16_t segment_index;
-    uint16_t segment_count;
 } portillia_datagram_frame_t;
 
 /* ---------- API Envelope ---------- */

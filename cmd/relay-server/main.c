@@ -518,6 +518,7 @@ static char *portal_public_url(const char *portal_url) {
 }
 
 int main(void) {
+    portillia_manifest_init();
     const char *portal_url = env_str_or_default("PORTAL_URL", "https://localhost:4017");
     const char *advertise_url_env = env_str_or_default("ADVERTISE_URL", "");
     const char *identity_path = env_str_or_default("IDENTITY_PATH", "./.portal-certs");

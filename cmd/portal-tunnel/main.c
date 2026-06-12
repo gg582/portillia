@@ -17,6 +17,7 @@ void print_usage() {
 }
 
 int main(int argc, char **argv) {
+    portillia_manifest_init();
     if (argc < 2) {
         print_usage();
         return 1;
