@@ -6,11 +6,7 @@ services:
   #   restart: unless-stopped
 
   portal:
-<<<<<<< Updated upstream
     image: portillia:latest
-=======
-    image: portillia-fixed:latest
->>>>>>> Stashed changes
     build:
       context: .
       dockerfile: Dockerfile
