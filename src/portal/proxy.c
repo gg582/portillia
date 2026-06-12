@@ -189,3 +189,161 @@ void portillia_proxy_bridge_ex(int client_fd, int target_fd, int64_t bps_limit) 
 void portillia_proxy_bridge(int client_fd, int target_fd) {
     portillia_proxy_bridge_ex(client_fd, target_fd, 0);
 }
+
+/* ------------------------------------------------------------------ */
+/* SSL-aware bridge: one side is a raw TCP fd, the other is an OpenSSL
+ * object (e.g. a cwist-terminated TLS reverse session).                */
+/* ------------------------------------------------------------------ */
+
+#include <openssl/ssl.h>
+
+typedef struct {
+    int client_fd;
+    SSL *ssl;
+    int64_t bps_limit;
+} ssl_bridge_args;
+
+typedef struct {
+    int client_fd;
+    SSL *ssl;
+    pthread_mutex_t *ssl_mu;
+    int64_t bps_limit;
+} ssl_copy_args;
+
+static void ssl_sleep_for_bytes(size_t n, int64_t bytes_per_sec) {
+    if (bytes_per_sec > 0) {
+        usleep((useconds_t)((double)n / bytes_per_sec * 1000000.0));
+    }
+}
+
+static void *ssl_copy_fd_to_ssl(void *arg) {
+    ssl_copy_args *a = (ssl_copy_args *)arg;
+    int fd = a->client_fd;
+    SSL *ssl = a->ssl;
+    pthread_mutex_t *mu = a->ssl_mu;
+    int64_t bytes_per_sec = a->bps_limit > 0 ? a->bps_limit / 8 : 0;
+    free(a);
+
+    char buf[COPY_CHUNK];
+    while (1) {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n <= 0) break;
+        ssize_t off = 0;
+        while (off < n) {
+            pthread_mutex_lock(mu);
+            int w = SSL_write(ssl, buf + off, (int)(n - off));
+            pthread_mutex_unlock(mu);
+            if (w > 0) {
+                off += w;
+                continue;
+            }
+            int err = SSL_get_error(ssl, w);
+            if (err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ) continue;
+            goto done;
+        }
+        atomic_fetch_add(&global_total_bytes, n);
+        ssl_sleep_for_bytes((size_t)n, bytes_per_sec);
+    }
+done:
+    shutdown(fd, SHUT_RD);
+    return NULL;
+}
+
+static void *ssl_copy_ssl_to_fd(void *arg) {
+    ssl_copy_args *a = (ssl_copy_args *)arg;
+    int fd = a->client_fd;
+    SSL *ssl = a->ssl;
+    pthread_mutex_t *mu = a->ssl_mu;
+    int64_t bytes_per_sec = a->bps_limit > 0 ? a->bps_limit / 8 : 0;
+    free(a);
+
+    char buf[COPY_CHUNK];
+    while (1) {
+        pthread_mutex_lock(mu);
+        int n = SSL_read(ssl, buf, sizeof(buf));
+        pthread_mutex_unlock(mu);
+        if (n > 0) {
+            ssize_t off = 0;
+            while (off < n) {
+                ssize_t w = write(fd, buf + off, n - off);
+                if (w <= 0) {
+                    if (w < 0 && errno == EINTR) continue;
+                    goto done;
+                }
+                off += w;
+            }
+            atomic_fetch_add(&global_total_bytes, n);
+            ssl_sleep_for_bytes((size_t)n, bytes_per_sec);
+            continue;
+        }
+        int err = SSL_get_error(ssl, n);
+        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) continue;
+        break;
+    }
+done:
+    shutdown(fd, SHUT_WR);
+    return NULL;
+}
+
+static void *ssl_bridge_thread_func(void *arg) {
+    ssl_bridge_args *b = (ssl_bridge_args *)arg;
+    int client_fd = b->client_fd;
+    SSL *ssl = b->ssl;
+    int64_t bps_limit = b->bps_limit;
+    free(b);
+
+    pthread_mutex_t ssl_mu = PTHREAD_MUTEX_INITIALIZER;
+
+    int nodelay = 1;
+    setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+
+    ssl_copy_args *a1 = malloc(sizeof(ssl_copy_args));
+    ssl_copy_args *a2 = malloc(sizeof(ssl_copy_args));
+    if (!a1 || !a2) {
+        free(a1);
+        free(a2);
+        pthread_mutex_destroy(&ssl_mu);
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        close(client_fd);
+        return NULL;
+    }
+    a1->client_fd = client_fd; a1->ssl = ssl; a1->ssl_mu = &ssl_mu; a1->bps_limit = bps_limit;
+    a2->client_fd = client_fd; a2->ssl = ssl; a2->ssl_mu = &ssl_mu; a2->bps_limit = bps_limit;
+
+    pthread_t t1, t2;
+    pthread_create(&t1, NULL, ssl_copy_fd_to_ssl, a1);
+    pthread_create(&t2, NULL, ssl_copy_ssl_to_fd, a2);
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+
+    pthread_mutex_lock(&ssl_mu);
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    pthread_mutex_unlock(&ssl_mu);
+    pthread_mutex_destroy(&ssl_mu);
+    close(client_fd);
+    return NULL;
+}
+
+void portillia_proxy_ssl_bridge_ex(int client_fd, SSL *target_ssl, int64_t bps_limit) {
+    ssl_bridge_args *args = malloc(sizeof(ssl_bridge_args));
+    if (!args) {
+        SSL_shutdown(target_ssl);
+        SSL_free(target_ssl);
+        close(client_fd);
+        return;
+    }
+    args->client_fd = client_fd;
+    args->ssl = target_ssl;
+    args->bps_limit = bps_limit;
+    pthread_t t;
+    if (pthread_create(&t, NULL, ssl_bridge_thread_func, args) != 0) {
+        free(args);
+        SSL_shutdown(target_ssl);
+        SSL_free(target_ssl);
+        close(client_fd);
+    } else {
+        pthread_detach(t);
+    }
+}

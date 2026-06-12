@@ -1,6 +1,7 @@
 #include <cwist/sys/app/app.h>
 #include <cwist/core/sstring/sstring.h>
 #include <cwist/core/utils/json_builder.h>
+#include <cwist/https.h>
 #include <portillia/portal/discovery/discovery.h>
 #include <portillia/types/types.h>
 #include <portillia/utils/log.h>
@@ -13,10 +14,12 @@
 #include <cjson/cJSON.h>
 #include <time.h>
 #include <ctype.h>
+#include <openssl/ssl.h>
 #include <openssl/sha.h>
 #include <unistd.h>
 #include <errno.h>
 #include <arpa/inet.h>
+#include <strings.h>
 extern void portillia_registry_register(const char *hostname, const char *identity_key, int64_t bps_limit);
 extern void portillia_registry_register_ex(const char *hostname, const char *identity_key, int64_t bps_limit,
                                            const char *client_ip, const char *reported_ip,
@@ -24,6 +27,7 @@ extern void portillia_registry_register_ex(const char *hostname, const char *ide
                                            const char *ech_dns_hostname);
 extern void portillia_registry_register_hop(const char *hop_token, const char *next_ipv4, const char *next_token, const char *identity_key);
 extern int portillia_registry_offer_conn(const char *hostname, int sdk_fd);
+extern int portillia_registry_offer_ssl_conn(const char *hostname, int sdk_fd, SSL *sdk_ssl);
 
 extern int VerifySIWESignature(const char *message, const char *signature, const char *expected_address);
 extern char *VerifySIWEMessageJSON(const char *message, const char *signature, const char *domain, const char *nonce, long long now_unix);
@@ -41,6 +45,12 @@ extern void portillia_settings_save(const char *path, portillia_settings *s);
 
 #define MAX_REGISTER_CHALLENGES 512
 #define MAX_ACCESS_TOKENS 1024
+
+/* Thread-local state passed from handle_connect to the cwist HTTPS upgrade
+ * hook, which is invoked synchronously in the same thread after the response
+ * is sent. */
+static __thread char connect_hostname_buf[256];
+static __thread char *connect_remote_addr_buf;
 
 typedef struct {
     bool in_use;
@@ -72,6 +82,29 @@ typedef struct {
 
 static register_challenge_entry g_register_challenges[MAX_REGISTER_CHALLENGES];
 static access_token_entry g_access_tokens[MAX_ACCESS_TOKENS];
+
+/* cwist HTTPS upgrade hook: takes ownership of the TLS-upgraded connection
+ * after the encrypted 101 response has been sent. */
+bool cwist_https_upgrade_handler(cwist_https_connection *conn, cwist_http_request *req, cwist_http_response *res) {
+    (void)req;
+    (void)res;
+    if (!conn || conn->fd < 0 || !conn->ssl) return false;
+
+    int fd = conn->fd;
+    SSL *ssl = conn->ssl;
+    int ready = portillia_registry_offer_ssl_conn(connect_hostname_buf, fd, ssl);
+    if (ready > 0) {
+        LOG_INFO("sdk reverse connected address=%s lease_name=%s ready=%d", connect_hostname_buf, connect_hostname_buf, ready);
+    } else {
+        LOG_WARN("sdk reverse rejected address=%s lease_name=%s", connect_hostname_buf, connect_hostname_buf);
+    }
+    if (connect_remote_addr_buf) {
+        free(connect_remote_addr_buf);
+        connect_remote_addr_buf = NULL;
+    }
+    connect_hostname_buf[0] = '\0';
+    return ready > 0;
+}
 
 static char* trim_ascii(char *s) {
     if (!s) return s;
@@ -490,29 +523,34 @@ void handle_connect(cwist_http_request *req, cwist_http_response *res) {
         return;
     }
 
-    /* Send response manually and hijack connection */
-    const char *resp = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n";
-    send(req->client_fd, resp, strlen(resp), 0);
-    
-    /* Mark as upgraded to prevent cwist from sending its own response */
-    req->upgraded = true;
+    /* Pass hostname/remote_addr to the cwist HTTPS upgrade hook, which runs
+     * synchronously in the same thread after cwist sends the response. */
+    snprintf(connect_hostname_buf, sizeof(connect_hostname_buf), "%s", hostname);
+    if (connect_remote_addr_buf) {
+        free(connect_remote_addr_buf);
+        connect_remote_addr_buf = NULL;
+    }
+    connect_remote_addr_buf = extract_client_ip(req);
 
-    /* Dup the FD to ensure it stays open even after this handler returns and cwist cleans up the request */
-    int sdk_fd = dup(req->client_fd);
-    if (sdk_fd < 0) {
-        LOG_ERROR("sdk reverse failed to dup fd: %s", strerror(errno));
-        return;
+    /* Match reference portal-tunnel protocol: 101 Switching Protocols for
+     * Upgrade: raw; keep 200 OK for legacy keep-alive clients. */
+    bool wants_upgrade = false;
+    char *upgrade_hdr = cwist_http_header_get(req->headers, "Upgrade");
+    if (upgrade_hdr && strcasecmp(upgrade_hdr, "raw") == 0) {
+        wants_upgrade = true;
     }
 
-    char *remote_addr = extract_client_ip(req);
-    int ready = portillia_registry_offer_conn(hostname, sdk_fd);
-    if (ready > 0) {
-        LOG_INFO("sdk reverse connected address=%s lease_name=%s ready=%d remote_addr=%s", hostname, hostname, ready, remote_addr);
+    if (wants_upgrade) {
+        res->status_code = 101;
+        cwist_sstring_assign(res->status_text, "Switching Protocols");
+        cwist_http_header_add(&res->headers, "Connection", "Upgrade");
+        cwist_http_header_add(&res->headers, "Upgrade", "raw");
     } else {
-        LOG_WARN("sdk reverse rejected address=%s lease_name=%s remote_addr=%s", hostname, hostname, remote_addr);
-        /* sdk_fd is closed by portillia_registry_offer_conn on failure */
+        res->status_code = 200;
+        cwist_http_header_add(&res->headers, "Connection", "keep-alive");
     }
-    free(remote_addr);
+    cwist_http_header_add(&res->headers, "Content-Length", "0");
+    req->upgraded = true;
 }
 
 /**

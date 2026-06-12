@@ -13,6 +13,7 @@
 #include <portillia/utils/network.h>
 #include <portillia/portal/settings.h>
 #include <cjson/cJSON.h>
+#include <openssl/ssl.h>
 #include <errno.h>
 #include "portal_bridge.h"
 
@@ -22,6 +23,7 @@
 
 typedef struct relay_session {
     int fd;
+    SSL *ssl;
     time_t created_at;
     struct relay_session *next;
 } relay_session;
@@ -77,6 +79,7 @@ static portillia_server *global_server = NULL;
 
 extern void portillia_proxy_bridge(int client_fd, int target_fd);
 extern void portillia_proxy_bridge_ex(int client_fd, int target_fd, int64_t bps_limit);
+extern void portillia_proxy_ssl_bridge_ex(int client_fd, SSL *target_ssl, int64_t bps_limit);
 
 static char *base64_std_encode(const uint8_t *data, size_t len) {
     size_t b64_len = ((len + 2) / 3) * 4;
@@ -102,6 +105,10 @@ void relay_stream_free(relay_stream *s) {
     relay_session *curr = s->ready_head;
     while (curr) {
         relay_session *next = curr->next;
+        if (curr->ssl) {
+            SSL_shutdown(curr->ssl);
+            SSL_free(curr->ssl);
+        }
         close(curr->fd);
         free(curr);
         curr = next;
@@ -133,8 +140,14 @@ void *stream_keepalive_thread(void *arg) {
 
         relay_session *curr = s->ready_head;
         while (curr) {
-            if (write(curr->fd, &marker, 1) != 1) {
-                // Connection broken
+            if (curr->ssl) {
+                if (SSL_write(curr->ssl, &marker, 1) != 1) {
+                    // Connection broken
+                }
+            } else {
+                if (write(curr->fd, &marker, 1) != 1) {
+                    // Connection broken
+                }
             }
             curr = curr->next;
         }
@@ -154,15 +167,20 @@ relay_stream *relay_stream_new() {
     return s;
 }
 
-int relay_stream_offer(relay_stream *s, int fd) {
+int relay_stream_offer(relay_stream *s, int fd, SSL *ssl) {
     pthread_mutex_lock(&s->mu);
     if (s->count >= READY_LIMIT) {
+        if (ssl) {
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
+        }
         close(fd);
         pthread_mutex_unlock(&s->mu);
         return -1;
     }
     relay_session *sess = calloc(1, sizeof(relay_session));
     sess->fd = fd;
+    sess->ssl = ssl;
     sess->created_at = time(NULL);
     if (s->ready_tail) {
         s->ready_tail->next = sess;
@@ -177,7 +195,7 @@ int relay_stream_offer(relay_stream *s, int fd) {
     return ready_count;
 }
 
-int relay_stream_claim(relay_stream *s) {
+bool relay_stream_claim(relay_stream *s, int *out_fd, SSL **out_ssl) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += CLAIM_TIMEOUT;
@@ -186,7 +204,7 @@ int relay_stream_claim(relay_stream *s) {
     while (s->count == 0) {
         if (pthread_cond_timedwait(&s->cond, &s->mu, &ts) != 0) {
             pthread_mutex_unlock(&s->mu);
-            return -1;
+            return false;
         }
     }
     relay_session *sess = s->ready_head;
@@ -194,16 +212,25 @@ int relay_stream_claim(relay_stream *s) {
     if (!s->ready_head) s->ready_tail = NULL;
     s->count--;
     int fd = sess->fd;
+    SSL *ssl = sess->ssl;
     free(sess);
     pthread_mutex_unlock(&s->mu);
 
-    // Send Marker (MarkerTLSStart = 0x02 in Go)
-    uint8_t marker = 0x02; 
-    if (write(fd, &marker, 1) != 1) {
+    // Send Marker (MarkerTLSStart = 0x02)
+    uint8_t marker = 0x02;
+    int sent = ssl ? SSL_write(ssl, &marker, 1) : (int)write(fd, &marker, 1);
+    if (sent != 1) {
+        if (ssl) {
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
+        }
         close(fd);
-        return -1;
+        return false;
     }
-    return fd;
+
+    if (out_fd) *out_fd = fd;
+    if (out_ssl) *out_ssl = ssl;
+    return true;
 }
 
 lease_registry* lease_registry_new(const char *root_hostname) {
@@ -458,10 +485,15 @@ void portillia_server_handle_connect(const char *hostname, int client_fd) {
                 close(client_fd);
             }
         } else {
-            int sdk_fd = relay_stream_claim(rec->stream);
-            if (sdk_fd >= 0) {
-                LOG_INFO("sni_connect sdk claimed fd=%d", sdk_fd);
-                portillia_proxy_bridge_ex(client_fd, sdk_fd, rec->bps_limit);
+            int sdk_fd = -1;
+            SSL *sdk_ssl = NULL;
+            if (relay_stream_claim(rec->stream, &sdk_fd, &sdk_ssl)) {
+                LOG_INFO("sni_connect sdk claimed fd=%d ssl=%p", sdk_fd, (void*)sdk_ssl);
+                if (sdk_ssl) {
+                    portillia_proxy_ssl_bridge_ex(client_fd, sdk_ssl, rec->bps_limit);
+                } else {
+                    portillia_proxy_bridge_ex(client_fd, sdk_fd, rec->bps_limit);
+                }
             } else {
                 LOG_WARN("sni_connect sdk claim failed hostname=%s", hostname);
                 close(client_fd);
@@ -487,10 +519,15 @@ void portillia_server_handle_hop_stream(int hop_fd, const char *token) {
                  close(hop_fd);
              }
         } else {
-             int sdk_fd = relay_stream_claim(rec->stream);
-             if (sdk_fd >= 0) {
-                 LOG_INFO("hop_stream sdk claimed fd=%d", sdk_fd);
-                 portillia_proxy_bridge_ex(hop_fd, sdk_fd, rec->bps_limit);
+             int sdk_fd = -1;
+             SSL *sdk_ssl = NULL;
+             if (relay_stream_claim(rec->stream, &sdk_fd, &sdk_ssl)) {
+                 LOG_INFO("hop_stream sdk claimed fd=%d ssl=%p", sdk_fd, (void*)sdk_ssl);
+                 if (sdk_ssl) {
+                     portillia_proxy_ssl_bridge_ex(hop_fd, sdk_ssl, rec->bps_limit);
+                 } else {
+                     portillia_proxy_bridge_ex(hop_fd, sdk_fd, rec->bps_limit);
+                 }
              } else {
                  LOG_WARN("hop_stream sdk claim failed token=%.8s...", token);
                  close(hop_fd);
@@ -518,8 +555,25 @@ int portillia_registry_offer_conn(const char *hostname, int sdk_fd) {
     lease_record *rec = lease_registry_lookup(global_server->registry, hostname);
     if (rec) {
         rec->last_seen_at = time(NULL);
-        return relay_stream_offer(rec->stream, sdk_fd);
+        return relay_stream_offer(rec->stream, sdk_fd, NULL);
     } else {
+        close(sdk_fd);
+    }
+    return -1;
+}
+
+int portillia_registry_offer_ssl_conn(const char *hostname, int sdk_fd, SSL *sdk_ssl) {
+    if (!global_server) {
+        if (sdk_ssl) { SSL_shutdown(sdk_ssl); SSL_free(sdk_ssl); }
+        close(sdk_fd);
+        return -1;
+    }
+    lease_record *rec = lease_registry_lookup(global_server->registry, hostname);
+    if (rec) {
+        rec->last_seen_at = time(NULL);
+        return relay_stream_offer(rec->stream, sdk_fd, sdk_ssl);
+    } else {
+        if (sdk_ssl) { SSL_shutdown(sdk_ssl); SSL_free(sdk_ssl); }
         close(sdk_fd);
     }
     return -1;
