@@ -153,6 +153,13 @@ void portillia_relay_descriptor_cleanup(portillia_relay_descriptor_t *d) {
     if (d->version) portillia_gc_free_later(d->version);
     if (d->api_https_addr) portillia_gc_free_later(d->api_https_addr);
     if (d->wireguard_public_key) portillia_gc_free_later(d->wireguard_public_key);
+    if (d->overlay_ipv4) portillia_gc_free_later(d->overlay_ipv4);
+    if (d->overlay_cidrs) {
+        for (size_t i = 0; i < d->overlay_cidrs_count; i++) {
+            if (d->overlay_cidrs[i]) portillia_gc_free_later(d->overlay_cidrs[i]);
+        }
+        portillia_gc_free_later(d->overlay_cidrs);
+    }
     if (d->signature) portillia_gc_free_later(d->signature);
     memset(d, 0, sizeof(*d));
 }
@@ -162,16 +169,32 @@ void portillia_relay_descriptor_copy(portillia_relay_descriptor_t *dst, const po
     portillia_relay_descriptor_cleanup(dst);
     if (src->address) dst->address = portillia_gc_strdup(src->address);
     if (src->version) dst->version = portillia_gc_strdup(src->version);
+    dst->sequence = src->sequence;
+    dst->version_val = src->version_val;
     dst->issued_at = src->issued_at;
     dst->expires_at = src->expires_at;
     if (src->api_https_addr) dst->api_https_addr = portillia_gc_strdup(src->api_https_addr);
     if (src->wireguard_public_key) dst->wireguard_public_key = portillia_gc_strdup(src->wireguard_public_key);
     dst->wireguard_port = src->wireguard_port;
+    if (src->overlay_ipv4) dst->overlay_ipv4 = portillia_gc_strdup(src->overlay_ipv4);
+    if (src->overlay_cidrs_count > 0 && src->overlay_cidrs) {
+        dst->overlay_cidrs = (char **)portillia_gc_alloc(sizeof(char *) * src->overlay_cidrs_count);
+        if (dst->overlay_cidrs) {
+            dst->overlay_cidrs_count = src->overlay_cidrs_count;
+            for (size_t i = 0; i < src->overlay_cidrs_count; i++) {
+                dst->overlay_cidrs[i] = src->overlay_cidrs[i] ? portillia_gc_strdup(src->overlay_cidrs[i]) : NULL;
+            }
+        }
+    }
     dst->supports_overlay = src->supports_overlay;
+    dst->supports_overlay_peer = src->supports_overlay_peer;
     dst->supports_udp = src->supports_udp;
     dst->supports_tcp = src->supports_tcp;
     dst->active_connections = src->active_connections;
     dst->tcp_bps = src->tcp_bps;
+    dst->load = src->load;
+    dst->load_score = src->load_score;
+    dst->last_updated = src->last_updated;
     if (src->signature) dst->signature = portillia_gc_strdup(src->signature);
 }
 
@@ -205,6 +228,10 @@ void portillia_datagram_frame_copy(portillia_datagram_frame_t *dst, const portil
     if (src->address) dst->address = portillia_gc_strdup(src->address);
     if (src->relay_url) dst->relay_url = portillia_gc_strdup(src->relay_url);
     if (src->udp_addr) dst->udp_addr = portillia_gc_strdup(src->udp_addr);
+    dst->segmented = src->segmented;
+    dst->message_id = src->message_id;
+    dst->segment_index = src->segment_index;
+    dst->segment_count = src->segment_count;
 }
 
 /* ---------- Hop Route ---------- */

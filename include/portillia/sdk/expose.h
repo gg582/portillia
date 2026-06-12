@@ -49,6 +49,7 @@ typedef struct portillia_expose_config {
     bool ban_mitm;
     bool insecure_skip_verify;
     int max_active_relays;
+    int max_routing;
     portillia_lease_metadata_t metadata;
 } portillia_expose_config_t;
 
@@ -77,6 +78,7 @@ typedef struct portillia_exposure {
     bool ban_mitm;
     bool insecure_skip_verify;
     int max_active_relays;
+    int max_routing;
     portillia_lease_metadata_t metadata;
 
     /* Channels / Queues */

@@ -34,6 +34,9 @@ typedef struct portillia_datagram_client {
     portillia_datagram_frame_queue_t incoming;
     bool closed;
     void (*on_receive_error)(int err);
+    uint64_t next_message_id;
+    void *reassembly_head;
+    pthread_mutex_t reassembly_mu;
 } portillia_datagram_client_t;
 
 portillia_datagram_client_t *portillia_datagram_client_new(void (*on_receive_error)(int err));

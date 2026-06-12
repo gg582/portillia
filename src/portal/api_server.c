@@ -24,6 +24,11 @@ extern void portillia_registry_register_ex(const char *hostname, const char *ide
                                            const char *ech_dns_hostname);
 extern void portillia_registry_register_hop(const char *hop_token, const char *next_ipv4, const char *next_token, const char *identity_key);
 extern int portillia_registry_offer_conn(const char *hostname, int sdk_fd);
+
+extern int VerifySIWESignature(const char *message, const char *signature, const char *expected_address);
+extern char *VerifySIWEMessageJSON(const char *message, const char *signature, const char *domain, const char *nonce, long long now_unix);
+extern char *CreateSIWEMessage(const char *domain, const char *address, const char *uri, const char *nonce, const char *statement, const char *request_id, const char *issued_at, const char *expiration_time, int chain_id);
+extern void FreeRustString(char *s);
 extern char* portillia_registry_to_json();
 extern bool portillia_registry_tunnel_status(const char *hostname, char *resolved_hostname, size_t resolved_hostname_len, bool *service_alive);
 extern const char* portillia_server_root_hostname();
@@ -310,7 +315,7 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                     free(client_ip);
                     return;
                 }
-                FreeCString(verify_json);
+                FreeRustString(verify_json);
                 snprintf(identity_name, sizeof(identity_name), "%s", challenge->identity_name);
                 snprintf(identity_address, sizeof(identity_address), "%s", challenge->identity_address);
                 udp = challenge->udp_enabled;

@@ -21,6 +21,7 @@ typedef struct {
     char *bootstrap_urls; /**< Comma-separated list of bootstrap URLs */
     portillia_relay_set_t *relay_set; /**< The set to manage (new ttak-based) */
     int wireguard_port; /**< WireGuard listen port for overlay */
+    int max_routing; /**< Maximum number of discovery routing attempts per refresh */
 } discovery_config;
 
 /**

@@ -207,16 +207,31 @@ static void build_canonical_descriptor_json(const portillia_relay_descriptor *d,
     cJSON *obj = cJSON_CreateObject();
     cJSON_AddStringToObject(obj, "address", d->address ? d->address : "");
     cJSON_AddStringToObject(obj, "version", d->version ? d->version : "");
+    cJSON_AddNumberToObject(obj, "sequence", (double)d->sequence);
+    cJSON_AddNumberToObject(obj, "version_val", (double)d->version_val);
     json_add_time_unix_nano(obj, "issued_at_unix_nano", d->issued_at);
     json_add_time_unix_nano(obj, "expires_at_unix_nano", d->expires_at);
     cJSON_AddStringToObject(obj, "api_https_addr", d->api_https_addr ? d->api_https_addr : "");
     cJSON_AddStringToObject(obj, "wireguard_public_key", d->wireguard_public_key ? d->wireguard_public_key : "");
     cJSON_AddNumberToObject(obj, "wireguard_port", d->wireguard_port);
+    cJSON_AddStringToObject(obj, "overlay_ipv4", d->overlay_ipv4 ? d->overlay_ipv4 : "");
+    
+    cJSON *cidrs = cJSON_CreateArray();
+    for (size_t i = 0; i < d->overlay_cidrs_count; i++) {
+        cJSON_AddItemToArray(cidrs, cJSON_CreateString(d->overlay_cidrs[i] ? d->overlay_cidrs[i] : ""));
+    }
+    cJSON_AddItemToObject(obj, "overlay_cidrs", cidrs);
+
     cJSON_AddBoolToObject(obj, "supports_overlay", d->supports_overlay);
+    cJSON_AddBoolToObject(obj, "supports_overlay_peer", d->supports_overlay_peer);
     cJSON_AddBoolToObject(obj, "supports_udp", d->supports_udp);
     cJSON_AddBoolToObject(obj, "supports_tcp", d->supports_tcp);
     cJSON_AddNumberToObject(obj, "active_connections", (double)d->active_connections);
     cJSON_AddNumberToObject(obj, "tcp_bps", d->tcp_bps);
+    cJSON_AddNumberToObject(obj, "load", d->load);
+    cJSON_AddNumberToObject(obj, "load_score", d->load_score);
+    cJSON_AddNumberToObject(obj, "last_updated", (double)d->last_updated);
+    
     char *str = cJSON_PrintUnformatted(obj);
     cJSON_Delete(obj);
     if (str) {
@@ -274,32 +289,65 @@ void portillia_discovery_poll(discovery_config *cfg, const char *url) {
         cJSON *item = cJSON_GetArrayItem(relays_arr, i);
         cJSON *addr = cJSON_GetObjectItem(item, "address");
         cJSON *version = cJSON_GetObjectItem(item, "version");
+        cJSON *sequence = cJSON_GetObjectItem(item, "sequence");
+        cJSON *version_val = cJSON_GetObjectItem(item, "version_val");
+        if (!version_val) version_val = cJSON_GetObjectItem(item, "version");
         cJSON *issued = cJSON_GetObjectItem(item, "issued_at");
         cJSON *expires = cJSON_GetObjectItem(item, "expires_at");
         cJSON *api_addr = cJSON_GetObjectItem(item, "api_https_addr");
         cJSON *wg_pubkey = cJSON_GetObjectItem(item, "wireguard_public_key");
         cJSON *wg_port = cJSON_GetObjectItem(item, "wireguard_port");
+        cJSON *overlay_ipv4 = cJSON_GetObjectItem(item, "overlay_ipv4");
+        cJSON *overlay_cidrs = cJSON_GetObjectItem(item, "overlay_cidrs");
         cJSON *supports_overlay = cJSON_GetObjectItem(item, "supports_overlay");
+        cJSON *supports_overlay_peer = cJSON_GetObjectItem(item, "supports_overlay_peer");
         cJSON *supports_udp = cJSON_GetObjectItem(item, "supports_udp");
         cJSON *supports_tcp = cJSON_GetObjectItem(item, "supports_tcp");
         cJSON *active_connections = cJSON_GetObjectItem(item, "active_connections");
         cJSON *tcp_bps = cJSON_GetObjectItem(item, "tcp_bps");
+        cJSON *load = cJSON_GetObjectItem(item, "load");
+        cJSON *load_score = cJSON_GetObjectItem(item, "load_score");
+        cJSON *last_updated = cJSON_GetObjectItem(item, "last_updated");
         cJSON *signature = cJSON_GetObjectItem(item, "signature");
         if (api_addr && api_addr->valuestring) {
             portillia_relay_descriptor_t *d = &descriptors[desc_count++];
             d->address = strdup((addr && cJSON_IsString(addr) && addr->valuestring) ? addr->valuestring : "");
             d->version = strdup((version && cJSON_IsString(version) && version->valuestring) ? version->valuestring : "");
+            d->sequence = (sequence && cJSON_IsNumber(sequence)) ? (uint64_t)sequence->valuedouble : 0;
+            d->version_val = (version_val && cJSON_IsNumber(version_val)) ? (uint32_t)version_val->valueint : 0;
             d->api_https_addr = strdup(api_addr->valuestring);
             d->wireguard_public_key = strdup((wg_pubkey && cJSON_IsString(wg_pubkey) && wg_pubkey->valuestring) ? wg_pubkey->valuestring : "");
             d->signature = strdup((signature && cJSON_IsString(signature) && signature->valuestring) ? signature->valuestring : "");
             d->issued_at = (issued && cJSON_IsString(issued) && issued->valuestring) ? parse_rfc3339_utc(issued->valuestring) : time(NULL);
             d->expires_at = (expires && cJSON_IsString(expires) && expires->valuestring) ? parse_rfc3339_utc(expires->valuestring) : (time(NULL) + 60);
             d->wireguard_port = (wg_port && cJSON_IsNumber(wg_port)) ? wg_port->valueint : 0;
+            d->overlay_ipv4 = strdup((overlay_ipv4 && cJSON_IsString(overlay_ipv4) && overlay_ipv4->valuestring) ? overlay_ipv4->valuestring : "");
+            
+            d->overlay_cidrs = NULL;
+            d->overlay_cidrs_count = 0;
+            if (overlay_cidrs && cJSON_IsArray(overlay_cidrs)) {
+                int arr_sz = cJSON_GetArraySize(overlay_cidrs);
+                if (arr_sz > 0) {
+                    d->overlay_cidrs = malloc(sizeof(char *) * arr_sz);
+                    if (d->overlay_cidrs) {
+                        d->overlay_cidrs_count = arr_sz;
+                        for (int k = 0; k < arr_sz; k++) {
+                            cJSON *cid = cJSON_GetArrayItem(overlay_cidrs, k);
+                            d->overlay_cidrs[k] = strdup((cid && cJSON_IsString(cid) && cid->valuestring) ? cid->valuestring : "");
+                        }
+                    }
+                }
+            }
+            
             d->supports_overlay = supports_overlay ? cJSON_IsTrue(supports_overlay) : false;
+            d->supports_overlay_peer = supports_overlay_peer ? cJSON_IsTrue(supports_overlay_peer) : false;
             d->supports_udp = supports_udp ? cJSON_IsTrue(supports_udp) : false;
             d->supports_tcp = supports_tcp ? cJSON_IsTrue(supports_tcp) : false;
             d->active_connections = (active_connections && cJSON_IsNumber(active_connections)) ? (int64_t)active_connections->valuedouble : 0;
             d->tcp_bps = (tcp_bps && cJSON_IsNumber(tcp_bps)) ? tcp_bps->valuedouble : 0.0;
+            d->load = (load && cJSON_IsNumber(load)) ? load->valuedouble : 0.0;
+            d->load_score = (load_score && cJSON_IsNumber(load_score)) ? load_score->valuedouble : 0.0;
+            d->last_updated = (last_updated && cJSON_IsNumber(last_updated)) ? (int64_t)last_updated->valuedouble : 0;
         }
     }
 
@@ -455,10 +503,15 @@ static void discovery_task(ttak_task_t *task, void *arg) {
     desc.address = strdup(g_desc_addr);
     desc.api_https_addr = strdup(cfg->advertise_url);
     desc.version = strdup(PORTILLIA_DISCOVERY_VERSION);
+    desc.sequence = (uint64_t)time(NULL);
+    desc.version_val = 6; /* ProtocolVersion = 6 in tor-vpn-relay branch */
     desc.wireguard_public_key = strdup("");
     desc.signature = strdup("");
     desc.issued_at = time(NULL);
     desc.expires_at = desc.issued_at + 300;
+    desc.overlay_ipv4 = strdup("");
+    desc.overlay_cidrs = NULL;
+    desc.overlay_cidrs_count = 0;
     
     desc.active_connections = portillia_proxy_get_active_conns();
     desc.tcp_bps = portillia_proxy_get_current_bps();
@@ -495,6 +548,11 @@ static void discovery_task(ttak_task_t *task, void *arg) {
     desc.wireguard_public_key = strdup(wg_pub[0] ? wg_pub : "");
     desc.wireguard_port = (wg_pub[0] && cfg->wireguard_port > 0) ? cfg->wireguard_port : 0;
     desc.supports_overlay = (wg_pub[0]) ? true : false;
+    desc.supports_overlay_peer = desc.supports_overlay;
+    desc.load = 0.0;
+    desc.load_score = 0.0;
+    desc.last_updated = (int64_t)desc.issued_at;
+    
     portillia_settings *settings = portillia_server_get_settings();
     desc.supports_udp = settings ? settings->udp_enabled : false;
     desc.supports_tcp = settings ? settings->tcp_port_enabled : true;
@@ -530,14 +588,28 @@ static void discovery_task(ttak_task_t *task, void *arg) {
                 cJSON *dj = cJSON_CreateObject();
                 cJSON_AddStringToObject(dj, "address", d->address ? d->address : "");
                 cJSON_AddStringToObject(dj, "version", d->version ? d->version : "");
+                cJSON_AddNumberToObject(dj, "sequence", (double)d->sequence);
+                cJSON_AddNumberToObject(dj, "version_val", (double)d->version_val);
                 cJSON_AddStringToObject(dj, "api_https_addr", d->api_https_addr ? d->api_https_addr : "");
                 cJSON_AddStringToObject(dj, "wireguard_public_key", d->wireguard_public_key ? d->wireguard_public_key : "");
                 cJSON_AddNumberToObject(dj, "wireguard_port", (double)d->wireguard_port);
+                cJSON_AddStringToObject(dj, "overlay_ipv4", d->overlay_ipv4 ? d->overlay_ipv4 : "");
+                
+                cJSON *c_arr = cJSON_CreateArray();
+                for (size_t k = 0; k < d->overlay_cidrs_count; k++) {
+                    cJSON_AddItemToArray(c_arr, cJSON_CreateString(d->overlay_cidrs[k] ? d->overlay_cidrs[k] : ""));
+                }
+                cJSON_AddItemToObject(dj, "overlay_cidrs", c_arr);
+                
                 cJSON_AddBoolToObject(dj, "supports_overlay", d->supports_overlay);
+                cJSON_AddBoolToObject(dj, "supports_overlay_peer", d->supports_overlay_peer);
                 cJSON_AddBoolToObject(dj, "supports_udp", d->supports_udp);
                 cJSON_AddBoolToObject(dj, "supports_tcp", d->supports_tcp);
                 cJSON_AddNumberToObject(dj, "active_connections", (double)d->active_connections);
                 cJSON_AddNumberToObject(dj, "tcp_bps", d->tcp_bps);
+                cJSON_AddNumberToObject(dj, "load", d->load);
+                cJSON_AddNumberToObject(dj, "load_score", d->load_score);
+                cJSON_AddNumberToObject(dj, "last_updated", (double)d->last_updated);
                 cJSON_AddStringToObject(dj, "signature", d->signature ? d->signature : "");
                 cJSON_AddItemToObject(state_obj, "Descriptor", dj);
                 cJSON_AddItemToArray(arr, state_obj);
@@ -557,6 +629,7 @@ static void discovery_task(ttak_task_t *task, void *arg) {
     free(desc.wireguard_public_key);
     free(desc.version);
     free(desc.signature);
+    free(desc.overlay_ipv4);
 }
 
 void portillia_discovery_publish_self(discovery_config *cfg) {

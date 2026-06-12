@@ -120,22 +120,35 @@ typedef struct portillia_admin_lease {
 typedef struct portillia_relay_descriptor {
     char *address;
     char *version;
+    uint64_t sequence;
+    uint32_t version_val;
     time_t issued_at;
     time_t expires_at;
     char *api_https_addr;
     char *wireguard_public_key;
     int wireguard_port;
+    char *overlay_ipv4;
+    char **overlay_cidrs;
+    size_t overlay_cidrs_count;
     bool supports_overlay;
+    bool supports_overlay_peer;
     bool supports_udp;
     bool supports_tcp;
     int64_t active_connections;
     double tcp_bps;
+    double load;
+    double load_score;
+    int64_t last_updated;
     char *signature;
 } portillia_relay_descriptor_t;
 
 typedef struct portillia_relay_descriptor portillia_relay_descriptor;
 
 /* ---------- Transport ---------- */
+
+#define PORTILLIA_DATAGRAM_FLAG_NONE               0x00
+#define PORTILLIA_DATAGRAM_FLAG_SEGMENTED          0x01
+#define PORTILLIA_DEFAULT_DATAGRAM_SEGMENT_PAYLOAD 1024
 
 typedef struct portillia_datagram_frame {
     uint32_t flow_id;
@@ -144,6 +157,10 @@ typedef struct portillia_datagram_frame {
     char *address;
     char *relay_url;
     char *udp_addr;
+    bool segmented;
+    uint64_t message_id;
+    uint16_t segment_index;
+    uint16_t segment_count;
 } portillia_datagram_frame_t;
 
 /* ---------- API Envelope ---------- */

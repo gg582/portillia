@@ -528,6 +528,7 @@ int main(void) {
     int wg_port = env_int_or_default("WIREGUARD_PORT", 51820);
     int min_port = env_int_or_default("MIN_PORT", 0);
     int max_port = env_int_or_default("MAX_PORT", 0);
+    int max_routing = env_int_or_default("MAX_ROUTING", 1);
     const bool udp_enabled = env_bool_or_default("UDP_ENABLED", false);
     const bool tcp_enabled = env_bool_or_default("TCP_ENABLED", false);
     const bool landing_page_enabled = env_bool_or_default("LANDING_PAGE_ENABLED", false);
@@ -727,6 +728,7 @@ int main(void) {
     disc_cfg->bootstrap_urls = resolved_bootstraps;
     disc_cfg->relay_set = portillia_relay_set_create(NULL, 0);
     disc_cfg->wireguard_port = wg_port;
+    disc_cfg->max_routing = max_routing;
     global_disc_cfg = disc_cfg;
     if (disc_cfg->bootstrap_urls) {
         LOG_INFO("discovery bootstraps=%s", disc_cfg->bootstrap_urls);

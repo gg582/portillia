@@ -17,7 +17,7 @@ ifeq ($(NGTCP2_LIBS),)
 endif
 
 CFLAGS += $(NGTCP2_CFLAGS)
-LDFLAGS += $(NGTCP2_LDFLAGS) $(NGTCP2_LIBS) $(NGTCP2_CRYPTO_LIBS)
+LDFLAGS += $(NGTCP2_LDFLAGS) $(NGTCP2_LIBS) $(NGTCP2_CRYPTO_LIBS) -L./rust_bridge/target/release -lportillia_bridge_rust
 
 # Add cwist internal libs to include path
 CFLAGS += -I./libs/cwist/lib/libttak/include -I./libs/cwist/lib -I./libs/cwist/lib/sqlite3 -I./libs/cwist/lib/uriparser/include
@@ -67,30 +67,32 @@ cwist-libs:
 libs/secp256k1/.libs/libsecp256k1.a:
 	cd libs/secp256k1 && ./autogen.sh && ./configure --enable-module-recovery --disable-shared && make
 
-libportal_bridge.so portal_bridge.h: go/bridge.go go/verify_siwe.go go/go.mod
-	cd go && GOTOOLCHAIN=auto go mod tidy && GOTOOLCHAIN=auto go build -buildmode=c-shared -o libportal_bridge.so bridge.go verify_siwe.go
+libportal_bridge.so portal_bridge.h: go/bridge.go go/go.mod
+	cd go && GOTOOLCHAIN=auto go mod tidy && GOTOOLCHAIN=auto go build -buildmode=c-shared -o libportal_bridge.so bridge.go
 	cp go/libportal_bridge.so libportal_bridge.so
 	cp go/libportal_bridge.h portal_bridge.h
 
+rust_bridge/target/release/libportillia_bridge_rust.a:
+	cd rust_bridge && cargo build --release
 
-libs: cwist-libs libs/secp256k1/.libs/libsecp256k1.a
+libs: cwist-libs libs/secp256k1/.libs/libsecp256k1.a rust_bridge/target/release/libportillia_bridge_rust.a
 
 build: build-frontend build-tunnel build-server build-demo
 
 build-frontend:
 	cd frontend && npm install && npm run build
 
-build-tunnel: libs libportal_bridge.so cmd/portal-tunnel/main.o $(ALL_OBJS)
+build-tunnel: libs libportal_bridge.so rust_bridge/target/release/libportillia_bridge_rust.a cmd/portal-tunnel/main.o $(ALL_OBJS)
 	@mkdir -p bin
 	$(CC) -o $(BIN_PORTAL) cmd/portal-tunnel/main.o $(ALL_OBJS) $(LDFLAGS) -Wl,-rpath,'$$ORIGIN'
 	cp libportal_bridge.so bin/
 
-build-server: libs libportal_bridge.so cmd/relay-server/main.o $(ALL_OBJS) src/portal/api_server_relay.o
+build-server: libs libportal_bridge.so rust_bridge/target/release/libportillia_bridge_rust.a cmd/relay-server/main.o $(ALL_OBJS) src/portal/api_server_relay.o
 	@mkdir -p bin
 	$(CC) -o $(BIN_RELAY) cmd/relay-server/main.o $(ALL_OBJS) src/portal/api_server_relay.o $(LDFLAGS) -Wl,-rpath,'$$ORIGIN'
 	cp libportal_bridge.so bin/
 
-build-demo: libs libportal_bridge.so cmd/demo-app/main.o $(ALL_OBJS)
+build-demo: libs libportal_bridge.so rust_bridge/target/release/libportillia_bridge_rust.a cmd/demo-app/main.o $(ALL_OBJS)
 	@mkdir -p bin
 	$(CC) -o $(BIN_DEMO) cmd/demo-app/main.o $(ALL_OBJS) $(LDFLAGS) -Wl,-rpath,'$$ORIGIN'
 	cp libportal_bridge.so bin/
@@ -109,3 +111,4 @@ clean:
 	rm -rf cmd/relay-server/dist/app
 	$(MAKE) -C libs/cwist clean
 	cd libs/secp256k1 && make clean || true
+	cd rust_bridge && cargo clean || true

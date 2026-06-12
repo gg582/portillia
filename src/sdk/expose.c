@@ -18,6 +18,7 @@
 #include <arpa/inet.h>
 #include <openssl/ssl.h>
 #include <cjson/cJSON.h>
+#include <math.h>
 
 /* ---------- Internal types ---------- */
 
@@ -347,6 +348,7 @@ portillia_exposure_t *portillia_expose(const portillia_expose_config_t *cfg) {
     e->ban_mitm = cfg->ban_mitm;
     e->insecure_skip_verify = cfg->insecure_skip_verify;
     e->max_active_relays = cfg->max_active_relays;
+    e->max_routing = cfg->max_routing > 0 ? cfg->max_routing : 1;
     portillia_lease_metadata_copy(&e->metadata, &cfg->metadata);
 
     e->explicit_relays = string_list_copy(cfg->relay_urls, cfg->relay_urls_count);
@@ -1043,8 +1045,51 @@ portillia_net_addr_t portillia_net_conn_remote_addr(const portillia_net_conn_t *
 
 /* ---------- Discovery & reconciliation ---------- */
 
+static int gcd_val(int a, int b) {
+    while (b != 0) {
+        int tmp = a % b;
+        a = b;
+        b = tmp;
+    }
+    return a < 0 ? -a : a;
+}
+
+static int pick_coprime_step(int n, int round) {
+    if (n <= 1) return 1;
+    int candidate = (round % (n - 1)) + 1;
+    while (candidate < n) {
+        if (gcd_val(candidate, n) == 1) return candidate;
+        candidate++;
+    }
+    return 1;
+}
+
+typedef struct {
+    char *url;
+    double compensated;
+} ols_url_weight_t;
+
+static int compare_urls_alphabetical(const void *a, const void *b) {
+    const char *sa = *(const char **)a;
+    const char *sb = *(const char **)b;
+    if (!sa) return 1;
+    if (!sb) return -1;
+    return strcmp(sa, sb);
+}
+
+static int compare_ols_weights(const void *a, const void *b) {
+    const ols_url_weight_t *wa = (const ols_url_weight_t *)a;
+    const ols_url_weight_t *wb = (const ols_url_weight_t *)b;
+    if (wa->compensated < wb->compensated) return -1;
+    if (wa->compensated > wb->compensated) return 1;
+    if (!wa->url) return 1;
+    if (!wb->url) return -1;
+    return strcmp(wa->url, wb->url);
+}
+
 static void *discovery_loop_thread(void *arg) {
     portillia_exposure_t *e = (portillia_exposure_t *)arg;
+    uint64_t round = 0;
     while (e->discovery_running && !exposure_done(e)) {
         /* Try discovery on each explicit and seed relay. */
         pthread_rwlock_rdlock(&e->listener_mu);
@@ -1065,8 +1110,60 @@ static void *discovery_loop_thread(void *arg) {
         pthread_rwlock_unlock(&e->listener_mu);
 
         if (urls) {
+            if (url_count > 1) {
+                /* 1. Sort alphabetically */
+                qsort(urls, url_count, sizeof(char *), compare_urls_alphabetical);
+
+                /* 2. Compute compensated load weights */
+                ols_url_weight_t *weights = malloc(sizeof(ols_url_weight_t) * url_count);
+                if (weights) {
+                    for (size_t i = 0; i < url_count; i++) {
+                        weights[i].url = urls[i];
+                        double load = 0.0;
+                        if (e->relay_set) {
+                            pthread_rwlock_rdlock(&e->relay_set->mu);
+                            portillia_relay_state_t *st = ttak_table_get((ttak_table_t *)e->relay_set->relays, urls[i], strlen(urls[i]), 0);
+                            if (st) {
+                                load = st->descriptor.load;
+                            }
+                            pthread_rwlock_unlock(&e->relay_set->mu);
+                        }
+                        if (isnan(load) || isinf(load) || load < 0) load = 0.0;
+                        double distorted = load * load;
+                        weights[i].compensated = sqrt(distorted + 1.0);
+                    }
+
+                    /* 3. Sort by compensated weights */
+                    qsort(weights, url_count, sizeof(ols_url_weight_t), compare_ols_weights);
+
+                    /* 4. Affine permutation */
+                    int n = (int)url_count;
+                    int a = pick_coprime_step(n, (int)round);
+                    int b = (int)(round % (uint64_t)n);
+                    
+                    char **permuted_urls = malloc(sizeof(char *) * url_count);
+                    if (permuted_urls) {
+                        for (int i = 0; i < n; i++) {
+                            int slot = (a * i + b) % n;
+                            permuted_urls[i] = weights[slot].url;
+                        }
+                        /* Re-populate urls array */
+                        for (size_t i = 0; i < url_count; i++) {
+                            urls[i] = permuted_urls[i];
+                        }
+                        free(permuted_urls);
+                    }
+                    free(weights);
+                }
+            }
+
+            int processed = 0;
+            int max_r = e->max_routing > 0 ? e->max_routing : 1;
             for (size_t i = 0; i < url_count && e->discovery_running && !exposure_done(e); i++) {
                 if (!urls[i]) continue;
+                if (processed >= max_r) break;
+                processed++;
+
                 portillia_http_client_t *client = portillia_http_client_create(urls[i], e->insecure_skip_verify);
                 if (!client) continue;
                 portillia_discovery_response_t resp = {0};
@@ -1093,6 +1190,7 @@ static void *discovery_loop_thread(void *arg) {
         for (int s = 0; s < PORTILLIA_DISCOVERY_POLL_INTERVAL_SEC && e->discovery_running && !exposure_done(e); s++) {
             sleep(1);
         }
+        round++;
     }
     return NULL;
 }

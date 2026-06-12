@@ -28,7 +28,6 @@ extern const char *_GoStringPtr(_GoString_ s);
 #line 1 "cgo-generated-wrapper"
 
 
-
 /* End of preamble from import "C" comments.  */
 
 
@@ -110,9 +109,6 @@ extern char* LeaseHostnameJSON(char* cName, char* cRootHost);
 extern char* NormalizeDNSLabelJSON(char* cLabel);
 extern char* StreamLeaseECHJSON(char* cIdentityJSON, char* cPublicHostname, char* cRootHost);
 extern char* StreamLeaseExtrasJSON(char* cIdentityJSON, char* cRelayURL);
-extern int VerifySIWESignature(char* cMessage, char* cSignature, char* cExpectedAddress);
-extern char* CreateSIWEMessage(char* cDomain, char* cAddress, char* cURI, char* cNonce, char* cStatement, char* cRequestID, char* cIssuedAt, char* cExpirationTime, int cChainId);
-extern char* VerifySIWEMessageJSON(char* cMessage, char* cSignature, char* cDomain, char* cNonce, long long int cNowUnix);
 
 #ifdef __cplusplus
 }

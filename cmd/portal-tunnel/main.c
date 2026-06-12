@@ -10,7 +10,7 @@
 void print_usage() {
     printf("portal-tunnel <command> [args]\n");
     printf("Commands:\n");
-    printf("  expose <target> [--relays <url>] [--insecure-skip-verify]\n");
+    printf("  expose <target> [--relays <url>] [--max-routing <attempts>] [--insecure-skip-verify]\n");
     printf("  agent start [--control-addr <addr>]\n");
     printf("  agent status [--control-addr <addr>]\n");
     printf("  version\n");
@@ -26,12 +26,21 @@ int main(int argc, char **argv) {
         printf("Portillia %s (C implementation)\n", PORTILLIA_RELEASE_VERSION);
     } else if (strcmp(argv[1], "expose") == 0) {
         if (argc < 3) {
-            printf("Usage: portal-tunnel expose <target> [--relays <url>] [--insecure-skip-verify]\n");
+            printf("Usage: portal-tunnel expose <target> [--relays <url>] [--max-routing <attempts>] [--insecure-skip-verify]\n");
             return 1;
         }
         const char *target = argv[2];
         const char *relay = "http://localhost:4017";
         bool insecure_skip_verify = false;
+        int max_routing = 1;
+        
+        const char *env_max_r = getenv("PORTAL_MAX_ROUTING");
+        if (env_max_r && env_max_r[0]) {
+            int val = atoi(env_max_r);
+            if (val >= 1 && val <= 32) {
+                max_routing = val;
+            }
+        }
         
         for (int i = 3; i < argc; i++) {
             if (strcmp(argv[i], "--relays") == 0 && i + 1 < argc) {
@@ -41,6 +50,17 @@ int main(int argc, char **argv) {
             }
             if (strcmp(argv[i], "--insecure-skip-verify") == 0) {
                 insecure_skip_verify = true;
+                continue;
+            }
+            if (strcmp(argv[i], "--max-routing") == 0 && i + 1 < argc) {
+                int val = atoi(argv[i+1]);
+                if (val >= 1 && val <= 32) {
+                    max_routing = val;
+                } else {
+                    LOG_ERROR("SDK: --max-routing must be in range [1, 32]");
+                }
+                i++;
+                continue;
             }
         }
 
@@ -55,6 +75,7 @@ int main(int argc, char **argv) {
         cfg.relay_urls_count = 1;
         cfg.tcp_enabled = false;
         cfg.insecure_skip_verify = insecure_skip_verify;
+        cfg.max_routing = max_routing;
 
         portillia_exposure_t *exp = portillia_expose(&cfg);
         if (!exp) {
