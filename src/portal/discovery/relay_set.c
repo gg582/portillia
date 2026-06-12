@@ -317,7 +317,7 @@ size_t portillia_relay_set_descriptors(portillia_relay_set_t *set, const portill
     time_t now = time(NULL);
     size_t cap = 16;
     size_t n = 0;
-    portillia_relay_descriptor_t *out = malloc(sizeof(*out) * cap);
+    portillia_relay_descriptor_t *out = calloc(cap, sizeof(*out));
     if (!out) return 0;
 
     if (self && self->api_https_addr && self->api_https_addr[0] && self->expires_at > now) {
@@ -327,7 +327,14 @@ size_t portillia_relay_set_descriptors(portillia_relay_set_t *set, const portill
                 if (strcmp(out[j].api_https_addr, self->api_https_addr) == 0) { skip = 1; break; }
             }
             if (!skip) {
-                if (n >= cap) { cap *= 2; out = realloc(out, sizeof(*out) * cap); if (!out) { pthread_rwlock_unlock(&set->mu); return 0; } }
+                if (n >= cap) {
+                    size_t old_cap = cap;
+                    cap *= 2;
+                    if (n + 1 > cap) cap = n + 1;
+                    out = realloc(out, sizeof(*out) * cap);
+                    if (!out) { pthread_rwlock_unlock(&set->mu); return 0; }
+                    memset(out + old_cap, 0, sizeof(*out) * (cap - old_cap));
+                }
                 portillia_relay_descriptor_copy(&out[n], self);
                 n++;
             }
@@ -348,7 +355,14 @@ size_t portillia_relay_set_descriptors(portillia_relay_set_t *set, const portill
                 if (strcmp(out[j].api_https_addr, d->api_https_addr) == 0) { skip = 1; break; }
             }
             if (!skip) {
-                if (n >= cap) { cap *= 2; out = realloc(out, sizeof(*out) * cap); if (!out) { pthread_rwlock_unlock(&set->mu); return 0; } }
+                if (n >= cap) {
+                    size_t old_cap = cap;
+                    cap *= 2;
+                    if (n + 1 > cap) cap = n + 1;
+                    out = realloc(out, sizeof(*out) * cap);
+                    if (!out) { pthread_rwlock_unlock(&set->mu); return 0; }
+                    memset(out + old_cap, 0, sizeof(*out) * (cap - old_cap));
+                }
                 portillia_relay_descriptor_copy(&out[n], d);
                 n++;
             }

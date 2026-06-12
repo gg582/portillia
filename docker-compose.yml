@@ -6,13 +6,18 @@ services:
   #   restart: unless-stopped
 
   portal:
-    image: ghcr.io/gosuda/portal:latest
+    image: portillia-fixed:latest
     build:
       context: .
       dockerfile: Dockerfile
     # depends_on:
     #   - headless-shell
     stop_grace_period: 30s
+    # Use explicit public DNS so the container does not inherit a host resolver
+    # that points to 127.0.0.1 (systemd-resolved) and breaks external resolution.
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     ports:
       - "${API_PORT:-4017}:${API_PORT:-4017}"
       - "${SNI_PORT:-443}:${SNI_PORT:-443}"

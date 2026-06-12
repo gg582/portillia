@@ -584,6 +584,9 @@ void handle_discovery(cwist_http_request *req, cwist_http_response *res) {
             cJSON_AddStringToObject(item, "signature", d->signature ? d->signature : "");
             cJSON_AddItemToArray(relays, item);
         }
+        for (size_t i = 0; i < count; i++) {
+            portillia_relay_descriptor_cleanup(&descs[i]);
+        }
         if (descs) free(descs);
     }
     cJSON_AddItemToObject(data, "relays", relays);
