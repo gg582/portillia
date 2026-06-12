@@ -94,9 +94,15 @@ static int certificate_count(const char *cert_path) {
 
 static void copy_leaf_and_issuer_if_present(const char *leaf_path, const char *issuer_path, const char *cert_path) {
     char cmd[4096];
+    /* Lego stores the leaf in .crt and the intermediate in .issuer.crt.
+     * Start from the leaf and append the issuer when present, rather than
+     * requiring both files to exist. */
     snprintf(cmd, sizeof(cmd),
-             "cat '%s' '%s' > '%s' 2>/dev/null || cp '%s' '%s'",
-             leaf_path, issuer_path, cert_path, leaf_path, cert_path);
+             "cp '%s' '%s' 2>/dev/null; "
+             "if [ -r '%s' ]; then "
+             "  cat '%s' >> '%s'; "
+             "fi",
+             leaf_path, cert_path, issuer_path, issuer_path, cert_path);
     system(cmd);
 }
 
