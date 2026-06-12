@@ -6,7 +6,6 @@
 #include <portillia/portal/acme/manager.h>
 #include <portillia/portal/discovery/discovery.h>
 #include <portillia/portal/settings.h>
-#include <cwist/net/yamux.h>
 #include <portillia/portal/api_server_relay.h>
 #include <portillia/portal/keyless/ech.h>
 #include <cwist/security/tls/ech.h>
