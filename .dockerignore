@@ -16,6 +16,9 @@
 **/cmake_install.cmake
 **/compile_commands.json
 
+# BoringSSL keeps generated source files under obj/ directories.
+!libs/cwist/lib/boringssl/**/obj/
+
 # Git
 .git
 .gitignore
