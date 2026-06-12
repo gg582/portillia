@@ -1092,7 +1092,6 @@ void portillia_api_server_setup(cwist_app *app) {
     cwist_app_post(app, "/admin/logout", handle_logout);
     cwist_app_get(app, "/admin/leases", handle_admin_leases);
     cwist_app_post(app, "/admin/leases/*", handle_admin_action);
-    cwist_app_delete(app, "/admin/leases/*", handle_admin_action);
 
     cwist_app_get(app, "/admin/settings/landing-page", handle_admin_landing_page);
     cwist_app_post(app, "/admin/settings/landing-page", handle_admin_landing_page);

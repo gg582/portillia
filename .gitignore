@@ -11,8 +11,6 @@
 bin/
 chat
 *.o
-libportal_bridge.so
-portal_bridge.h
 go/libportal_bridge.so
 go/libportal_bridge.h
 

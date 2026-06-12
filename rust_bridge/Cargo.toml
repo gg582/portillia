@@ -14,3 +14,25 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 libc = "0.2"
 time = { version = "0.3", features = ["parsing", "formatting"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+base32 = "0.5"
+url = "2.5"
+ring = "0.17"
+secp256k1 = { version = "0.29", features = ["global-context", "recovery", "serde", "rand"] }
+rand = "0.8"
+sha3 = "0.12.0"
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros"] }
+yamux = "0.13"
+wireguard-control = "1.7"
+rtnetlink = { version = "0.15", default-features = false, features = ["tokio_socket"] }
+futures-util = "0.3"
+tokio-util = { version = "0.7", features = ["compat"] }
+x25519-dalek = "2"
+
+[patch.crates-io]
+# secp256k1 v0.29 uses secp256k1-sys v0.10.1 which may not compile with newer gcc; 
+# if build fails we can pin secp256k1-sys in a lockfile or use an older secp256k1.

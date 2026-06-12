@@ -10,7 +10,6 @@ RUN make build-frontend || true
 # Stage 2: Build C artifacts
 FROM debian:trixie-slim AS c-builder
 WORKDIR /src
-ARG GO_VERSION=1.26.2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -29,13 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     autoconf \
     automake \
     libtool \
-    golang \
     && rm -rf /var/lib/apt/lists/*
-
-RUN go install golang.org/dl/go${GO_VERSION}@latest && \
-    /root/go/bin/go${GO_VERSION} download && \
-    ln -sf /root/go/bin/go${GO_VERSION} /usr/local/bin/go && \
-    go version
 
 # Install Rust toolchain via rustup
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -61,10 +54,6 @@ RUN if ! pkg-config --exists libngtcp2_crypto_quictls 2>/dev/null && ! pkg-confi
     fi
 
 COPY . .
-
-# Go module replace expects ../libs/portal-tunnel from /src/go.
-# Create a symlink so the local replace works inside Docker.
-RUN ln -s /src/libs/portal-tunnel /portal-tunnel
 
 # Robustly handle missing cwist submodule (e.g. when built without local submodules initialized)
 RUN if [ ! -f libs/cwist/Makefile ] || [ ! -f libs/cwist/lib/libttak/Makefile ]; then \
@@ -110,7 +99,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=lego-bin /lego /usr/bin/lego
 COPY --from=c-builder /src/bin/relay-server /usr/bin/relay-server
 COPY --from=c-builder /src/bin/portal-tunnel /usr/bin/portal-tunnel
-COPY --from=c-builder /src/bin/libportal_bridge.so /usr/bin/libportal_bridge.so
 COPY --from=frontend-builder /src/cmd/relay-server/dist/app /app/dist
 
 ENV STATIC_DIR=/app/dist

@@ -52,7 +52,6 @@ int portillia_agent_control_server_run(const char *control_addr) {
     cwist_app_get(app, "/v1/agent/status", handle_agent_status);
     cwist_app_post(app, "/v1/agent/shutdown", handle_agent_shutdown);
     cwist_app_post(app, "/v1/agent/tunnels", handle_not_implemented);
-    cwist_app_delete(app, "/v1/agent/tunnels/*", handle_not_implemented);
     cwist_app_post(app, "/v1/agent/tunnels/*/relays/seed", handle_not_implemented);
     cwist_app_post(app, "/v1/agent/tunnels/*/multi-hop", handle_not_implemented);
     LOG_INFO("Agent control server listening on %s (port %d)", control_addr, port);

@@ -5,6 +5,10 @@ use serde::Serialize;
 use siwe::Message;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
+mod utils;
+mod crypto;
+mod overlay;
+
 fn to_rust_str(c_str: *const c_char) -> Option<&'static str> {
     if c_str.is_null() {
         return None;
@@ -217,4 +221,9 @@ pub extern "C" fn FreeRustString(s: *mut c_char) {
             let _ = CString::from_raw(s);
         }
     }
+}
+
+#[no_mangle]
+pub extern "C" fn FreeCString(s: *mut c_char) {
+    FreeRustString(s)
 }
