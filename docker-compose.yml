@@ -6,7 +6,7 @@ services:
   #   restart: unless-stopped
 
   portal:
-    image: portillia-fixed:latest
+    image: portillia:latest
     build:
       context: .
       dockerfile: Dockerfile
