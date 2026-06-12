@@ -270,7 +270,7 @@ int portillia_acme_manager_ensure_certificate(portillia_acme_manager *m, char **
     }
 
     snprintf(cmd, sizeof(cmd), 
-             "lego --accept-tos --email portal@%s --dns %s --domains %s --domains '*.%s' --path %s run", 
+             "lego run --accept-tos --email portal@%s --dns %s --domains %s --domains '*.%s' --path %s", 
              m->cfg.base_domain, lego_dns, m->cfg.base_domain, m->cfg.base_domain, acme_home);
     
     int ret = system(cmd);
