@@ -1,14 +1,12 @@
-# Portal relay + frontend edge nginx for the bundled Docker Compose stack.
-# docker-compose.yml renders this template from environment variables.
+# nginx edge for the split stack:
+#   portal         -> Go reference relay (TLS on 4017, SNI on 443)
+#   portal-frontend -> C frontend static files
 #
 # Traffic flow:
 #   :80  -> redirect to HTTPS
 #   :443 -> L4 SNI inspection
 #            ${PORTAL_HOST}   -> nginx L7 TLS termination and path routing
 #            *.${PORTAL_HOST} -> portal SNI listener, raw TCP passthrough
-#
-# The browser-facing certificate is read from ./.portal-certs by docker-compose.
-# That is the same default directory used by the relay certificate.
 
 events {
     worker_connections 4096;
@@ -120,14 +118,60 @@ http {
             proxy_read_timeout 60s;
         }
 
-        location /ui/ {
-            proxy_pass http://portal-api:8081;
+        location /admin/ {
+            proxy_pass https://portal:4017;
+            proxy_ssl_verify off;
+            proxy_ssl_server_name on;
+            proxy_ssl_name $host;
 
             proxy_set_header Host              $host;
             proxy_set_header X-Real-IP         $remote_addr;
             proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto https;
             proxy_set_header Authorization     $http_authorization;
+
+            proxy_read_timeout 60s;
+        }
+
+        location /tunnel/ {
+            proxy_pass https://portal:4017;
+            proxy_ssl_verify off;
+            proxy_ssl_server_name on;
+            proxy_ssl_name $host;
+
+            proxy_set_header Host              $host;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header Authorization     $http_authorization;
+
+            proxy_read_timeout 60s;
+        }
+
+        location ~ ^/install\.(sh|ps1)$ {
+            proxy_pass https://portal:4017;
+            proxy_ssl_verify off;
+            proxy_ssl_server_name on;
+            proxy_ssl_name $host;
+
+            proxy_set_header Host              $host;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto https;
+
+            proxy_read_timeout 60s;
+        }
+
+        location /app/ {
+            proxy_pass https://portal:4017;
+            proxy_ssl_verify off;
+            proxy_ssl_server_name on;
+            proxy_ssl_name $host;
+
+            proxy_set_header Host              $host;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto https;
 
             proxy_read_timeout 60s;
         }

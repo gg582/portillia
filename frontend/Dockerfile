@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+
+FROM --platform=$BUILDPLATFORM node:22-slim AS builder
+WORKDIR /src/frontend
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+FROM nginx:1.27-alpine
+
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /src/cmd/relay-server/dist/app /usr/share/nginx/html
+
+EXPOSE 8080
