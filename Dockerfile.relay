@@ -1,0 +1,89 @@
+# syntax=docker/dockerfile:1
+
+# Minimal C relay-server image. The rest of the stack (nginx, portal-api,
+# portal-frontend) is provided by the Go reference implementation.
+
+FROM debian:trixie-slim AS builder
+WORKDIR /src
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    curl \
+    wget \
+    unzip \
+    git \
+    libssl-dev \
+    libsqlite3-dev \
+    libcurl4-openssl-dev \
+    pkg-config \
+    ca-certificates \
+    doxygen \
+    graphviz \
+    autoconf \
+    automake \
+    libtool \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust toolchain for the bridge
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Build and install ngtcp2 from source if the distro package is absent
+RUN if ! pkg-config --exists libngtcp2_crypto_quictls 2>/dev/null && ! pkg-config --exists libngtcp2_crypto_ossl 2>/dev/null; then \
+        echo "ngtcp2 not found, building from source..." && \
+        git clone --depth 1 --branch v1.22.1 https://github.com/ngtcp2/ngtcp2.git /tmp/ngtcp2 && \
+        cd /tmp/ngtcp2 && \
+        cmake -B build \
+            -DENABLE_STATIC_LIB=ON \
+            -DENABLE_SHARED_LIB=OFF \
+            -DENABLE_LIB_ONLY=ON \
+            -DENABLE_OPENSSL=ON \
+            -DBUILD_TESTING=OFF \
+            -DCMAKE_INSTALL_PREFIX=/usr/local && \
+        cmake --build build -j$(nproc) && \
+        cmake --install build && \
+        rm -rf /tmp/ngtcp2; \
+    else \
+        echo "ngtcp2 found via pkg-config"; \
+    fi
+
+COPY . .
+
+# Robustly handle missing submodules
+RUN if [ ! -f libs/cwist/Makefile ] || [ ! -f libs/cwist/lib/libttak/Makefile ]; then \
+        rm -rf libs/cwist && \
+        git clone --recursive https://github.com/religiya-serdtsa/cwist libs/cwist; \
+    fi
+RUN if [ ! -f libs/secp256k1/autogen.sh ]; then \
+        rm -rf libs/secp256k1 && \
+        git clone https://github.com/bitcoin-core/secp256k1.git libs/secp256k1; \
+    fi
+RUN if [ ! -f libs/keccak/sha3.c ]; then \
+        rm -rf libs/keccak && \
+        git clone https://github.com/brainhub/SHA3IUF.git libs/keccak; \
+    fi
+
+RUN cp include/ttak_stubs.h libs/cwist/include/
+RUN cd libs/secp256k1 && ./autogen.sh && ./configure --enable-module-recovery --disable-shared && make clean && make
+RUN make libs
+RUN make build-server
+
+FROM goacme/lego:latest AS lego-bin
+FROM debian:trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    libsqlite3-0 \
+    libcurl4 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=lego-bin /lego /usr/bin/lego
+COPY --from=builder /src/bin/relay-server /usr/bin/relay-server
+
+ENV IDENTITY_PATH=/portal-certs
+ENV TZ=UTC
+
+EXPOSE 4017 443
+ENTRYPOINT ["/usr/bin/relay-server"]

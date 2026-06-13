@@ -1,20 +1,78 @@
 services:
+  nginx:
+    image: nginx:stable-alpine
+    depends_on:
+      - portal
+      - portal-frontend
+      - portal-api
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      PORTAL_URL: ${PORTAL_URL:-https://localhost}
+      NGINX_CERT_FILE: ${NGINX_CERT_FILE:-/etc/nginx/certs/fullchain.pem}
+      NGINX_CERT_KEY: ${NGINX_CERT_KEY:-/etc/nginx/certs/privatekey.pem}
+    volumes:
+      - ./nginx.conf.template:/etc/nginx/templates/nginx.conf.template:ro
+      - ./.portal-certs:/etc/nginx/certs:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        portal_host="$${PORTAL_URL#*://}"
+        portal_host="$${portal_host%%/*}"
+        portal_host="$${portal_host%%:*}"
+        export PORTAL_HOST="$${portal_host:-localhost}"
+
+        export NGINX_CERT_FILE="$${NGINX_CERT_FILE:-/etc/nginx/certs/fullchain.pem}"
+        export NGINX_CERT_KEY="$${NGINX_CERT_KEY:-/etc/nginx/certs/privatekey.pem}"
+        envsubst '$$PORTAL_HOST $$NGINX_CERT_FILE $$NGINX_CERT_KEY' \
+          < /etc/nginx/templates/nginx.conf.template \
+          > /etc/nginx/nginx.conf
+
+        until [ -s "$$NGINX_CERT_FILE" ] && [ -s "$$NGINX_CERT_KEY" ]; do
+          echo "waiting for TLS certificate files: $$NGINX_CERT_FILE and $$NGINX_CERT_KEY"
+          sleep 1
+        done
+        exec nginx -g 'daemon off;'
+    restart: unless-stopped
+
   # Optional: uncomment to enable auto-generated thumbnails for tunnel apps.
   # See docs/src/routes/deployment/+page.md for details.
   # headless-shell:
   #   image: chromedp/headless-shell:stable
   #   restart: unless-stopped
 
+  portal-api:
+    image: ghcr.io/gosuda/portal-api:2
+    depends_on:
+      - portal
+      # Uncomment with the headless-shell service above to enable generated screenshots.
+      # - headless-shell
+    environment:
+      PORT: 8081
+      PORTAL_API_BASE_URL: https://portal:4017
+      LANDING_PAGE_ENABLED: ${LANDING_PAGE_ENABLED:-false}
+      PORTAL_FRONTEND_STATE_PATH: /frontend-state/state.json
+      HEADLESS_SHELL_URL: ${HEADLESS_SHELL_URL:-}
+      # HEADLESS_SHELL_URL: ${HEADLESS_SHELL_URL:-ws://headless-shell:9222}
+    volumes:
+      - ./.portal-certs/frontend-state:/frontend-state
+    restart: unless-stopped
+
+  portal-frontend:
+    image: ghcr.io/gosuda/portal-frontend:2
+    depends_on:
+      - portal
+      - portal-api
+    restart: unless-stopped
+
   portal:
-    image: portillia:latest
+    image: portillia-relay:latest
     build:
       context: .
-      dockerfile: Dockerfile
-    # depends_on:
-    #   - headless-shell
+      dockerfile: Dockerfile.relay
     stop_grace_period: 30s
-    # Use explicit public DNS so the container does not inherit a host resolver
-    # that points to 127.0.0.53 (systemd-resolved) and breaks external resolution.
     dns:
       - 1.1.1.1
       - 8.8.8.8
@@ -24,46 +82,45 @@ services:
       - timeout:5
       - attempts:3
     ports:
-      - "${API_PORT:-4017}:${API_PORT:-4017}"
-      - "${SNI_PORT:-443}:${SNI_PORT:-443}"
       - "${WIREGUARD_PORT:-51820}:${WIREGUARD_PORT:-51820}/udp"
       # Uncomment for UDP backhaul, public UDP lease ports, and raw TCP lease ports as needed.
       # - "${SNI_PORT:-443}:${SNI_PORT:-443}/udp"
       # - "${MIN_PORT:-40000}-${MAX_PORT:-40009}:${MIN_PORT:-40000}-${MAX_PORT:-40009}/udp"
       # - "${MIN_PORT:-40000}-${MAX_PORT:-40009}:${MIN_PORT:-40000}-${MAX_PORT:-40009}"
     environment:
-      # Public routing, discovery, and relay identity persistence
-      PORTAL_URL: ${PORTAL_URL:-https://localhost:${API_PORT:-4017}}
+      PORTAL_URL: ${PORTAL_URL:-https://localhost}
       BOOTSTRAPS: ${BOOTSTRAPS:-}
-      DISCOVERY: ${DISCOVERY:-true}
+      DISCOVERY: ${DISCOVERY:-false}
       IDENTITY_PATH: ${IDENTITY_PATH:-/portal-certs}
 
-      # Listener ports (published to the host below)
-      API_PORT: ${API_PORT:-4017}
-      SNI_PORT: ${SNI_PORT:-443}
+      API_PORT: 4017
+      SNI_PORT: 443
       WIREGUARD_PORT: ${WIREGUARD_PORT:-51820}
 
-      # Shared lease port range.
       MIN_PORT: ${MIN_PORT:-40000}
       MAX_PORT: ${MAX_PORT:-40009}
       UDP_ENABLED: ${UDP_ENABLED:-false}
       TCP_ENABLED: ${TCP_ENABLED:-false}
 
-      # Admin/auth configuration
       LANDING_PAGE_ENABLED: ${LANDING_PAGE_ENABLED:-false}
-      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
       TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
 
-      # Optional: auto-generated thumbnails (requires headless-shell sidecar above)
-      # HEADLESS_SHELL_URL: ${HEADLESS_SHELL_URL:-ws://headless-shell:9222}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      X402_ENABLED: ${X402_ENABLED:-true}
+      X402_TESTNET: ${X402_TESTNET:-true}
+      X402_PAY_TO: ${X402_PAY_TO:-}
 
-      # TLS/ACME materials
+      PPROF_ENABLED: ${PPROF_ENABLED:-false}
+      PPROF_ADDR: ${PPROF_ADDR:-127.0.0.1:6060}
+
       ACME_DNS_PROVIDER: ${ACME_DNS_PROVIDER:-}
       ENS_GASLESS_ENABLED: ${ENS_GASLESS_ENABLED:-false}
       CLOUDFLARE_TOKEN: ${CLOUDFLARE_TOKEN:-}
       GCP_PROJECT_ID: ${GCP_PROJECT_ID:-}
       GCP_MANAGED_ZONE: ${GCP_MANAGED_ZONE:-}
       GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+      HETZNER_API_TOKEN: ${HETZNER_API_TOKEN:-}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
@@ -71,6 +128,8 @@ services:
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
       AWS_HOSTED_ZONE_ID: ${AWS_HOSTED_ZONE_ID:-}
       AWS_DNSSEC_KMS_KEY_ARN: ${AWS_DNSSEC_KMS_KEY_ARN:-}
+      VULTR_API_KEY: ${VULTR_API_KEY:-}
+      NJALLA_TOKEN: ${NJALLA_TOKEN:-}
     volumes:
       - ./.portal-certs:${IDENTITY_PATH:-/portal-certs}
       # Uncomment when using a Google Cloud service account file for gcloud automation.
