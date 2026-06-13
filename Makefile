@@ -34,7 +34,7 @@ SRC_DISCOVERY = src/portal/discovery/relay_set.c src/portal/discovery/mols.c
 SRC_PORTAL = src/portal/server.c src/portal/proxy.c src/portal/sni_parser.c \
              src/portal/transport/quic_backhaul.c src/portal/keyless/tls.c src/portal/keyless/ech.c src/portal/keyless/server.c \
              src/portal/acme/manager.c src/portal/acme/cloudflare/provider.c src/portal/acme/route53/provider.c src/portal/acme/gcloud/provider.c \
-             src/portal/discovery/discovery.c src/portal/policy/policy.c src/portal/settings.c src/portal/agent/control.c \
+             src/portal/discovery/discovery.c src/portal/identity.c src/portal/policy/policy.c src/portal/settings.c src/portal/agent/control.c \
              libs/cwist/src/net/http/mux.c
 SRC_SDK = src/sdk/expose.c src/sdk/listener.c src/sdk/api_client.c src/sdk/http_runtime.c 
 SRC_COMMON_API = src/portal/api_server.c
