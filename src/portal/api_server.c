@@ -87,6 +87,10 @@ bool cwist_https_upgrade_handler(cwist_https_connection *conn, cwist_http_reques
 
     int fd = conn->fd;
     SSL *ssl = conn->ssl;
+    /* Detach fd/ssl from cwist immediately; portillia_registry_offer_ssl_conn
+     * assumes ownership and cleans up on failure, so cwist must not close them. */
+    conn->fd = -1;
+    conn->ssl = NULL;
     int ready = portillia_registry_offer_ssl_conn(connect_hostname_buf, fd, ssl);
     if (ready > 0) {
         LOG_INFO("sdk reverse connected address=%s lease_name=%s ready=%d", connect_hostname_buf, connect_hostname_buf, ready);
