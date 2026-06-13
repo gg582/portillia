@@ -112,10 +112,26 @@ static void append_aia_issuer_from_leaf(const char *leaf_path, const char *cert_
              "AIA=$(openssl x509 -in '%s' -noout -text 2>/dev/null | "
              "grep -A1 'CA Issuers' | grep 'URI:' | sed 's/.*URI://;s/^[[:space:]]*//' | head -1); "
              "if [ -n \"$AIA\" ]; then "
-             "  curl -fsSL \"$AIA\" 2>/dev/null | openssl x509 -inform DER -outform PEM 2>/dev/null >> '%s' || "
-             "  curl -fsSL \"$AIA\" 2>/dev/null >> '%s'; "
+             "  curl -fsSL --max-time 30 -L \"$AIA\" 2>/dev/null | openssl x509 -inform DER -outform PEM 2>/dev/null >> '%s' || "
+             "  curl -fsSL --max-time 30 -L \"$AIA\" 2>/dev/null >> '%s'; "
              "fi",
              leaf_path, cert_path, cert_path);
+    system(cmd);
+}
+
+static void append_known_intermediate_if_needed(const char *cert_path) {
+    /* If the chain is still incomplete, try to fetch the Let's Encrypt R3 intermediate,
+     * which is the default issuer for most Let's Encrypt leaf certificates. */
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd),
+             "ISSUER=$(openssl x509 -in '%s' -noout -issuer 2>/dev/null); "
+             "if echo \"$ISSUER\" | grep -qi 'R3'; then "
+             "  curl -fsSL --max-time 30 -L 'https://letsencrypt.org/certs/lets-encrypt-r3.pem' 2>/dev/null >> '%s'; "
+             "elif echo \"$ISSUER\" | grep -qi 'R10\\|R11'; then "
+             "  curl -fsSL --max-time 30 -L 'https://letsencrypt.org/certs/2024/r10.pem' 2>/dev/null >> '%s' || "
+             "  curl -fsSL --max-time 30 -L 'https://letsencrypt.org/certs/2024/r11.pem' 2>/dev/null >> '%s'; "
+             "fi",
+             cert_path, cert_path, cert_path, cert_path);
     system(cmd);
 }
 
@@ -132,6 +148,10 @@ static void rebuild_fullchain_if_incomplete(const char *cert_path,
 
     if (certificate_count(cert_path) < 2) {
         append_aia_issuer_from_leaf(leaf_path, cert_path);
+    }
+
+    if (certificate_count(cert_path) < 2) {
+        append_known_intermediate_if_needed(cert_path);
     }
 
     if (certificate_count(cert_path) < 2) {

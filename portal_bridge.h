@@ -42,6 +42,9 @@ extern char* DiscoveryAnnounceJSON(const char* cURL, const char* cDescriptorJSON
 extern char* ECHMaterialsJSON(const char* cSeed, const char* cPublicName);
 extern char* NormalizeECHConfigListJSON(const char* cConfigListB64);
 
+/* ---------- Identity ---------- */
+extern char* GenerateRelayIdentityJSON(const char* cName);
+
 /* ---------- SIWE ---------- */
 extern int VerifySIWESignature(const char* cMessage, const char* cSignature, const char* cExpectedAddress);
 extern char* VerifySIWEMessageJSON(const char* cMessage, const char* cSignature, const char* cDomain, const char* cNonce, long long int cNowUnix);

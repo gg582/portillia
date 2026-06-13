@@ -1,4 +1,5 @@
 #include <portillia/portal/discovery/discovery.h>
+#include <portillia/portal/identity.h>
 #include <portillia/portal/settings.h>
 #include <ttak/ttak.h>
 #include <ttak/ht/hash.h>
@@ -96,75 +97,24 @@ static bool load_descriptor_identity_from_private_key(const char *private_key_he
     return ok;
 }
 
-static bool load_descriptor_identity_from_file(const char *identity_path_env) {
-    if (!identity_path_env || !identity_path_env[0]) return false;
-
-    char identity_file[1024];
-    snprintf(identity_file, sizeof(identity_file), "%s/identity.json", identity_path_env);
-
-    FILE *f = fopen(identity_file, "rb");
-    if (!f) return false;
-
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (size <= 0) {
-        fclose(f);
-        return false;
-    }
-
-    char *data = malloc((size_t)size + 1);
-    if (!data) {
-        fclose(f);
-        return false;
-    }
-    if (fread(data, 1, (size_t)size, f) != (size_t)size) {
-        free(data);
-        fclose(f);
-        return false;
-    }
-    data[size] = '\0';
-    fclose(f);
-
-    bool ok = false;
-    cJSON *root = cJSON_Parse(data);
-    if (root) {
-        cJSON *private_key = cJSON_GetObjectItem(root, "private_key");
-        if (private_key && cJSON_IsString(private_key) && private_key->valuestring) {
-            ok = load_descriptor_identity_from_private_key(private_key->valuestring);
-        }
-        cJSON_Delete(root);
-    }
-    free(data);
-    return ok;
-}
-
 void ensure_descriptor_identity() {
     if (g_desc_priv_hex[0] && g_desc_addr[0]) return;
+
     const char *env_priv = getenv("RELAY_DESCRIPTOR_PRIVATE_KEY");
-    const char *identity_path = getenv("IDENTITY_PATH");
     if (env_priv && env_priv[0]) {
-        (void)load_descriptor_identity_from_private_key(env_priv);
+        if (load_descriptor_identity_from_private_key(env_priv)) return;
     }
-    if ((!g_desc_priv_hex[0] || !g_desc_addr[0]) && identity_path && identity_path[0]) {
-        (void)load_descriptor_identity_from_file(identity_path);
-    }
-    if (!g_desc_priv_hex[0] || !g_desc_addr[0]) {
-        char priv_hex[65] = {0};
-        char addr[43] = {0};
-        if (portillia_crypto_generate_identity(priv_hex, addr) == 0) {
-            snprintf(g_desc_priv_hex, sizeof(g_desc_priv_hex), "%s", priv_hex);
-            snprintf(g_desc_addr, sizeof(g_desc_addr), "%s", addr);
-            if (identity_path && identity_path[0]) {
-                char identity_file[1024];
-                snprintf(identity_file, sizeof(identity_file), "%s/identity.json", identity_path);
-                FILE *f = fopen(identity_file, "wb");
-                if (f) {
-                    fprintf(f, "{\"private_key\":\"%s\"}\n", priv_hex);
-                    fclose(f);
-                }
-            }
+
+    const char *identity_path = getenv("IDENTITY_PATH");
+    portillia_relay_identity *identity = portillia_relay_identity_load_or_create(
+        identity_path ? identity_path : "./.portal-certs", NULL);
+    if (identity) {
+        if (identity->private_key && identity->private_key[0] &&
+            identity->address && identity->address[0]) {
+            snprintf(g_desc_priv_hex, sizeof(g_desc_priv_hex), "%s", identity->private_key);
+            snprintf(g_desc_addr, sizeof(g_desc_addr), "%s", identity->address);
         }
+        portillia_relay_identity_free(identity);
     }
 }
 

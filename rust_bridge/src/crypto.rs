@@ -5,6 +5,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STD, engine::general_pu
 use sha2::{Sha256, Digest as Sha2Digest};
 use sha3::{Keccak256, Digest as Sha3Digest};
 use secp256k1::{Message, PublicKey, SecretKey, Secp256k1};
+use rand::RngCore;
 
 fn to_rust_string(c_str: *const c_char) -> Option<String> {
     if c_str.is_null() { return None; }
@@ -495,9 +496,95 @@ pub extern "C" fn VerifyLeaseTokenJSON(c_token: *const c_char, c_public_key_hex:
     json_or_null(&claims)
 }
 
+// ---------- Relay identity generation ----------
+
+#[derive(Debug, Clone, Serialize)]
+struct RelayIdentity {
+    name: String,
+    address: String,
+    #[serde(rename = "public_key")]
+    public_key: String,
+    #[serde(rename = "private_key")]
+    private_key: String,
+    #[serde(rename = "token_secret")]
+    token_secret: String,
+    #[serde(rename = "wireguard_public_key")]
+    wireguard_public_key: String,
+    #[serde(rename = "wireguard_private_key")]
+    wireguard_private_key: String,
+    #[serde(rename = "encrypted_client_hello_seed")]
+    encrypted_client_hello_seed: String,
+}
+
+fn clamp_wireguard_private_key(key: &mut [u8; 32]) {
+    key[0] &= 248;
+    key[31] = (key[31] & 127) | 64;
+}
+
+fn generate_wireguard_keys() -> Option<(String, String)> {
+    let mut priv_bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut priv_bytes);
+    clamp_wireguard_private_key(&mut priv_bytes);
+    let private_key = BASE64_STD.encode(&priv_bytes);
+
+    let scalar = x25519_dalek::StaticSecret::from(priv_bytes);
+    let public = x25519_dalek::PublicKey::from(&scalar);
+    let public_key = BASE64_STD.encode(public.as_bytes());
+    Some((private_key, public_key))
+}
+
+fn generate_token_secret() -> String {
+    let mut secret = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut secret);
+    BASE64_URL.encode(&secret)
+}
+
+fn generate_ech_seed() -> String {
+    let mut seed = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut seed);
+    BASE64_URL.encode(&seed)
+}
+
+#[no_mangle]
+pub extern "C" fn GenerateRelayIdentityJSON(c_name: *const c_char) -> *mut c_char {
+    let name = match to_rust_string(c_name) {
+        Some(s) => s,
+        None => return ptr::null_mut(),
+    };
+
+    let secp = Secp256k1::new();
+    let sk = SecretKey::new(&mut rand::thread_rng());
+    let pk = PublicKey::from_secret_key(&secp, &sk);
+    let private_key = hex::encode(sk.secret_bytes());
+    let public_key = format!("0x{}", hex::encode(pk.serialize_uncompressed()));
+    let address = match pubkey_to_address(&pk.serialize_uncompressed()) {
+        Some(a) => a,
+        None => return ptr::null_mut(),
+    };
+
+    let (wg_priv, wg_pub) = match generate_wireguard_keys() {
+        Some(k) => k,
+        None => return ptr::null_mut(),
+    };
+
+    let identity = RelayIdentity {
+        name,
+        address,
+        public_key,
+        private_key,
+        token_secret: generate_token_secret(),
+        wireguard_public_key: wg_pub,
+        wireguard_private_key: wg_priv,
+        encrypted_client_hello_seed: generate_ech_seed(),
+    };
+
+    json_or_null(&identity)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FreeCString;
     use std::ffi::CString;
 
     fn c(s: &str) -> CString {
@@ -538,6 +625,24 @@ mod tests {
         assert!(!verified.is_null());
         free(verified);
         free(signed2);
+    }
+
+    #[test]
+    fn generate_relay_identity_json() {
+        let name = CString::new("test-relay.example.com").unwrap();
+        let raw = GenerateRelayIdentityJSON(name.as_ptr());
+        assert!(!raw.is_null());
+        let s = unsafe { CStr::from_ptr(raw).to_str().unwrap() };
+        let v: serde_json::Value = serde_json::from_str(s).unwrap();
+        assert_eq!(v["name"].as_str().unwrap(), "test-relay.example.com");
+        assert!(v["address"].as_str().unwrap().starts_with("0x"));
+        assert!(v["public_key"].as_str().unwrap().starts_with("0x"));
+        assert_eq!(v["private_key"].as_str().unwrap().len(), 64);
+        assert!(!v["token_secret"].as_str().unwrap().is_empty());
+        assert!(!v["wireguard_public_key"].as_str().unwrap().is_empty());
+        assert!(!v["wireguard_private_key"].as_str().unwrap().is_empty());
+        assert!(!v["encrypted_client_hello_seed"].as_str().unwrap().is_empty());
+        unsafe { FreeCString(raw); }
     }
 
     #[test]

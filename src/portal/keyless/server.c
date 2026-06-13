@@ -1,4 +1,5 @@
 #include <portillia/portal/keyless/server.h>
+#include <portillia/portal/identity.h>
 #include <portillia/utils/log.h>
 #include <cwist/sys/app/app.h>
 #include <cwist/core/sstring/sstring.h>
@@ -50,28 +51,22 @@ static char *read_file_to_string(const char *path) {
 }
 
 static int load_identity_json(const char *identity_path) {
-    char *path = join_path(identity_path, "identity.json");
-    if (!path) return -1;
-    char *json = read_file_to_string(path);
-    free(path);
-    if (!json) return -1;
+    portillia_relay_identity *identity = portillia_relay_identity_load_or_create(identity_path, NULL);
+    if (!identity) return -1;
 
-    cJSON *root = cJSON_Parse(json);
-    free(json);
-    if (!root) return -1;
-
-    cJSON *priv = cJSON_GetObjectItem(root, "private_key");
-    cJSON *pub = cJSON_GetObjectItem(root, "public_key");
     if (g_private_key_hex) { free(g_private_key_hex); g_private_key_hex = NULL; }
     if (g_public_key_hex) { free(g_public_key_hex); g_public_key_hex = NULL; }
-    if (cJSON_IsString(priv) && priv->valuestring && priv->valuestring[0]) {
-        g_private_key_hex = strdup(priv->valuestring);
+
+    if (identity->private_key && identity->private_key[0]) {
+        g_private_key_hex = strdup(identity->private_key);
     }
-    if (cJSON_IsString(pub) && pub->valuestring && pub->valuestring[0]) {
-        g_public_key_hex = strdup(pub->valuestring);
+    if (identity->public_key && identity->public_key[0]) {
+        g_public_key_hex = strdup(identity->public_key);
     }
-    cJSON_Delete(root);
-    return (g_private_key_hex && g_public_key_hex) ? 0 : -1;
+
+    int ok = (g_private_key_hex && g_public_key_hex) ? 0 : -1;
+    portillia_relay_identity_free(identity);
+    return ok;
 }
 
 static char *base64_decode(const char *in, size_t *out_len) {

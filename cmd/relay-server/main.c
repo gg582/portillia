@@ -5,6 +5,7 @@
 #include <portillia/utils/network.h>
 #include <portillia/portal/acme/manager.h>
 #include <portillia/portal/discovery/discovery.h>
+#include <portillia/portal/identity.h>
 #include <portillia/portal/settings.h>
 #include <portillia/portal/api_server_relay.h>
 #include <portillia/portal/keyless/ech.h>
@@ -31,6 +32,7 @@
 extern char *get_sni_hostname(int client_fd);
 discovery_config *global_disc_cfg = NULL;
 portillia_acme_manager *global_acme_manager = NULL;
+portillia_relay_identity *global_relay_identity = NULL;
 
 typedef struct {
     int sni_port;
@@ -132,38 +134,6 @@ void *hop_accept_thread(void *arg) {
         }
     }
     return NULL;
-}
-
-static bool load_wireguard_keys(const char *identity_path, char *private_key, size_t pk_len, char *public_key, size_t pub_len) {
-    char path[1024];
-    snprintf(path, sizeof(path), "%s/identity.json", identity_path);
-    FILE *f = fopen(path, "r");
-    if (!f) return false;
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *json = malloc(size + 1);
-    if (!json) { fclose(f); return false; }
-    fread(json, 1, size, f);
-    json[size] = '\0';
-    fclose(f);
-    
-    cJSON *root = cJSON_Parse(json);
-    free(json);
-    if (!root) return false;
-    
-    cJSON *wg_priv = cJSON_GetObjectItem(root, "wireguard_private_key");
-    cJSON *wg_pub = cJSON_GetObjectItem(root, "wireguard_public_key");
-    bool ok = false;
-    if (cJSON_IsString(wg_priv) && cJSON_IsString(wg_pub)) {
-        strncpy(private_key, wg_priv->valuestring, pk_len - 1);
-        private_key[pk_len - 1] = '\0';
-        strncpy(public_key, wg_pub->valuestring, pub_len - 1);
-        public_key[pub_len - 1] = '\0';
-        ok = true;
-    }
-    cJSON_Delete(root);
-    return ok;
 }
 
 static char *replace_str(const char *str, const char *old_str, const char *new_str) {
@@ -598,6 +568,15 @@ int main(void) {
     settings->udp_enabled = udp_enabled;
     settings->tcp_port_enabled = tcp_enabled;
 
+    global_relay_identity = portillia_relay_identity_load_or_create(identity_path, root_hostname);
+    if (!global_relay_identity) {
+        LOG_ERROR("failed to load or create relay identity at %s", identity_path);
+    } else {
+        LOG_INFO("relay identity loaded address=%s name=%s",
+                 global_relay_identity->address ? global_relay_identity->address : "",
+                 global_relay_identity->name ? global_relay_identity->name : "");
+    }
+
     extern void portillia_server_setup(const char *root_hostname, int api_port, int sni_port, portillia_settings *s);
     extern void portillia_proxy_init_telemetry();
     portillia_proxy_init_telemetry();
@@ -693,12 +672,10 @@ int main(void) {
         pthread_create(&disc_tid, NULL, discovery_maintenance_loop, disc_cfg);
     }
 
-    // Initialize overlay / hop mux via Go bridge
-    char wg_private_key[128] = {0};
-    char wg_public_key[128] = {0};
-    if (load_wireguard_keys(identity_path, wg_private_key, sizeof(wg_private_key), wg_public_key, sizeof(wg_public_key))) {
-        if (OverlayInit(wg_private_key, wg_public_key, wg_port) == 0) {
-            LOG_INFO("overlay initialized via bridge wg_public_key=%s wg_port=%d", wg_public_key, wg_port);
+    // Initialize overlay / hop mux via Rust bridge
+    if (global_relay_identity && global_relay_identity->wireguard_private_key && global_relay_identity->wireguard_public_key) {
+        if (OverlayInit(global_relay_identity->wireguard_private_key, global_relay_identity->wireguard_public_key, wg_port) == 0) {
+            LOG_INFO("overlay initialized via bridge wg_public_key=%s wg_port=%d", global_relay_identity->wireguard_public_key, wg_port);
             pthread_t hop_tid;
             pthread_create(&hop_tid, NULL, hop_accept_thread, NULL);
             pthread_detach(hop_tid);
@@ -706,7 +683,7 @@ int main(void) {
             LOG_ERROR("overlay initialization failed");
         }
     } else {
-        LOG_WARN("no wireguard keys found in identity.json, overlay disabled");
+        LOG_WARN("no wireguard keys available, overlay disabled");
     }
 
     if (public_relay_url) {
