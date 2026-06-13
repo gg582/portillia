@@ -389,7 +389,7 @@ static int register_and_configure(portillia_listener_t *l) {
     if (!keyless_url || !keyless_url[0]) {
         keyless_url = l->relay_url;
     }
-    void *tls_ctx = portillia_keyless_build_tls_ctx(keyless_url, resp.hostname, l->insecure_skip_verify);
+    void *tls_ctx = portillia_keyless_build_tls_ctx(keyless_url, resp.hostname, resp.access_token, l->insecure_skip_verify);
 
     /* Store lease */
     portillia_listener_lease_t *lease = PORTILLIA_GC_NEW_ZERO(portillia_listener_lease_t);

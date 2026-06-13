@@ -16,6 +16,7 @@ extern "C" {
  */
 void *portillia_keyless_build_tls_ctx(const char *keyless_url,
                                       const char *hostname,
+                                      const char *access_token,
                                       bool insecure_skip_verify);
 
 void portillia_tls_setup(void);

@@ -32,7 +32,7 @@ SRC_TRANSPORT = src/transport/stream_client.c src/transport/datagram_client.c sr
 
 SRC_DISCOVERY = src/portal/discovery/relay_set.c src/portal/discovery/mols.c
 SRC_PORTAL = src/portal/server.c src/portal/proxy.c src/portal/sni_parser.c \
-             src/portal/transport/quic_backhaul.c src/portal/keyless/tls.c src/portal/keyless/ech.c \
+             src/portal/transport/quic_backhaul.c src/portal/keyless/tls.c src/portal/keyless/ech.c src/portal/keyless/server.c \
              src/portal/acme/manager.c src/portal/acme/cloudflare/provider.c src/portal/acme/route53/provider.c src/portal/acme/gcloud/provider.c \
              src/portal/discovery/discovery.c src/portal/policy/policy.c src/portal/settings.c src/portal/agent/control.c \
              libs/cwist/src/net/http/mux.c

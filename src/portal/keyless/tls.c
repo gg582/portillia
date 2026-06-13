@@ -58,6 +58,7 @@ static char *fetch_cert_chain(const char *endpoint,
 typedef struct {
     char *endpoint;
     char *server_name;
+    char *access_token;
     bool insecure_skip_verify;
 } remote_signer_ctx_t;
 
@@ -93,30 +94,33 @@ static int base64_decode(const char *in, uint8_t *out, size_t out_max) {
 
 static const char *detect_algorithm(int flen, int padding) {
     if (padding == RSA_PKCS1_PSS_PADDING) {
-        if (flen == 48) return "RSAPSSSHA384";
-        if (flen == 64) return "RSAPSSSHA512";
-        return "RSAPSSSHA256";
+        if (flen == 48) return "RSA_PSS_SHA384";
+        if (flen == 64) return "RSA_PSS_SHA512";
+        return "RSA_PSS_SHA256";
     }
-    if (flen == 48) return "RSAPKCS1v15SHA384";
-    if (flen == 64) return "RSAPKCS1v15SHA512";
-    return "RSAPKCS1v15SHA256";
+    if (flen == 48) return "RSA_PKCS1V15_SHA384";
+    if (flen == 64) return "RSA_PKCS1V15_SHA512";
+    return "RSA_PKCS1V15_SHA256";
 }
 
 static void remote_signer_ctx_free(remote_signer_ctx_t *ctx) {
     if (!ctx) return;
     free(ctx->endpoint);
     free(ctx->server_name);
+    free(ctx->access_token);
     free(ctx);
 }
 
 static remote_signer_ctx_t *remote_signer_ctx_new(const char *endpoint,
                                                   const char *server_name,
+                                                  const char *access_token,
                                                   bool insecure_skip_verify) {
     if (!endpoint) return NULL;
     remote_signer_ctx_t *ctx = calloc(1, sizeof(remote_signer_ctx_t));
     if (!ctx) return NULL;
     ctx->endpoint = strdup(endpoint);
     ctx->server_name = server_name ? strdup(server_name) : NULL;
+    ctx->access_token = access_token ? strdup(access_token) : NULL;
     ctx->insecure_skip_verify = insecure_skip_verify;
     return ctx;
 }
@@ -169,6 +173,11 @@ static int remote_rsa_priv_enc(int flen, const unsigned char *from, unsigned cha
     char *resp = NULL;
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
+    if (rs->access_token && rs->access_token[0]) {
+        char auth_hdr[512];
+        snprintf(auth_hdr, sizeof(auth_hdr), "X-Portal-Access-Token: %s", rs->access_token);
+        headers = curl_slist_append(headers, auth_hdr);
+    }
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_json);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -256,6 +265,7 @@ static void ensure_ex_index(void) {
  */
 void *portillia_keyless_build_tls_ctx(const char *keyless_url,
                                       const char *hostname,
+                                      const char *access_token,
                                       bool insecure_skip_verify) {
     if (!keyless_url) return NULL;
 
@@ -360,7 +370,7 @@ void *portillia_keyless_build_tls_ctx(const char *keyless_url,
     RSA_set0_key(rsa, n, e, NULL);
     RSA_free(cert_rsa);
 
-    remote_signer_ctx_t *rsctx = remote_signer_ctx_new(keyless_url, hostname, insecure_skip_verify);
+    remote_signer_ctx_t *rsctx = remote_signer_ctx_new(keyless_url, hostname, access_token, insecure_skip_verify);
     if (!rsctx) {
         RSA_free(rsa);
         SSL_CTX_free(ctx);

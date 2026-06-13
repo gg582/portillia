@@ -8,6 +8,8 @@
 #include <portillia/portal/settings.h>
 #include <portillia/portal/api_server_relay.h>
 #include <portillia/portal/keyless/ech.h>
+#include <portillia/portal/keyless/server.h>
+#include <portillia/portal/api_server.h>
 #include <cwist/security/tls/ech.h>
 #include <openssl/rand.h>
 #include <stdio.h>
@@ -638,6 +640,8 @@ int main(void) {
     extern void portillia_api_server_setup(cwist_app *app);
     portillia_api_server_setup(app);
     portillia_api_server_relay_setup(app);
+    portillia_server_set_keyless_url(public_relay_url ? public_relay_url : portal_url);
+    portillia_keyless_server_setup(app, identity_path);
     
     const char *static_dir = getenv("STATIC_DIR") ? getenv("STATIC_DIR") : "cmd/relay-server/dist/app";
     char assets_dir[1024];

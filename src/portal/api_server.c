@@ -6,6 +6,8 @@
 #include <portillia/types/types.h>
 #include <portillia/utils/log.h>
 #include <portillia/utils/crypto.h>
+#include <portillia/portal/keyless/server.h>
+#include <portillia/portal/api_server.h>
 #include "portal_bridge.h"
 #include <portillia/portal/settings.h>
 #include <stdio.h>
@@ -44,7 +46,6 @@ extern char* extract_client_ip(cwist_http_request *req);
 extern void portillia_settings_save(const char *path, portillia_settings *s);
 
 #define MAX_REGISTER_CHALLENGES 512
-#define MAX_ACCESS_TOKENS 1024
 
 /* Thread-local state passed from handle_connect to the cwist HTTPS upgrade
  * hook, which is invoked synchronously in the same thread after the response
@@ -69,19 +70,13 @@ typedef struct {
     time_t expires_at;
 } register_challenge_entry;
 
-typedef struct {
-    bool in_use;
-    char access_token[96];
-    char hostname[256];
-    char identity_name[256];
-    char identity_address[96];
-    bool udp_enabled;
-    bool tcp_enabled;
-    time_t expires_at;
-} access_token_entry;
-
 static register_challenge_entry g_register_challenges[MAX_REGISTER_CHALLENGES];
-static access_token_entry g_access_tokens[MAX_ACCESS_TOKENS];
+static char *g_keyless_url = NULL;
+
+void portillia_server_set_keyless_url(const char *url) {
+    if (g_keyless_url) free(g_keyless_url);
+    g_keyless_url = url ? strdup(url) : NULL;
+}
 
 /* cwist HTTPS upgrade hook: takes ownership of the TLS-upgraded connection
  * after the encrypted 101 response has been sent. */
@@ -156,17 +151,6 @@ static register_challenge_entry* find_register_challenge(const char *challenge_i
     return NULL;
 }
 
-static access_token_entry* find_access_token(const char *access_token) {
-    if (!access_token) return NULL;
-    for (int i = 0; i < MAX_ACCESS_TOKENS; i++) {
-        if (g_access_tokens[i].in_use &&
-            strcmp(g_access_tokens[i].access_token, access_token) == 0) {
-            return &g_access_tokens[i];
-        }
-    }
-    return NULL;
-}
-
 static const char* store_register_challenge(
     const char *identity_name,
     const char *identity_address,
@@ -209,35 +193,6 @@ static const char* store_register_challenge(
     if (nonce) snprintf(entry->nonce, sizeof(entry->nonce), "%s", nonce);
     entry->expires_at = expires_at;
     return entry->challenge_id;
-}
-
-static const char* store_access_token(
-    const char *hostname,
-    const char *identity_name,
-    const char *identity_address,
-    bool udp_enabled,
-    bool tcp_enabled,
-    time_t expires_at
-) {
-    int slot = -1;
-    for (int i = 0; i < MAX_ACCESS_TOKENS; i++) {
-        if (!g_access_tokens[i].in_use) {
-            slot = i;
-            break;
-        }
-    }
-    if (slot < 0) slot = (int)(rand() % MAX_ACCESS_TOKENS);
-    access_token_entry *entry = &g_access_tokens[slot];
-    memset(entry, 0, sizeof(*entry));
-    entry->in_use = true;
-    random_token("at_", entry->access_token, sizeof(entry->access_token));
-    snprintf(entry->hostname, sizeof(entry->hostname), "%s", hostname ? hostname : "");
-    snprintf(entry->identity_name, sizeof(entry->identity_name), "%s", identity_name ? identity_name : "");
-    snprintf(entry->identity_address, sizeof(entry->identity_address), "%s", identity_address ? identity_address : "");
-    entry->udp_enabled = udp_enabled;
-    entry->tcp_enabled = tcp_enabled;
-    entry->expires_at = expires_at;
-    return entry->access_token;
 }
 
 static void derive_hostname(const char *identity_name, const char *identity_address, char *out, size_t out_len) {
@@ -442,14 +397,28 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                 time_t expires_at = time(NULL) + 300;
                 char expires_at_str[64] = {0};
                 format_time_rfc3339(expires_at, expires_at_str, sizeof(expires_at_str));
-                const char *access_token = store_access_token(
-                    hostname,
-                    identity_name,
-                    identity_address,
-                    udp,
-                    tcp,
-                    expires_at
-                );
+                int ttl = 300;
+                char *access_token = NULL;
+                char *token_json = portillia_issue_lease_token(identity_name, identity_address, ttl);
+                if (token_json) {
+                    cJSON *token_root = cJSON_Parse(token_json);
+                    if (token_root) {
+                        cJSON *token_obj = cJSON_GetObjectItem(token_root, "token");
+                        if (cJSON_IsString(token_obj) && token_obj->valuestring) {
+                            access_token = strdup(token_obj->valuestring);
+                        }
+                        cJSON_Delete(token_root);
+                    }
+                    free(token_json);
+                }
+                if (!access_token) {
+                    res->status_code = CWIST_HTTP_INTERNAL_ERROR;
+                    cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"internal_error\", \"message\": \"failed to issue access token\"}}");
+                    cJSON_Delete(root);
+                    cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                    free(client_ip);
+                    return;
+                }
 
                 cJSON *identity_obj = cJSON_CreateObject();
                 cJSON_AddStringToObject(identity_obj, "name", identity_name);
@@ -460,6 +429,9 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                 cJSON_AddStringToObject(data, "expires_at", expires_at_str);
                 cJSON_AddStringToObject(data, "hostname", hostname);
                 cJSON_AddStringToObject(data, "access_token", access_token);
+                if (g_keyless_url && g_keyless_url[0]) {
+                    cJSON_AddStringToObject(data, "keyless_url", g_keyless_url);
+                }
                 cJSON_AddBoolToObject(data, "udp_enabled", udp);
                 cJSON_AddBoolToObject(data, "tcp_enabled", tcp);
                 cJSON_AddNumberToObject(data, "sni_port", (double)portillia_server_sni_port());
@@ -471,6 +443,7 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                 if (tcp) {
                     cJSON_AddStringToObject(data, "tcp_addr", "localhost:4017");
                 }
+                free(access_token);
 
                 cJSON *res_root = cJSON_CreateObject();
                 cJSON_AddBoolToObject(res_root, "ok", true);
@@ -505,9 +478,19 @@ void handle_connect(cwist_http_request *req, cwist_http_response *res) {
     char hostname[256] = {0};
     char *token = cwist_http_header_get(req->headers, "X-Portal-Access-Token");
     if (token) {
-        access_token_entry *entry = find_access_token(token);
-        if (entry && entry->in_use && entry->expires_at > time(NULL)) {
-            snprintf(hostname, sizeof(hostname), "%s", entry->hostname);
+        char *claims_json = portillia_verify_lease_token(token);
+        if (claims_json) {
+            cJSON *claims = cJSON_Parse(claims_json);
+            if (claims) {
+                cJSON *name_obj = cJSON_GetObjectItem(claims, "identity_name");
+                cJSON *addr_obj = cJSON_GetObjectItem(claims, "identity_address");
+                if (cJSON_IsString(addr_obj) && addr_obj->valuestring) {
+                    derive_hostname(cJSON_IsString(name_obj) && name_obj->valuestring ? name_obj->valuestring : "",
+                                    addr_obj->valuestring, hostname, sizeof(hostname));
+                }
+                cJSON_Delete(claims);
+            }
+            free(claims_json);
         }
     }
     if (!hostname[0]) {
@@ -874,23 +857,73 @@ void handle_renew(cwist_http_request *req, cwist_http_response *res) {
         cwist_http_header_add(&res->headers, "Content-Type", "application/json");
         return;
     }
-    access_token_entry *entry = find_access_token(token_obj->valuestring);
-    if (!entry || !entry->in_use) {
+    char *claims_json = portillia_verify_lease_token(token_obj->valuestring);
+    if (!claims_json) {
         cJSON_Delete(root);
         res->status_code = CWIST_HTTP_NOT_FOUND;
         cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"lease_not_found\", \"message\": \"lease not found\"}}");
         cwist_http_header_add(&res->headers, "Content-Type", "application/json");
         return;
     }
+    cJSON *claims = cJSON_Parse(claims_json);
+    free(claims_json);
+    if (!claims) {
+        cJSON_Delete(root);
+        res->status_code = CWIST_HTTP_INTERNAL_ERROR;
+        cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"internal_error\", \"message\": \"failed to parse token claims\"}}");
+        cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+        return;
+    }
+    cJSON *name_obj = cJSON_GetObjectItem(claims, "identity_name");
+    cJSON *addr_obj = cJSON_GetObjectItem(claims, "identity_address");
+    if (!cJSON_IsString(addr_obj) || !addr_obj->valuestring) {
+        cJSON_Delete(claims);
+        cJSON_Delete(root);
+        res->status_code = CWIST_HTTP_NOT_FOUND;
+        cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"lease_not_found\", \"message\": \"invalid token claims\"}}");
+        cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+        return;
+    }
+    char identity_name[256] = {0};
+    char identity_address[96] = {0};
+    snprintf(identity_name, sizeof(identity_name), "%s", cJSON_IsString(name_obj) && name_obj->valuestring ? name_obj->valuestring : "");
+    snprintf(identity_address, sizeof(identity_address), "%s", addr_obj->valuestring);
+    char hostname[256] = {0};
+    derive_hostname(identity_name, identity_address, hostname, sizeof(hostname));
+    cJSON_Delete(claims);
+
     int ttl = (ttl_obj && cJSON_IsNumber(ttl_obj)) ? ttl_obj->valueint : 300;
     if (ttl <= 0) ttl = 300;
-    entry->expires_at = time(NULL) + ttl;
-    portillia_registry_register(entry->hostname, entry->identity_address, 0);
+    time_t expires_at = time(NULL) + ttl;
+    portillia_registry_register(hostname, identity_address, 0);
     char expires_at_str[64] = {0};
-    format_time_rfc3339(entry->expires_at, expires_at_str, sizeof(expires_at_str));
+    format_time_rfc3339(expires_at, expires_at_str, sizeof(expires_at_str));
+
+    char *access_token = NULL;
+    char *token_json = portillia_issue_lease_token(identity_name, identity_address, ttl);
+    if (token_json) {
+        cJSON *token_root = cJSON_Parse(token_json);
+        if (token_root) {
+            cJSON *new_token_obj = cJSON_GetObjectItem(token_root, "token");
+            if (cJSON_IsString(new_token_obj) && new_token_obj->valuestring) {
+                access_token = strdup(new_token_obj->valuestring);
+            }
+            cJSON_Delete(token_root);
+        }
+        free(token_json);
+    }
+    if (!access_token) {
+        cJSON_Delete(root);
+        res->status_code = CWIST_HTTP_INTERNAL_ERROR;
+        cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"internal_error\", \"message\": \"failed to issue access token\"}}");
+        cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+        return;
+    }
+
     cJSON *data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "expires_at", expires_at_str);
-    cJSON_AddStringToObject(data, "access_token", entry->access_token);
+    cJSON_AddStringToObject(data, "access_token", access_token);
+    free(access_token);
     cJSON *resp_root = cJSON_CreateObject();
     cJSON_AddBoolToObject(resp_root, "ok", true);
     cJSON_AddItemToObject(resp_root, "data", data);
@@ -906,17 +939,38 @@ void handle_renew(cwist_http_request *req, cwist_http_response *res) {
  * @brief Function handle_unregister
  */
 void handle_unregister(cwist_http_request *req, cwist_http_response *res) {
-    if (req->body && req->body->size > 0) {
-        cJSON *root = cJSON_Parse(req->body->data);
-        if (root) {
-            cJSON *token_obj = cJSON_GetObjectItem(root, "access_token");
-            if (token_obj && cJSON_IsString(token_obj) && token_obj->valuestring) {
-                access_token_entry *entry = find_access_token(token_obj->valuestring);
-                if (entry) entry->in_use = false;
-            }
-            cJSON_Delete(root);
-        }
+    if (!req->body || req->body->size == 0) {
+        res->status_code = CWIST_HTTP_BAD_REQUEST;
+        cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"invalid_request\", \"message\": \"missing token\"}}");
+        cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+        return;
     }
+    cJSON *root = cJSON_Parse(req->body->data);
+    if (!root) {
+        res->status_code = CWIST_HTTP_BAD_REQUEST;
+        cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"invalid_request\", \"message\": \"invalid json\"}}");
+        cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+        return;
+    }
+    cJSON *token_obj = cJSON_GetObjectItem(root, "access_token");
+    if (!token_obj || !cJSON_IsString(token_obj) || !token_obj->valuestring) {
+        cJSON_Delete(root);
+        res->status_code = CWIST_HTTP_BAD_REQUEST;
+        cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"invalid_request\", \"message\": \"access token is required\"}}");
+        cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+        return;
+    }
+    char *claims_json = portillia_verify_lease_token(token_obj->valuestring);
+    if (!claims_json) {
+        cJSON_Delete(root);
+        res->status_code = CWIST_HTTP_NOT_FOUND;
+        cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"lease_not_found\", \"message\": \"lease not found\"}}");
+        cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+        return;
+    }
+    free(claims_json);
+    /* TODO: add registry unregister once portillia_registry_unregister is available */
+    cJSON_Delete(root);
     cwist_sstring_assign(res->body, "{\"ok\": true, \"data\": {}}");
     cwist_http_header_add(&res->headers, "Content-Type", "application/json");
 }
