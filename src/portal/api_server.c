@@ -22,6 +22,8 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <strings.h>
+#include <sys/mman.h>
+#include <pthread.h>
 extern void portillia_registry_register(const char *hostname, const char *identity_key, int64_t bps_limit);
 extern void portillia_registry_register_ex(const char *hostname, const char *identity_key, int64_t bps_limit,
                                            const char *client_ip, const char *reported_ip,
@@ -67,8 +69,46 @@ typedef struct {
     time_t expires_at;
 } register_challenge_entry;
 
-static register_challenge_entry g_register_challenges[MAX_REGISTER_CHALLENGES];
+
+/* cwist preforks one worker per core (SO_REUSEPORT), so challenge and
+ * register requests can land on different processes. The store therefore
+ * lives in MAP_SHARED anonymous memory allocated before cwist_app_listen
+ * forks, guarded by a process-shared mutex, instead of per-process BSS. */
+typedef struct {
+    pthread_mutex_t mu;
+    register_challenge_entry entries[MAX_REGISTER_CHALLENGES];
+} register_challenge_store;
+
+static register_challenge_store *g_challenge_store = NULL;
+/* Process-local fallback if the shared mapping fails. */
+static register_challenge_store g_challenge_store_fallback;
 static char *g_keyless_url = NULL;
+
+static void register_challenge_store_init(void) {
+    if (g_challenge_store) return;
+    register_challenge_store *store = mmap(NULL, sizeof(*store),
+                                           PROT_READ | PROT_WRITE,
+                                           MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (store == MAP_FAILED) {
+        LOG_ERROR("register challenge store: mmap failed; falling back to per-process state");
+        store = &g_challenge_store_fallback;
+    }
+    memset(store, 0, sizeof(*store));
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+    pthread_mutex_init(&store->mu, &attr);
+    pthread_mutexattr_destroy(&attr);
+    g_challenge_store = store;
+}
+
+static void register_challenge_store_lock(void) {
+    if (g_challenge_store) pthread_mutex_lock(&g_challenge_store->mu);
+}
+
+static void register_challenge_store_unlock(void) {
+    if (g_challenge_store) pthread_mutex_unlock(&g_challenge_store->mu);
+}
 
 void portillia_server_set_keyless_url(const char *url) {
     if (g_keyless_url) free(g_keyless_url);
@@ -141,12 +181,13 @@ static void random_token(const char *prefix, char *out, size_t out_len) {
     snprintf(out, out_len, "%s%u%ld", prefix, r, (long)time(NULL));
 }
 
-static register_challenge_entry* find_register_challenge(const char *challenge_id) {
-    if (!challenge_id) return NULL;
+/* Caller must hold the store mutex. */
+static register_challenge_entry* find_register_challenge_locked(const char *challenge_id) {
+    if (!challenge_id || !g_challenge_store) return NULL;
     for (int i = 0; i < MAX_REGISTER_CHALLENGES; i++) {
-        if (g_register_challenges[i].in_use &&
-            strcmp(g_register_challenges[i].challenge_id, challenge_id) == 0) {
-            return &g_register_challenges[i];
+        if (g_challenge_store->entries[i].in_use &&
+            strcmp(g_challenge_store->entries[i].challenge_id, challenge_id) == 0) {
+            return &g_challenge_store->entries[i];
         }
     }
     return NULL;
@@ -165,15 +206,15 @@ static const char* store_register_challenge(
     time_t expires_at,
     const char *challenge_id
 ) {
-    int slot = -1;
+    register_challenge_store_lock();
+    register_challenge_entry *entry = NULL;
     for (int i = 0; i < MAX_REGISTER_CHALLENGES; i++) {
-        if (!g_register_challenges[i].in_use) {
-            slot = i;
+        if (!g_challenge_store->entries[i].in_use) {
+            entry = &g_challenge_store->entries[i];
             break;
         }
     }
-    if (slot < 0) slot = (int)(rand() % MAX_REGISTER_CHALLENGES);
-    register_challenge_entry *entry = &g_register_challenges[slot];
+    if (!entry) entry = &g_challenge_store->entries[rand() % MAX_REGISTER_CHALLENGES];
     memset(entry, 0, sizeof(*entry));
     entry->in_use = true;
     snprintf(entry->challenge_id, sizeof(entry->challenge_id), "%s", challenge_id ? challenge_id : "");
@@ -187,10 +228,35 @@ static const char* store_register_challenge(
     if (domain) snprintf(entry->domain, sizeof(entry->domain), "%s", domain);
     if (nonce) snprintf(entry->nonce, sizeof(entry->nonce), "%s", nonce);
     entry->expires_at = expires_at;
+    register_challenge_store_unlock();
     return entry->challenge_id;
 }
 
+/* Adds the reverse_endpoint object (portal-tunnel parity: url, capability,
+ * expires_at) expected by sdk.Expose. The capability is the lease access
+ * token: /sdk/connect admits it via the X-Portal-Reverse-Capability header
+ * exactly like X-Portal-Access-Token. The URL is the relay's public origin
+ * (from the keyless/public relay URL) plus /sdk/connect. */
+static void add_reverse_endpoint(cJSON *data, const char *capability, const char *expires_at_str) {
+    char reverse_url[1024] = {0};
+    const char *base = (g_keyless_url && g_keyless_url[0]) ? g_keyless_url : "";
+    snprintf(reverse_url, sizeof(reverse_url), "%s", base);
+    char *authority = strstr(reverse_url, "://");
+    authority = authority ? authority + 3 : reverse_url;
+    char *slash = strchr(authority, '/');
+    if (slash) *slash = '\0';
+    size_t len = strlen(reverse_url);
+    snprintf(reverse_url + len, sizeof(reverse_url) - len, "%s", "/sdk/connect");
+
+    cJSON *rev = cJSON_CreateObject();
+    cJSON_AddStringToObject(rev, "url", reverse_url);
+    cJSON_AddStringToObject(rev, "capability", capability ? capability : "");
+    cJSON_AddStringToObject(rev, "expires_at", expires_at_str ? expires_at_str : "");
+    cJSON_AddItemToObject(data, "reverse_endpoint", rev);
+}
+
 static void derive_hostname(const char *identity_name, const char *identity_address, char *out, size_t out_len) {
+
     const char *root = portillia_server_root_hostname();
     if (!root || !root[0]) root = "localhost";
     const char *name = identity_name && identity_name[0] ? identity_name : identity_address;
@@ -267,11 +333,22 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
             if (reported_ip_obj && cJSON_IsString(reported_ip_obj) && reported_ip_obj->valuestring)
                 reported_ip = reported_ip_obj->valuestring;
 
-            register_challenge_entry *challenge = NULL;
+            /* Snapshot of the shared challenge entry; valid only when
+             * challenge_found is true. */
+            register_challenge_entry challenge_snapshot;
+            bool challenge_found = false;
+            memset(&challenge_snapshot, 0, sizeof(challenge_snapshot));
             if (challenge_id && cJSON_IsString(challenge_id) && challenge_id->valuestring &&
                 siwe_message && cJSON_IsString(siwe_message) && siwe_message->valuestring) {
-                challenge = find_register_challenge(challenge_id->valuestring);
-                if (!challenge || !challenge->in_use || challenge->expires_at <= time(NULL)) {
+                register_challenge_store_lock();
+                register_challenge_entry *challenge =
+                    find_register_challenge_locked(challenge_id->valuestring);
+                if (challenge && challenge->in_use && challenge->expires_at > time(NULL)) {
+                    challenge_snapshot = *challenge;
+                    challenge_found = true;
+                }
+                register_challenge_store_unlock();
+                if (!challenge_found) {
                     res->status_code = CWIST_HTTP_NOT_FOUND;
                     cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"lease_not_found\", \"message\": \"register challenge not found\"}}");
                     cJSON_Delete(root);
@@ -279,7 +356,7 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                     free(client_ip);
                     return;
                 }
-                if (strcmp(challenge->siwe_message, siwe_message->valuestring) != 0) {
+                if (strcmp(challenge_snapshot.siwe_message, siwe_message->valuestring) != 0) {
                     res->status_code = CWIST_HTTP_BAD_REQUEST;
                     cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"invalid_request\", \"message\": \"siwe message mismatch\"}}");
                     cJSON_Delete(root);
@@ -289,7 +366,7 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                 }
                 /* Full SIWE verification with domain, nonce, expiration */
                 char *verify_json = VerifySIWEMessageJSON(siwe_message->valuestring, siwe_signature ? siwe_signature->valuestring : "",
-                                                          challenge->domain, challenge->nonce, (long long)time(NULL));
+                                                          challenge_snapshot.domain, challenge_snapshot.nonce, (long long)time(NULL));
                 if (!verify_json) {
                     res->status_code = CWIST_HTTP_FORBIDDEN;
                     cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"unauthorized\", \"message\": \"siwe signature is invalid\"}}");
@@ -299,11 +376,16 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                     return;
                 }
                 FreeRustString(verify_json);
-                snprintf(identity_name, sizeof(identity_name), "%s", challenge->identity_name);
-                snprintf(identity_address, sizeof(identity_address), "%s", challenge->identity_address);
-                udp = challenge->udp_enabled;
-                tcp = challenge->tcp_enabled;
-                challenge->in_use = false;
+                /* Consume the challenge only after SIWE verification. */
+                register_challenge_store_lock();
+                register_challenge_entry *consumed =
+                    find_register_challenge_locked(challenge_id->valuestring);
+                if (consumed) consumed->in_use = false;
+                register_challenge_store_unlock();
+                snprintf(identity_name, sizeof(identity_name), "%s", challenge_snapshot.identity_name);
+                snprintf(identity_address, sizeof(identity_address), "%s", challenge_snapshot.identity_address);
+                udp = challenge_snapshot.udp_enabled;
+                tcp = challenge_snapshot.tcp_enabled;
             } else if (identity && identity->valuestring) {
                 if (name && name->valuestring) snprintf(identity_name, sizeof(identity_name), "%s", name->valuestring);
                 snprintf(identity_address, sizeof(identity_address), "%s", identity->valuestring);
@@ -322,9 +404,9 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                 /* Extract challenge fields for stream lease */
                 const char *route_hostname = NULL;
                 const char *hostname_hash = NULL;
-                if (challenge) {
-                    route_hostname = challenge->route_hostname[0] ? challenge->route_hostname : NULL;
-                    hostname_hash = challenge->hostname_hash[0] ? challenge->hostname_hash : NULL;
+                if (challenge_found) {
+                    route_hostname = challenge_snapshot.route_hostname[0] ? challenge_snapshot.route_hostname : NULL;
+                    hostname_hash = challenge_snapshot.hostname_hash[0] ? challenge_snapshot.hostname_hash : NULL;
                 }
 
                 /* Validate transport constraints (Go parity) */
@@ -410,6 +492,7 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                 cJSON_AddStringToObject(data, "expires_at", expires_at_str);
                 cJSON_AddStringToObject(data, "hostname", hostname);
                 cJSON_AddStringToObject(data, "access_token", access_token);
+                add_reverse_endpoint(data, access_token, expires_at_str);
                 if (g_keyless_url && g_keyless_url[0]) {
                     cJSON_AddStringToObject(data, "keyless_url", g_keyless_url);
                 }
@@ -458,6 +541,11 @@ void handle_connect(cwist_http_request *req, cwist_http_response *res) {
 
     char hostname[256] = {0};
     char *token = cwist_http_header_get(req->headers, "X-Portal-Access-Token");
+    if (!token || !token[0]) {
+        /* Reverse-endpoint dialing sends the capability in this header; the
+         * capability is the lease token issued at register time. */
+        token = cwist_http_header_get(req->headers, "X-Portal-Reverse-Capability");
+    }
     if (token) {
         char *claims_json = portillia_verify_lease_token(token);
         if (claims_json) {
@@ -894,6 +982,7 @@ void handle_renew(cwist_http_request *req, cwist_http_response *res) {
     cJSON *data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "expires_at", expires_at_str);
     cJSON_AddStringToObject(data, "access_token", access_token);
+    add_reverse_endpoint(data, access_token, expires_at_str);
     free(access_token);
     cJSON *resp_root = cJSON_CreateObject();
     cJSON_AddBoolToObject(resp_root, "ok", true);
@@ -1141,6 +1230,9 @@ void handle_admin_approval_mode(cwist_http_request *req, cwist_http_response *re
  * @brief Function portillia_api_server_setup
  */
 void portillia_api_server_setup(cwist_app *app) {
+    /* Allocate the cross-worker register challenge store before cwist forks
+     * its workers in cwist_app_listen. */
+    register_challenge_store_init();
     cwist_app_get(app, "/healthz", handle_healthz);
     cwist_app_get(app, "/tunnel/status", handle_tunnel_status);
     cwist_app_get(app, "/sdk/domain", handle_domain);
