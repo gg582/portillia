@@ -1,6 +1,13 @@
 CC ?= gcc
 CFLAGS = -Wall -Wextra -O3 -I. -I./include -I./libs/cwist/include -I./libs/cwist/lib/cjson -I./libs/libttak/include -I./libs/secp256k1/include -I./libs/keccak -pthread
-LDFLAGS = -L. -L./libs/cwist -L./libs/cwist/lib/cjson -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -L./libs/secp256k1/.libs -lcwist -lttak -lssl -lcrypto -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread -lcrypto -lsecp256k1 -lm -lz -lstdc++
+# cwist v3.8 pulls in lsquic (HTTP/3), which is built against the BoringSSL
+# vendored in libs/cwist. cwist's HTTPS stack must bind ONLY to the vendored
+# BoringSSL, so its archives come before system -lssl/-lcrypto (otherwise
+# cwist/lsquic symbols bind to OpenSSL 3 at link time and the two TLS stacks
+# interpose at runtime). --exclude-libs keeps BoringSSL's symbols out of the
+# executable's dynamic symbol table, so libcurl still gets the real
+# libssl.so.3 (OpenSSL 3 ABI) at runtime with no interposition.
+LDFLAGS = -L. -L./libs/cwist -L./libs/cwist/lib/lsquic/build/src/liblsquic -L./libs/cwist/lib/cjson -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -L./libs/secp256k1/.libs -lcwist -llsquic ./libs/cwist/lib/boringssl/build/libssl.a ./libs/cwist/lib/boringssl/build/libcrypto.a -Wl,--exclude-libs=libssl.a -Wl,--exclude-libs=libcrypto.a -lttak -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread -lsecp256k1 -lm -lz -lstdc++ -lssl -lcrypto
 
 # ngtcp2 detection (supports both distro packages and source builds)
 NGTCP2_CFLAGS := $(shell pkg-config --cflags libngtcp2 2>/dev/null)
@@ -32,7 +39,8 @@ SRC_TRANSPORT = src/transport/stream_client.c src/transport/datagram_client.c sr
 
 SRC_DISCOVERY = src/portal/discovery/relay_set.c src/portal/discovery/mols.c
 SRC_PORTAL = src/portal/server.c src/portal/proxy.c src/portal/sni_parser.c \
-             src/portal/transport/quic_backhaul.c src/portal/keyless/tls.c src/portal/keyless/ech.c src/portal/keyless/server.c \
+             src/portal/transport/quic_backhaul.c src/portal/keyless/tls.c src/portal/keyless/server.c \
+             src/portal/keyless/bindings.c \
              src/portal/acme/manager.c src/portal/acme/cloudflare/provider.c src/portal/acme/route53/provider.c src/portal/acme/gcloud/provider.c \
              src/portal/discovery/discovery.c src/portal/identity.c src/portal/policy/policy.c src/portal/settings.c src/portal/agent/control.c \
              libs/cwist/src/net/http/mux.c
