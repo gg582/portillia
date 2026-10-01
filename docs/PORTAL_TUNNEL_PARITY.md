@@ -133,14 +133,37 @@ Accepted drift (justified):
 - `RelayDescriptor` carries extra portillia fields (`wireguard_*`, `overlay_*`,
   `load*`, `sequence`, ...) — superset of the reference (incl. `ivnp_destination`,
   which belongs to the reference's IVNP overlay that portillia does not implement).
-  Extra JSON fields are ignored by Go, and portillia's own signature scheme
-  (`build_canonical_descriptor_json`) covers its own field set, so portillia↔portillia
-  discovery still verifies; Go-produced descriptors remain out of scope as before.
+  Extra JSON fields are ignored by Go. Signing and verification now both use the
+  Go canonical form (`canonicalRelayDescriptorBytes`): `VerifyDescriptorJSON`
+  tries the Go form first (legacy portillia long/short forms remain as
+  fallbacks), and portillia's own announce is signed through
+  `SignDescriptorJSON`, so descriptors verify in both directions.
 - `IncompatibleRelayEntry` / `RelayReleaseVersions` on `DiscoveryResponse` not
   ported (rolling-upgrade visibility metadata; portillia's relay set already drops
   version-mismatched relays at `src/portal/discovery/relay_set.c:455`).
 
-## 7. Still unimplemented (tracked, out of Phase 4 scope)
+## 7. Interop hardening (2026-10-01)
+
+- **BoringSSL-only link.** Portillia sources compile against the vendored
+  BoringSSL headers and the final link no longer pulls system `-lssl/-lcrypto`,
+  so no OpenSSL-3-only symbol can interpose into cwist's TLS stack at runtime
+  (`nm -D bin/relay-server | grep OPENSSL_3` → empty). The keyless remote RSA
+  signer uses the BoringSSL `ENGINE`/`RSA_METHOD` API.
+- **`reverse_endpoint`.** `/sdk/register` and `/sdk/renew` return
+  `reverse_endpoint {url, capability, expires_at}` (portal-tunnel
+  `types/api.go:99`). The capability is the lease token; `/sdk/connect` admits
+  it via `X-Portal-Reverse-Capability`.
+- **cwist worker model.** cwist preforks one worker per core (SO_REUSEPORT).
+  The register challenge store lives in `MAP_SHARED` anonymous memory with a
+  process-shared mutex, so challenge+register survive landing on different
+  workers. The tunnel data path cannot: it splices kernel fds and `SSL*`
+  handles between the reverse session and the SNI listener, which must live in
+  one process. The relay therefore defaults to `CWIST_WORKERS=1`
+  (`cmd/relay-server/main.c`; explicit env overrides). Cross-worker fd passing
+  (SCM_RIGHTS to a splice owner) is the known follow-up if multi-worker data
+  path is ever needed.
+
+## 8. Still unimplemented (tracked, out of Phase 4 scope)
 
 - C SDK tenant-TLS transcript signing port: `/v1/sign` relay side is done, but the
   C SDK does not yet drive the full `t13server`-style tenant termination against a

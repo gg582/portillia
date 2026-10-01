@@ -717,7 +717,16 @@ int main(void) {
 
     extern void portillia_quic_backhaul_start(int port);
     portillia_quic_backhaul_start(api_port);
-    
+
+    /* The tunnel data path splices kernel fds and BoringSSL SSL* handles
+     * between the /sdk/connect reverse session and the SNI listener, so the
+     * relay must run as a single cwist process: with prefork workers the two
+     * connections can land in different processes and can never be joined.
+     * The register challenge store is shared-memory and survives prefork, so
+     * the challenge+register control flow still works multi-worker; only the
+     * data path requires this. Default to one worker unless explicitly set. */
+    setenv("CWIST_WORKERS", "1", 0);
+
     cwist_app_listen(app, api_port);
     return 0;
 }
