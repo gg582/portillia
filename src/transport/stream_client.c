@@ -233,6 +233,25 @@ bool portillia_stream_client_run_session(portillia_stream_client_t *s, int conn_
             case PORTILLIA_MARKER_KEEPALIVE:
                 continue;
             case PORTILLIA_MARKER_TLS_START: {
+                /* Activation frame is marker + 16-byte binding
+                 * (stream_relay.go activateWithMarker; Go SDK parses it at
+                 * stream_client.go:48-53). The binding binds this connection's
+                 * /v1/sign transcript to the relay-minted entry; the C SDK's
+                 * tenant TLS still speaks the pre-transcript sign protocol
+                 * (keyless/tls.c), so the bytes are consumed here for frame
+                 * alignment and dropped. */
+                uint8_t binding[16];
+                size_t got = 0;
+                while (got < sizeof(binding)) {
+                    ssize_t nb = session_read(conn_fd, outer_ssl, binding + got, sizeof(binding) - got);
+                    if (nb <= 0) {
+                        if (outer_ssl) { SSL_shutdown(outer_ssl); SSL_free(outer_ssl); }
+                        close(conn_fd);
+                        if (out_err) *out_err = EPIPE;
+                        return false;
+                    }
+                    got += (size_t)nb;
+                }
                 portillia_net_conn_t *conn = NULL;
                 if (!perform_tls_handshake(s, conn_fd, outer_ssl, inner_ctx, &conn)) {
                     if (outer_ssl) {

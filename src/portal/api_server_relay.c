@@ -9,15 +9,35 @@
 #include <stdlib.h>
 
 #include <portillia/portal/discovery/discovery.h>
+#include <portillia/types/types.h>
 #include "portal_bridge.h"
 
 extern discovery_config *global_disc_cfg;
 
 void handle_discovery_announce(cwist_http_request *req, cwist_http_response *res) {
-    cwist_sstring_assign(res->body, "{\"ok\": true, \"data\": {\"protocol_version\": \"7\", \"accepted\": false}}");
+    char body[256];
+    snprintf(body, sizeof(body),
+             "{\"ok\": true, \"data\": {\"protocol_version\": \"%s\", \"accepted\": false}}",
+             PORTILLIA_DISCOVERY_VERSION);
+    cwist_sstring_assign(res->body, body);
     if (req->body && req->body->size > 0) {
         cJSON *root = cJSON_Parse(req->body->data);
         if (root) {
+            /* Mirror api_server.go:243-245: reject announces whose
+             * protocol_version does not match this relay's. */
+            cJSON *pv = cJSON_GetObjectItem(root, "protocol_version");
+            if (pv && cJSON_IsString(pv) && pv->valuestring && pv->valuestring[0] &&
+                strcmp(pv->valuestring, PORTILLIA_DISCOVERY_VERSION) != 0) {
+                snprintf(body, sizeof(body),
+                         "{\"ok\": false, \"error\": {\"code\": \"invalid_request\", "
+                         "\"message\": \"announce protocol mismatch: relay=\\\"%s\\\" client=\\\"%s\\\"\"}}",
+                         PORTILLIA_DISCOVERY_VERSION, pv->valuestring);
+                cwist_sstring_assign(res->body, body);
+                LOG_WARN("relay discovery announce rejected: protocol mismatch client=%s", pv->valuestring);
+                cJSON_Delete(root);
+                cwist_http_header_add(&res->headers, "Content-Type", "application/json");
+                return;
+            }
             cJSON *desc = cJSON_GetObjectItem(root, "descriptor");
             if (desc && global_disc_cfg && global_disc_cfg->relay_set) {
                 cJSON *api_addr = cJSON_GetObjectItem(desc, "api_https_addr");
@@ -76,7 +96,10 @@ void handle_discovery_announce(cwist_http_request *req, cwist_http_response *res
                     }
                     LOG_INFO("relay discovery announce accepted relay=%s source_ip=%s", api_addr->valuestring, source_ip);
 
-                    cwist_sstring_assign(res->body, "{\"ok\": true, \"data\": {\"protocol_version\": \"7\", \"accepted\": true}}");
+                    snprintf(body, sizeof(body),
+                             "{\"ok\": true, \"data\": {\"protocol_version\": \"%s\", \"accepted\": true}}",
+                             PORTILLIA_DISCOVERY_VERSION);
+                    cwist_sstring_assign(res->body, body);
                     free(d.address);
                     free(d.version);
                     free(d.api_https_addr);

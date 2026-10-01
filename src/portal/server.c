@@ -16,10 +16,19 @@
 #include <openssl/ssl.h>
 #include <errno.h>
 #include "portal_bridge.h"
+#include <portillia/portal/keyless/bindings.h>
 
 #define MAX_RECORDS 1024
 #define READY_LIMIT 8
 #define CLAIM_TIMEOUT 10
+
+/* Reverse-session framing markers (protocol v10, portal-tunnel
+ * transport/stream_relay.go): the relay writes a single marker byte to
+ * activate a claimed session; MARKER_TLS_START is immediately followed by
+ * PORTILLIA_BINDING_SIZE bytes of per-connection binding. */
+#define MARKER_KEEPALIVE 0x00
+#define MARKER_RAW_START 0x01
+#define MARKER_TLS_START 0x02
 
 typedef struct relay_session {
     int fd;
@@ -47,13 +56,10 @@ typedef struct lease_record {
     int64_t bps_limit;
     relay_stream *stream;
 
-    // Privacy / ECH
+    // Privacy
     char *client_ip;
     char *reported_ip;
     char *hostname_hash;
-    uint8_t *ech_config_list;
-    size_t ech_config_list_len;
-    char *ech_dns_hostname;
 
     // Multi-hop
     char *hop_token;
@@ -79,17 +85,11 @@ static portillia_server *global_server = NULL;
 
 extern void portillia_proxy_bridge(int client_fd, int target_fd);
 extern void portillia_proxy_bridge_ex(int client_fd, int target_fd, int64_t bps_limit);
+extern void portillia_proxy_bridge_bound(int client_fd, int target_fd, int64_t bps_limit,
+                                         const uint8_t binding[PORTILLIA_BINDING_SIZE]);
 extern void portillia_proxy_ssl_bridge_ex(int client_fd, SSL *target_ssl, int64_t bps_limit);
-
-static char *base64_std_encode(const uint8_t *data, size_t len) {
-    size_t b64_len = ((len + 2) / 3) * 4;
-    char *b64 = (char *)malloc(b64_len + 1);
-    if (!b64) return NULL;
-    int out_len = EVP_EncodeBlock((unsigned char *)b64, data, (int)len);
-    if (out_len < 0) { free(b64); return NULL; }
-    b64[out_len] = '\0';
-    return b64;
-}
+extern void portillia_proxy_ssl_bridge_bound(int client_fd, SSL *target_ssl, int64_t bps_limit,
+                                             const uint8_t binding[PORTILLIA_BINDING_SIZE]);
 
 void relay_stream_free(relay_stream *s) {
     if (!s) return;
@@ -137,6 +137,12 @@ void *stream_keepalive_thread(void *arg) {
             pthread_mutex_unlock(&s->mu);
             break;
         }
+
+        /* Periodic reclaim of expired, unused keyless bindings
+         * (bindings.go SweepExpired). */
+        struct timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+        portillia_bindings_sweep_expired(portillia_bindings_shared(), now);
 
         relay_session *curr = s->ready_head;
         while (curr) {
@@ -195,7 +201,12 @@ int relay_stream_offer(relay_stream *s, int fd, SSL *ssl) {
     return ready_count;
 }
 
-bool relay_stream_claim(relay_stream *s, int *out_fd, SSL **out_ssl) {
+/* Claim activates the next ready session for tenant TLS (stream_relay.go
+ * Claim): mints a fresh binding for the lease, writes MARKER_TLS_START
+ * followed by the 16-byte binding, and hands the binding back so the proxy
+ * path can pin it to the first relay-observed ClientHello. */
+bool relay_stream_claim(relay_stream *s, const char *lease_id, int *out_fd, SSL **out_ssl,
+                        uint8_t binding_out[PORTILLIA_BINDING_SIZE]) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += CLAIM_TIMEOUT;
@@ -216,10 +227,19 @@ bool relay_stream_claim(relay_stream *s, int *out_fd, SSL **out_ssl) {
     free(sess);
     pthread_mutex_unlock(&s->mu);
 
-    // Send Marker (MarkerTLSStart = 0x02)
-    uint8_t marker = 0x02;
-    int sent = ssl ? SSL_write(ssl, &marker, 1) : (int)write(fd, &marker, 1);
-    if (sent != 1) {
+    /* Mint the per-connection binding up front; discard it if the
+     * activation frame never reaches a live stream. */
+    uint8_t binding[PORTILLIA_BINDING_SIZE];
+    portillia_bindings_issue(portillia_bindings_shared(), lease_id, NULL, 0, binding);
+
+    /* Activation frame: 0x02 || 16-byte binding (stream_relay.go
+     * activateWithMarker). Write marker and binding as one frame. */
+    uint8_t frame[1 + PORTILLIA_BINDING_SIZE];
+    frame[0] = MARKER_TLS_START;
+    memcpy(frame + 1, binding, PORTILLIA_BINDING_SIZE);
+    int sent = ssl ? SSL_write(ssl, frame, sizeof(frame)) : (int)write(fd, frame, sizeof(frame));
+    if (sent != (int)sizeof(frame)) {
+        portillia_bindings_discard(portillia_bindings_shared(), binding);
         if (ssl) {
             SSL_shutdown(ssl);
             SSL_free(ssl);
@@ -230,6 +250,7 @@ bool relay_stream_claim(relay_stream *s, int *out_fd, SSL **out_ssl) {
 
     if (out_fd) *out_fd = fd;
     if (out_ssl) *out_ssl = ssl;
+    if (binding_out) memcpy(binding_out, binding, PORTILLIA_BINDING_SIZE);
     return true;
 }
 
@@ -262,8 +283,7 @@ bool lease_registry_is_allowed(lease_registry *r, const char *identity_key) {
 
 void lease_registry_register(lease_registry *r, const char *hostname, const char *identity_key, int64_t bps_limit,
                                const char *client_ip, const char *reported_ip,
-                               const char *hostname_hash, const uint8_t *ech_config_list, size_t ech_config_list_len,
-                               const char *ech_dns_hostname) {
+                               const char *hostname_hash) {
     if (!lease_registry_is_allowed(r, identity_key)) return;
     pthread_mutex_lock(&r->mu);
     time_t now = time(NULL);
@@ -275,15 +295,6 @@ void lease_registry_register(lease_registry *r, const char *hostname, const char
             if (client_ip) { free(r->records[i]->client_ip); r->records[i]->client_ip = strdup(client_ip); }
             if (reported_ip) { free(r->records[i]->reported_ip); r->records[i]->reported_ip = strdup(reported_ip); }
             if (hostname_hash) { free(r->records[i]->hostname_hash); r->records[i]->hostname_hash = strdup(hostname_hash); }
-            if (ech_config_list && ech_config_list_len > 0) {
-                free(r->records[i]->ech_config_list);
-                r->records[i]->ech_config_list = (uint8_t *)malloc(ech_config_list_len);
-                if (r->records[i]->ech_config_list) {
-                    memcpy(r->records[i]->ech_config_list, ech_config_list, ech_config_list_len);
-                    r->records[i]->ech_config_list_len = ech_config_list_len;
-                }
-            }
-            if (ech_dns_hostname) { free(r->records[i]->ech_dns_hostname); r->records[i]->ech_dns_hostname = strdup(ech_dns_hostname); }
             pthread_mutex_unlock(&r->mu);
             return;
         }
@@ -300,14 +311,6 @@ void lease_registry_register(lease_registry *r, const char *hostname, const char
         if (client_ip) rec->client_ip = strdup(client_ip);
         if (reported_ip) rec->reported_ip = strdup(reported_ip);
         if (hostname_hash) rec->hostname_hash = strdup(hostname_hash);
-        if (ech_config_list && ech_config_list_len > 0) {
-            rec->ech_config_list = (uint8_t *)malloc(ech_config_list_len);
-            if (rec->ech_config_list) {
-                memcpy(rec->ech_config_list, ech_config_list, ech_config_list_len);
-                rec->ech_config_list_len = ech_config_list_len;
-            }
-        }
-        if (ech_dns_hostname) rec->ech_dns_hostname = strdup(ech_dns_hostname);
         r->records[r->count++] = rec;
     }
     pthread_mutex_unlock(&r->mu);
@@ -420,8 +423,6 @@ void *lease_janitor_thread(void *arg) {
                 if (rec->client_ip) free(rec->client_ip);
                 if (rec->reported_ip) free(rec->reported_ip);
                 if (rec->hostname_hash) free(rec->hostname_hash);
-                if (rec->ech_config_list) free(rec->ech_config_list);
-                if (rec->ech_dns_hostname) free(rec->ech_dns_hostname);
                 if (rec->hop_token) free(rec->hop_token);
                 if (rec->hop_next_overlay_ipv4) free(rec->hop_next_overlay_ipv4);
                 if (rec->hop_next_token) free(rec->hop_next_token);
@@ -485,14 +486,28 @@ void portillia_server_handle_connect(const char *hostname, int client_fd) {
                 close(client_fd);
             }
         } else {
+            /* Tenant TLS termination decision point (portal-tunnel
+             * keyless/client.go): tenant TLS never terminates on the relay.
+             * Claim mints the per-connection binding (server.go
+             * bridgeLeaseConn: Issue with the hello span already observed)
+             * and writes 0x02 || binding on the reverse session; the browser's
+             * TLS bytes are then spliced verbatim (proxy.c hello capture pins
+             * the binding to the first relay-observed ClientHello, equivalent
+             * to bindings.go FixHelloOnWrite) to the SDK-side keyless TLS
+             * terminator, whose CertificateVerify is signed through the
+             * relay's transcript-bound /v1/sign. The relay-side cwist TLS
+             * only peeks SNI for routing; the bytes forwarded to the tenant
+             * are identical to what stream_relay.go forwards, so no relay-side
+             * t13server port is needed. */
+            uint8_t binding[PORTILLIA_BINDING_SIZE];
             int sdk_fd = -1;
             SSL *sdk_ssl = NULL;
-            if (relay_stream_claim(rec->stream, &sdk_fd, &sdk_ssl)) {
+            if (relay_stream_claim(rec->stream, rec->identity_key, &sdk_fd, &sdk_ssl, binding)) {
                 LOG_INFO("sni_connect sdk claimed fd=%d ssl=%p", sdk_fd, (void*)sdk_ssl);
                 if (sdk_ssl) {
-                    portillia_proxy_ssl_bridge_ex(client_fd, sdk_ssl, rec->bps_limit);
+                    portillia_proxy_ssl_bridge_bound(client_fd, sdk_ssl, rec->bps_limit, binding);
                 } else {
-                    portillia_proxy_bridge_ex(client_fd, sdk_fd, rec->bps_limit);
+                    portillia_proxy_bridge_bound(client_fd, sdk_fd, rec->bps_limit, binding);
                 }
             } else {
                 LOG_WARN("sni_connect sdk claim failed hostname=%s", hostname);
@@ -519,14 +534,15 @@ void portillia_server_handle_hop_stream(int hop_fd, const char *token) {
                  close(hop_fd);
              }
         } else {
+             uint8_t binding[PORTILLIA_BINDING_SIZE];
              int sdk_fd = -1;
              SSL *sdk_ssl = NULL;
-             if (relay_stream_claim(rec->stream, &sdk_fd, &sdk_ssl)) {
+             if (relay_stream_claim(rec->stream, rec->identity_key, &sdk_fd, &sdk_ssl, binding)) {
                  LOG_INFO("hop_stream sdk claimed fd=%d ssl=%p", sdk_fd, (void*)sdk_ssl);
                  if (sdk_ssl) {
-                     portillia_proxy_ssl_bridge_ex(hop_fd, sdk_ssl, rec->bps_limit);
+                     portillia_proxy_ssl_bridge_bound(hop_fd, sdk_ssl, rec->bps_limit, binding);
                  } else {
-                     portillia_proxy_bridge_ex(hop_fd, sdk_fd, rec->bps_limit);
+                     portillia_proxy_bridge_bound(hop_fd, sdk_fd, rec->bps_limit, binding);
                  }
              } else {
                  LOG_WARN("hop_stream sdk claim failed token=%.8s...", token);
@@ -607,16 +623,15 @@ bool portillia_registry_tunnel_status(const char *hostname, char *resolved_hostn
 void portillia_registry_register(const char *hostname, const char *identity_key, int64_t bps_limit) {
     if (!global_server) return;
     lease_registry_register(global_server->registry, hostname, identity_key, bps_limit,
-                            NULL, NULL, NULL, NULL, 0, NULL);
+                            NULL, NULL, NULL);
 }
 
 void portillia_registry_register_ex(const char *hostname, const char *identity_key, int64_t bps_limit,
                                     const char *client_ip, const char *reported_ip,
-                                    const char *hostname_hash, const uint8_t *ech_config_list, size_t ech_config_list_len,
-                                    const char *ech_dns_hostname) {
+                                    const char *hostname_hash) {
     if (!global_server) return;
     lease_registry_register(global_server->registry, hostname, identity_key, bps_limit,
-                            client_ip, reported_ip, hostname_hash, ech_config_list, ech_config_list_len, ech_dns_hostname);
+                            client_ip, reported_ip, hostname_hash);
 }
 
 char* portillia_registry_to_json() {
@@ -634,14 +649,6 @@ char* portillia_registry_to_json() {
         cJSON_AddStringToObject(item, "client_ip", rec->client_ip ? rec->client_ip : "");
         cJSON_AddStringToObject(item, "reported_ip", rec->reported_ip ? rec->reported_ip : "");
         cJSON_AddStringToObject(item, "hostname_hash", rec->hostname_hash ? rec->hostname_hash : "");
-        if (rec->ech_config_list && rec->ech_config_list_len > 0) {
-            char *b64 = base64_std_encode(rec->ech_config_list, rec->ech_config_list_len);
-            if (b64) {
-                cJSON_AddStringToObject(item, "ech_config_list", b64);
-                free(b64);
-            }
-        }
-        cJSON_AddStringToObject(item, "ech_dns_hostname", rec->ech_dns_hostname ? rec->ech_dns_hostname : "");
         cJSON_AddNumberToObject(item, "expires_in", (double)(rec->expires_at - now));
         cJSON_AddNumberToObject(item, "ready", (double)(rec->stream ? rec->stream->count : 0));
         cJSON_AddNumberToObject(item, "bps_limit", (double)rec->bps_limit);

@@ -25,8 +25,7 @@
 extern void portillia_registry_register(const char *hostname, const char *identity_key, int64_t bps_limit);
 extern void portillia_registry_register_ex(const char *hostname, const char *identity_key, int64_t bps_limit,
                                            const char *client_ip, const char *reported_ip,
-                                           const char *hostname_hash, const uint8_t *ech_config_list, size_t ech_config_list_len,
-                                           const char *ech_dns_hostname);
+                                           const char *hostname_hash);
 extern void portillia_registry_register_hop(const char *hop_token, const char *next_ipv4, const char *next_token, const char *identity_key);
 extern int portillia_registry_offer_conn(const char *hostname, int sdk_fd);
 extern int portillia_registry_offer_ssl_conn(const char *hostname, int sdk_fd, SSL *sdk_ssl);
@@ -63,8 +62,6 @@ typedef struct {
     bool tcp_enabled;
     char route_hostname[256];
     char hostname_hash[256];
-    uint8_t ech_config_list[4096];
-    size_t ech_config_list_len;
     char domain[256];
     char nonce[32];
     time_t expires_at;
@@ -163,8 +160,6 @@ static const char* store_register_challenge(
     bool tcp_enabled,
     const char *route_hostname,
     const char *hostname_hash,
-    const uint8_t *ech_config_list,
-    size_t ech_config_list_len,
     const char *domain,
     const char *nonce,
     time_t expires_at,
@@ -189,10 +184,6 @@ static const char* store_register_challenge(
     entry->tcp_enabled = tcp_enabled;
     if (route_hostname) snprintf(entry->route_hostname, sizeof(entry->route_hostname), "%s", route_hostname);
     if (hostname_hash) snprintf(entry->hostname_hash, sizeof(entry->hostname_hash), "%s", hostname_hash);
-    if (ech_config_list && ech_config_list_len > 0 && ech_config_list_len <= sizeof(entry->ech_config_list)) {
-        memcpy(entry->ech_config_list, ech_config_list, ech_config_list_len);
-        entry->ech_config_list_len = ech_config_list_len;
-    }
     if (domain) snprintf(entry->domain, sizeof(entry->domain), "%s", domain);
     if (nonce) snprintf(entry->nonce, sizeof(entry->nonce), "%s", nonce);
     entry->expires_at = expires_at;
@@ -328,18 +319,12 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                 char hostname[256] = {0};
                 derive_hostname(identity_name, identity_address, hostname, sizeof(hostname));
 
-                /* Extract challenge fields for stream lease / ECH */
+                /* Extract challenge fields for stream lease */
                 const char *route_hostname = NULL;
                 const char *hostname_hash = NULL;
-                const uint8_t *ech_config_list = NULL;
-                size_t ech_config_list_len = 0;
                 if (challenge) {
                     route_hostname = challenge->route_hostname[0] ? challenge->route_hostname : NULL;
                     hostname_hash = challenge->hostname_hash[0] ? challenge->hostname_hash : NULL;
-                    if (challenge->ech_config_list_len > 0) {
-                        ech_config_list = challenge->ech_config_list;
-                        ech_config_list_len = challenge->ech_config_list_len;
-                    }
                 }
 
                 /* Validate transport constraints (Go parity) */
@@ -367,14 +352,6 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                     free(client_ip);
                     return;
                 }
-                if (ech_config_list_len > 0 && !route_hostname) {
-                    res->status_code = CWIST_HTTP_BAD_REQUEST;
-                    cwist_sstring_assign(res->body, "{\"ok\": false, \"error\": {\"code\": \"invalid_request\", \"message\": \"ech config list requires route hostname\"}}");
-                    cJSON_Delete(root);
-                    cwist_http_header_add(&res->headers, "Content-Type", "application/json");
-                    free(client_ip);
-                    return;
-                }
                 /* Validate route_hostname is child of root hostname */
                 if (route_hostname) {
                     const char *root_host = portillia_server_root_hostname();
@@ -396,7 +373,7 @@ void handle_register(cwist_http_request *req, cwist_http_response *res) {
                 portillia_registry_register(hostname, identity_address, limit);
                 /* Register with extended fields */
                 portillia_registry_register_ex(hostname, identity_address, limit,
-                                               client_ip, reported_ip, hostname_hash, ech_config_list, ech_config_list_len, NULL);
+                                               client_ip, reported_ip, hostname_hash);
 
                 time_t expires_at = time(NULL) + 300;
                 char expires_at_str[64] = {0};
@@ -580,6 +557,7 @@ void handle_discovery(cwist_http_request *req, cwist_http_response *res) {
     (void)req;
     cJSON *data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "protocol_version", PORTILLIA_DISCOVERY_VERSION);
+    cJSON_AddStringToObject(data, "release_version", PORTILLIA_RELEASE_VERSION);
     char generated_at[64] = {0};
     format_time_rfc3339(time(NULL), generated_at, sizeof(generated_at));
     cJSON_AddStringToObject(data, "generated_at", generated_at);
@@ -757,7 +735,6 @@ void handle_register_challenge(cwist_http_request *req, cwist_http_response *res
                 cJSON *tcp_obj = cJSON_GetObjectItem(req_root, "tcp_enabled");
                 cJSON *route_obj = cJSON_GetObjectItem(req_root, "route_hostname");
                 cJSON *hash_obj = cJSON_GetObjectItem(req_root, "hostname_hash");
-                cJSON *ech_obj = cJSON_GetObjectItem(req_root, "ech_config_list");
                 const char *addr = (addr_obj && cJSON_IsString(addr_obj)) ? addr_obj->valuestring : "";
                 const char *name = (name_obj && cJSON_IsString(name_obj)) ? name_obj->valuestring : "";
                 int ttl = (ttl_obj && cJSON_IsNumber(ttl_obj)) ? ttl_obj->valueint : 300;
@@ -766,16 +743,6 @@ void handle_register_challenge(cwist_http_request *req, cwist_http_response *res
                 bool tcp = tcp_obj ? cJSON_IsTrue(tcp_obj) : false;
                 const char *route_hostname = (route_obj && cJSON_IsString(route_obj)) ? route_obj->valuestring : NULL;
                 const char *hostname_hash = (hash_obj && cJSON_IsString(hash_obj)) ? hash_obj->valuestring : NULL;
-                uint8_t ech_buf[4096] = {0};
-                size_t ech_len = 0;
-                if (ech_obj && cJSON_IsString(ech_obj) && ech_obj->valuestring) {
-                    int decoded = EVP_DecodeBlock(ech_buf, (const unsigned char *)ech_obj->valuestring, (int)strlen(ech_obj->valuestring));
-                    if (decoded > 0) {
-                        size_t b64_len = strlen(ech_obj->valuestring);
-                        while (b64_len > 0 && ech_obj->valuestring[b64_len - 1] == '=') { decoded--; b64_len--; }
-                        ech_len = (size_t)decoded;
-                    }
-                }
                 char domain[256] = {0};
                 char *host_header = cwist_http_header_get(req->headers, "Host");
                 if (host_header && host_header[0]) {
@@ -814,7 +781,7 @@ void handle_register_challenge(cwist_http_request *req, cwist_http_response *res
                     return;
                 }
                 store_register_challenge(name, addr, msg, udp, tcp, route_hostname, hostname_hash,
-                                         ech_len > 0 ? ech_buf : NULL, ech_len, domain, nonce, exp, challenge_id);
+                                         domain, nonce, exp, challenge_id);
                 cJSON *root = cJSON_CreateObject();
                 cJSON *data = cJSON_CreateObject();
                 cJSON_AddStringToObject(data, "challenge_id", challenge_id);
