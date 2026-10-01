@@ -338,7 +338,6 @@ static void *ssl_copy_fd_to_ssl(void *arg) {
     ssl_copy_args *a = (ssl_copy_args *)arg;
     int fd = a->client_fd;
     SSL *ssl = a->ssl;
-    pthread_mutex_t *mu = a->ssl_mu;
     int64_t bytes_per_sec = a->bps_limit > 0 ? a->bps_limit / 8 : 0;
     bool capture = a->capture;
     hello_capture cap = a->cap;
@@ -351,9 +350,10 @@ static void *ssl_copy_fd_to_ssl(void *arg) {
         if (capture && !capture_on_write(&cap, (const uint8_t *)buf, n)) break;
         ssize_t off = 0;
         while (off < n) {
-            pthread_mutex_lock(mu);
+            /* No lock: this thread only writes while the peer thread only
+             * reads; taking the shared mutex here would block behind a
+             * blocking SSL_read and deadlock the splice. */
             int w = SSL_write(ssl, buf + off, (int)(n - off));
-            pthread_mutex_unlock(mu);
             if (w > 0) {
                 off += w;
                 continue;
@@ -376,15 +376,15 @@ static void *ssl_copy_ssl_to_fd(void *arg) {
     ssl_copy_args *a = (ssl_copy_args *)arg;
     int fd = a->client_fd;
     SSL *ssl = a->ssl;
-    pthread_mutex_t *mu = a->ssl_mu;
     int64_t bytes_per_sec = a->bps_limit > 0 ? a->bps_limit / 8 : 0;
     free(a);
 
     char buf[COPY_CHUNK];
     while (1) {
-        pthread_mutex_lock(mu);
+        /* No lock: one thread only ever reads this SSL while another only
+         * writes it; holding the mutex across a blocking SSL_read would
+         * deadlock the writer. */
         int n = SSL_read(ssl, buf, sizeof(buf));
-        pthread_mutex_unlock(mu);
         if (n > 0) {
             ssize_t off = 0;
             while (off < n) {
