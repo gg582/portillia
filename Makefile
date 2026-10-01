@@ -7,8 +7,11 @@ CFLAGS = -Wall -Wextra -O3 -I. -I./include -I./libs/cwist/include -I./libs/cwist
 # undefined OpenSSL-3-only symbol can interpose into cwist's TLS stack at
 # runtime. --exclude-libs keeps BoringSSL's symbols out of the executable's
 # dynamic symbol table, so libcurl still gets the real libssl.so.3 (OpenSSL 3
-# ABI) at runtime with no interposition.
-LDFLAGS = -L. -L./libs/cwist -L./libs/cwist/lib/lsquic/build/src/liblsquic -L./libs/cwist/lib/cjson -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -L./libs/secp256k1/.libs -lcwist -llsquic ./libs/cwist/lib/boringssl/build/libssl.a ./libs/cwist/lib/boringssl/build/libcrypto.a -Wl,--exclude-libs=libssl.a -Wl,--exclude-libs=libcrypto.a -lttak -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread -lsecp256k1 -lm -lz -lstdc++
+# ABI) at runtime with no interposition. The trailing -lssl -lcrypto is NOT
+# for portillia/cwist (those bind to the BoringSSL archives above): it satisfies
+# ngtcp2_crypto_ossl's OpenSSL-3 ABI when that library is linked statically
+# (Docker builder), where no shared DT_NEEDED pulls libssl.so.3 in implicitly.
+LDFLAGS = -L. -L./libs/cwist -L./libs/cwist/lib/lsquic/build/src/liblsquic -L./libs/cwist/lib/cjson -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -L./libs/secp256k1/.libs -lcwist -llsquic ./libs/cwist/lib/boringssl/build/libssl.a ./libs/cwist/lib/boringssl/build/libcrypto.a -Wl,--exclude-libs=libssl.a -Wl,--exclude-libs=libcrypto.a -lttak -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread -lsecp256k1 -lm -lz -lstdc++ -lssl -lcrypto
 
 # ngtcp2 detection (supports both distro packages and source builds)
 NGTCP2_CFLAGS := $(shell pkg-config --cflags libngtcp2 2>/dev/null)
