@@ -10,8 +10,6 @@
 #include <cjson/cJSON.h>
 #include <portillia/utils/log.h>
 #include <unistd.h>
-#include <openssl/evp.h>
-#include <openssl/sha.h>
 #include <secp256k1.h>
 #include <secp256k1_recovery.h>
 #include "portal_bridge.h"
@@ -115,80 +113,6 @@ void ensure_descriptor_identity() {
             snprintf(g_desc_addr, sizeof(g_desc_addr), "%s", identity->address);
         }
         portillia_relay_identity_free(identity);
-    }
-}
-
-static int sign_descriptor_compact_b64(const char *canonical_json, char *out_b64, size_t out_len) {
-    ensure_descriptor_identity();
-    if (!canonical_json || !canonical_json[0] || !g_desc_priv_hex[0]) return -1;
-
-    uint8_t seckey[32];
-    if (hex_to_bytes32(g_desc_priv_hex, seckey) != 0) return -1;
-    uint8_t hash[SHA256_DIGEST_LENGTH];
-    SHA256((const uint8_t *)canonical_json, strlen(canonical_json), hash);
-
-    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
-    if (!ctx) return -1;
-    secp256k1_ecdsa_recoverable_signature sig;
-    int recid = 0;
-    if (!secp256k1_ecdsa_sign_recoverable(ctx, &sig, hash, seckey, NULL, NULL)) {
-        secp256k1_context_destroy(ctx);
-        return -1;
-    }
-    uint8_t compact64[64];
-    secp256k1_ecdsa_recoverable_signature_serialize_compact(ctx, compact64, &recid, &sig);
-    secp256k1_context_destroy(ctx);
-
-    uint8_t compact65[65];
-    compact65[0] = (uint8_t)(27 + recid + 4);
-    memcpy(compact65 + 1, compact64, 64);
-
-    size_t encoded_len = 4 * ((65 + 2) / 3);
-    if (out_len <= encoded_len) return -1;
-    EVP_EncodeBlock((unsigned char *)out_b64, compact65, 65);
-    return 0;
-}
-
-static void json_add_time_unix_nano(cJSON *obj, const char *key, time_t t) {
-    cJSON_AddNumberToObject(obj, key, (double)((int64_t)t * 1000000000LL));
-}
-
-static void build_canonical_descriptor_json(const portillia_relay_descriptor *d, char *out, size_t out_len) {
-    cJSON *obj = cJSON_CreateObject();
-    cJSON_AddStringToObject(obj, "address", d->address ? d->address : "");
-    cJSON_AddStringToObject(obj, "version", d->version ? d->version : "");
-    cJSON_AddNumberToObject(obj, "sequence", (double)d->sequence);
-    cJSON_AddNumberToObject(obj, "version_val", (double)d->version_val);
-    json_add_time_unix_nano(obj, "issued_at_unix_nano", d->issued_at);
-    json_add_time_unix_nano(obj, "expires_at_unix_nano", d->expires_at);
-    cJSON_AddStringToObject(obj, "api_https_addr", d->api_https_addr ? d->api_https_addr : "");
-    cJSON_AddStringToObject(obj, "wireguard_public_key", d->wireguard_public_key ? d->wireguard_public_key : "");
-    cJSON_AddNumberToObject(obj, "wireguard_port", d->wireguard_port);
-    cJSON_AddStringToObject(obj, "overlay_ipv4", d->overlay_ipv4 ? d->overlay_ipv4 : "");
-    
-    cJSON *cidrs = cJSON_CreateArray();
-    for (size_t i = 0; i < d->overlay_cidrs_count; i++) {
-        cJSON_AddItemToArray(cidrs, cJSON_CreateString(d->overlay_cidrs[i] ? d->overlay_cidrs[i] : ""));
-    }
-    cJSON_AddItemToObject(obj, "overlay_cidrs", cidrs);
-
-    cJSON_AddBoolToObject(obj, "supports_overlay", d->supports_overlay);
-    cJSON_AddBoolToObject(obj, "supports_overlay_peer", d->supports_overlay_peer);
-    cJSON_AddBoolToObject(obj, "supports_udp", d->supports_udp);
-    cJSON_AddBoolToObject(obj, "supports_tcp", d->supports_tcp);
-    cJSON_AddNumberToObject(obj, "active_connections", (double)d->active_connections);
-    cJSON_AddNumberToObject(obj, "tcp_bps", d->tcp_bps);
-    cJSON_AddNumberToObject(obj, "load", d->load);
-    cJSON_AddNumberToObject(obj, "load_score", d->load_score);
-    cJSON_AddNumberToObject(obj, "last_updated", (double)d->last_updated);
-    
-    char *str = cJSON_PrintUnformatted(obj);
-    cJSON_Delete(obj);
-    if (str) {
-        snprintf(out, out_len, "%s", str);
-        free(str);
-    } else {
-        out[0] = '\0';
     }
 }
 
@@ -507,16 +431,44 @@ static void discovery_task(ttak_task_t *task, void *arg) {
     desc.supports_udp = settings ? settings->udp_enabled : false;
     desc.supports_tcp = settings ? settings->tcp_port_enabled : true;
 
-    char canonical[2048] = {0};
-    build_canonical_descriptor_json(&desc, canonical, sizeof(canonical));
-    LOG_DEBUG("discovery canonical json=%s", canonical);
-    char sig_b64[256] = {0};
-    if (sign_descriptor_compact_b64(canonical, sig_b64, sizeof(sig_b64)) == 0) {
-        free(desc.signature);
-        desc.signature = strdup(sig_b64);
-    } else {
+    /* Sign through rust_bridge SignDescriptorJSON so the canonical bytes are
+     * byte-identical to portal-tunnel's Go canonical form and the announce
+     * verifies on Go relays. */
+    ensure_descriptor_identity();
+    cJSON *sign_json = cJSON_CreateObject();
+    cJSON_AddStringToObject(sign_json, "address", desc.address ? desc.address : "");
+    cJSON_AddStringToObject(sign_json, "version", desc.version ? desc.version : "");
+    char tbuf[32] = {0};
+    snprintf(tbuf, sizeof(tbuf), "%lld", (long long)desc.issued_at);
+    cJSON_AddStringToObject(sign_json, "issued_at", tbuf);
+    snprintf(tbuf, sizeof(tbuf), "%lld", (long long)desc.expires_at);
+    cJSON_AddStringToObject(sign_json, "expires_at", tbuf);
+    cJSON_AddStringToObject(sign_json, "api_https_addr", desc.api_https_addr ? desc.api_https_addr : "");
+    cJSON_AddBoolToObject(sign_json, "supports_udp", desc.supports_udp);
+    cJSON_AddBoolToObject(sign_json, "supports_tcp", desc.supports_tcp);
+    cJSON_AddNumberToObject(sign_json, "active_connections", (double)desc.active_connections);
+    cJSON_AddNumberToObject(sign_json, "tcp_bps", desc.tcp_bps);
+    char *sign_str = cJSON_PrintUnformatted(sign_json);
+    cJSON_Delete(sign_json);
+
+    char *signed_str = (sign_str && g_desc_priv_hex[0]) ? SignDescriptorJSON(sign_str, g_desc_priv_hex) : NULL;
+    free(sign_str);
+    if (signed_str) {
+        cJSON *signed_json = cJSON_Parse(signed_str);
+        if (signed_json) {
+            cJSON *sig = cJSON_GetObjectItem(signed_json, "signature");
+            if (cJSON_IsString(sig) && sig->valuestring && sig->valuestring[0]) {
+                free(desc.signature);
+                desc.signature = strdup(sig->valuestring);
+            }
+            cJSON_Delete(signed_json);
+        }
+        FreeCString(signed_str);
+    }
+    if (!desc.signature || !desc.signature[0]) {
         free(desc.signature);
         desc.signature = strdup("");
+        LOG_WARN("discovery announce descriptor signing failed");
     }
 
     if (cfg->relay_set) {

@@ -192,11 +192,117 @@ struct RelayDescriptor {
     load_score: f64,
     #[serde(default, rename = "last_updated")]
     last_updated: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ivnp_destination: Option<String>,
     #[serde(default)]
     signature: String,
 }
 
 fn fmt_bool(b: bool) -> &'static str { if b { "true" } else { "false" } }
+
+// Matches Go encoding/json string escaping (including HTML chars <, >, &).
+fn go_json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+// Formats an f64 byte-identically to Go encoding/json: shortest round-trip
+// digits rendered in 'f' notation for 1e-6 <= |f| < 1e21 and 'e' notation
+// (two-digit signed exponent) outside that range.
+fn go_json_f64(f: f64) -> String {
+    if f == 0.0 {
+        return if f.is_sign_negative() { "-0".to_string() } else { "0".to_string() };
+    }
+    if !f.is_finite() {
+        return "0".to_string();
+    }
+    let sci = format!("{:e}", f); // e.g. "-1.2345e-7", "1e20", "2.5e3"
+    let (mantissa, exp) = sci.split_once('e').unwrap();
+    let exp: i32 = exp.parse().unwrap();
+    let neg = mantissa.starts_with('-');
+    let mantissa = mantissa.trim_start_matches('-');
+    let int_len = mantissa.find('.').map(|i| i).unwrap_or(mantissa.len()) as i32;
+    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+    let e10 = exp + int_len; // value = 0.digits * 10^e10
+    let abs = f.abs();
+    let mut out = String::new();
+    if neg { out.push('-'); }
+    if abs >= 1e-6 && abs < 1e21 {
+        // 'f' notation
+        if e10 <= 0 {
+            out.push_str("0.");
+            for _ in 0..(-e10) { out.push('0'); }
+            out.push_str(&digits);
+        } else if (e10 as usize) >= digits.len() {
+            out.push_str(&digits);
+            for _ in 0..(e10 as usize - digits.len()) { out.push('0'); }
+        } else {
+            out.push_str(&digits[..e10 as usize]);
+            out.push('.');
+            out.push_str(&digits[e10 as usize..]);
+        }
+    } else {
+        // 'e' notation: d[.rest]e±XX
+        out.push_str(&digits[..1]);
+        if digits.len() > 1 {
+            out.push('.');
+            out.push_str(&digits[1..]);
+        }
+        let e = e10 - 1;
+        if e < 0 {
+            out.push_str(&format!("e-{}", -e));
+        } else {
+            out.push_str(&format!("e+{}", e));
+        }
+    }
+    out
+}
+
+// Matches portal-tunnel canonicalRelayDescriptorBytes
+// (portal/discovery/relay_descriptor.go): the exact field set, names, order,
+// and number/string formatting produced by Go's json.Marshal.
+fn build_canonical_descriptor_json_go(d: &RelayDescriptor) -> String {
+    let mut out = String::new();
+    out.push_str("{\"address\":\"");
+    out.push_str(&go_json_escape(&d.address));
+    out.push_str("\",\"version\":\"");
+    out.push_str(&go_json_escape(&d.version));
+    out.push_str("\",\"issued_at_unix_nano\":");
+    out.push_str(&d.issued_at_unix_nano.to_string());
+    out.push_str(",\"expires_at_unix_nano\":");
+    out.push_str(&d.expires_at_unix_nano.to_string());
+    out.push_str(",\"api_https_addr\":\"");
+    out.push_str(&go_json_escape(&d.api_https_addr));
+    out.push_str("\",\"supports_udp\":");
+    out.push_str(fmt_bool(d.supports_udp));
+    out.push_str(",\"supports_tcp\":");
+    out.push_str(fmt_bool(d.supports_tcp));
+    out.push_str(",\"active_connections\":");
+    out.push_str(&d.active_connections.to_string());
+    out.push_str(",\"tcp_bps\":");
+    out.push_str(&go_json_f64(d.tcp_bps));
+    if let Some(ref ivnp) = d.ivnp_destination {
+        out.push_str(",\"ivnp_destination\":\"");
+        out.push_str(&go_json_escape(ivnp));
+        out.push('"');
+    }
+    out.push('}');
+    out
+}
 
 fn build_canonical_descriptor_json_long(d: &RelayDescriptor) -> String {
     // Matches src/portal/discovery/discovery.c build_canonical_descriptor_json
@@ -250,11 +356,14 @@ fn build_canonical_descriptor_json_short(d: &RelayDescriptor) -> String {
 
 fn descriptor_from_input_json(json: &str) -> Option<RelayDescriptor> {
     let mut d: RelayDescriptor = serde_json::from_str(json).ok()?;
-    // Convert RFC3339 issued_at/expires_at to unix nano if present and numeric fields are zero.
+    // Accept RFC3339 issued_at/expires_at (Go wire form) or numeric unix
+    // seconds; store as unix nanoseconds to match Go's time.Time.UnixNano.
     if d.issued_at_unix_nano == 0 {
         if let Some(ref s) = d.issued_at {
             if let Ok(t) = s.parse::<i64>() {
                 d.issued_at_unix_nano = t * 1_000_000_000;
+            } else if let Ok(dt) = time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339) {
+                d.issued_at_unix_nano = dt.unix_timestamp() * 1_000_000_000 + dt.nanosecond() as i64;
             }
         }
     }
@@ -262,6 +371,8 @@ fn descriptor_from_input_json(json: &str) -> Option<RelayDescriptor> {
         if let Some(ref s) = d.expires_at {
             if let Ok(t) = s.parse::<i64>() {
                 d.expires_at_unix_nano = t * 1_000_000_000;
+            } else if let Ok(dt) = time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339) {
+                d.expires_at_unix_nano = dt.unix_timestamp() * 1_000_000_000 + dt.nanosecond() as i64;
             }
         }
     }
@@ -273,7 +384,7 @@ pub extern "C" fn SignDescriptorJSON(c_desc_json: *const c_char, c_private_key_h
     let json = match to_rust_string(c_desc_json) { Some(s) => s, None => return ptr::null_mut() };
     let priv_hex = match to_rust_string(c_private_key_hex) { Some(s) => s, None => return ptr::null_mut() };
     let mut desc = match descriptor_from_input_json(&json) { Some(d) => d, None => return ptr::null_mut() };
-    let canonical = build_canonical_descriptor_json_long(&desc);
+    let canonical = build_canonical_descriptor_json_go(&desc);
     let sig = match sign_sha256_compact_b64(canonical.as_bytes(), &priv_hex) {
         Some(s) => s,
         None => return ptr::null_mut(),
@@ -287,6 +398,10 @@ pub extern "C" fn VerifyDescriptorJSON(c_desc_json: *const c_char) -> *mut c_cha
     let json = match to_rust_string(c_desc_json) { Some(s) => s, None => return ptr::null_mut() };
     let desc = match descriptor_from_input_json(&json) { Some(d) => d, None => return ptr::null_mut() };
     if desc.signature.is_empty() || desc.address.is_empty() { return ptr::null_mut(); }
+    let canonical_go = build_canonical_descriptor_json_go(&desc);
+    if verify_compact_b64(canonical_go.as_bytes(), &desc.signature, &desc.address) {
+        return json_or_null(&desc);
+    }
     let canonical_long = build_canonical_descriptor_json_long(&desc);
     if verify_compact_b64(canonical_long.as_bytes(), &desc.signature, &desc.address) {
         return json_or_null(&desc);
