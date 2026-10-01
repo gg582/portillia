@@ -124,23 +124,21 @@ static int json_b64_field(const cJSON *root, const char *name, uint8_t **out, si
     return 0;
 }
 
-/* Signs the TLS 1.3 CertificateVerify content (RFC 8446 §4.4.3) with the
- * relay certificate key, mirroring signer.Service.SignTranscript: the digest
- * fed to the signing key is SHA-256(content) for ECDSA_SHA256 and
- * RSA_PSS_SHA256 (PSS salt length = hash length), and the raw content for
- * Ed25519. */
+/* Signs the (already hashed) CertificateVerify input with the relay
+ * certificate key, mirroring signer.Service.SignTranscript: hashContentForAlgorithm
+ * pre-hashes the content (SHA-256 for ECDSA_SHA256 / RSA_PSS_SHA256, raw
+ * content for Ed25519) and signByAlgorithm feeds that digest to the key with
+ * no additional hashing. */
 static int sign_certificate_verify(const char *algorithm,
-                                   const uint8_t *content, size_t content_len,
+                                   const uint8_t *digest, size_t digest_len,
                                    uint8_t **sig_out, size_t *sig_len) {
-    const EVP_MD *md = NULL;
-    int pss = 0;
+    bool pss = false;
     if (strcmp(algorithm, "ECDSA_SHA256") == 0) {
-        md = EVP_sha256();
+        /* raw EVP_PKEY_sign over the digest */
     } else if (strcmp(algorithm, "RSA_PSS_SHA256") == 0) {
-        md = EVP_sha256();
-        pss = 1;
+        pss = true;
     } else if (strcmp(algorithm, "Ed25519") == 0) {
-        md = NULL;
+        /* raw EVP_PKEY_sign over the content */
     } else {
         LOG_ERROR("Keyless server: unsupported algorithm %s", algorithm);
         return -2;
@@ -152,29 +150,24 @@ static int sign_certificate_verify(const char *algorithm,
         return -1;
     }
 
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    if (!ctx) {
-        EVP_PKEY_free(pkey);
-        return -1;
-    }
+    EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new(pkey, NULL);
+    EVP_PKEY_free(pkey);
+    if (!pctx) return -1;
 
-    EVP_PKEY_CTX *pctx = NULL;
     int rc = -1;
-
-    if (EVP_DigestSignInit(ctx, &pctx, md, NULL, pkey) != 1) goto done;
+    if (EVP_PKEY_sign_init(pctx) != 1) goto done;
     if (pss) {
         if (EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PSS_PADDING) != 1) goto done;
         if (EVP_PKEY_CTX_set_rsa_pss_saltlen(pctx, RSA_PSS_SALTLEN_DIGEST) != 1) goto done;
-        if (EVP_PKEY_CTX_set_signature_md(pctx, md) != 1) goto done;
+        if (EVP_PKEY_CTX_set_signature_md(pctx, EVP_sha256()) != 1) goto done;
     }
-    if (EVP_DigestSignUpdate(ctx, content, content_len) != 1) goto done;
 
-    size_t req_len = 0;
-    if (EVP_DigestSignFinal(ctx, NULL, &req_len) != 1) goto done;
-    *sig_out = malloc(req_len);
+    size_t out_cap = 0;
+    if (EVP_PKEY_sign(pctx, NULL, &out_cap, digest, digest_len) != 1) goto done;
+    *sig_out = malloc(out_cap);
     if (!*sig_out) goto done;
-    *sig_len = req_len;
-    if (EVP_DigestSignFinal(ctx, *sig_out, sig_len) != 1) {
+    *sig_len = out_cap;
+    if (EVP_PKEY_sign(pctx, *sig_out, sig_len, digest, digest_len) != 1) {
         free(*sig_out);
         *sig_out = NULL;
         goto done;
@@ -182,8 +175,7 @@ static int sign_certificate_verify(const char *algorithm,
     rc = 0;
 
 done:
-    EVP_MD_CTX_free(ctx);
-    EVP_PKEY_free(pkey);
+    EVP_PKEY_CTX_free(pctx);
     return rc;
 }
 
