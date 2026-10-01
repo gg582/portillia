@@ -214,29 +214,6 @@ static char *base64_raw_url_encode(const uint8_t *data, size_t len) {
     return out;
 }
 
-static char *base64_std_encode(const uint8_t *data, size_t len) {
-    size_t b64_len = ((len + 2) / 3) * 4;
-    char *b64 = (char *)malloc(b64_len + 1);
-    if (!b64) return NULL;
-    int out_len = EVP_EncodeBlock((unsigned char *)b64, data, (int)len);
-    if (out_len < 0) { free(b64); return NULL; }
-    b64[out_len] = '\0';
-    return b64;
-}
-
-static uint8_t *base64_std_decode(const char *b64, size_t *out_len) {
-    if (!b64 || !out_len) return NULL;
-    *out_len = 0;
-    size_t len = strlen(b64);
-    uint8_t *buf = (uint8_t *)malloc(len + 1);
-    if (!buf) return NULL;
-    int rc = EVP_DecodeBlock(buf, (const unsigned char *)b64, (int)len);
-    if (rc < 0) { free(buf); return NULL; }
-    while (len > 0 && b64[len - 1] == '=') { rc--; len--; }
-    *out_len = (size_t)rc;
-    return buf;
-}
-
 static char *derive_hop_token(const portillia_identity_t *identity,
                               const char *public_hostname,
                               size_t hop_index,
@@ -549,13 +526,6 @@ static int build_hop_route_payload(const char *method, const portillia_hop_route
     cJSON_AddStringToObject(root, "public_hostname", route->public_hostname ? route->public_hostname : "");
     cJSON_AddStringToObject(root, "route_hostname", route->route_hostname ? route->route_hostname : "");
     cJSON_AddStringToObject(root, "hostname_hash", route->hostname_hash ? route->hostname_hash : "");
-    if (route->ech_config_list && route->ech_config_list_len > 0) {
-        char *b64 = base64_std_encode(route->ech_config_list, route->ech_config_list_len);
-        cJSON_AddStringToObject(root, "ech_config_list", b64 ? b64 : "");
-        free(b64);
-    } else {
-        cJSON_AddStringToObject(root, "ech_config_list", "");
-    }
     cJSON_AddStringToObject(root, "match_token", route->match_token ? route->match_token : "");
     cJSON_AddItemToObject(root, "forward_relay", relay_descriptor_to_canonical_json(&route->forward_relay, false));
     cJSON_AddStringToObject(root, "forward_token", route->forward_token ? route->forward_token : "");
@@ -649,13 +619,6 @@ static cJSON *hop_route_to_request_json(const portillia_hop_route_t *route, cons
     if (route->public_hostname && route->public_hostname[0]) cJSON_AddStringToObject(root, "public_hostname", route->public_hostname);
     if (route->route_hostname && route->route_hostname[0]) cJSON_AddStringToObject(root, "route_hostname", route->route_hostname);
     if (route->hostname_hash && route->hostname_hash[0]) cJSON_AddStringToObject(root, "hostname_hash", route->hostname_hash);
-    if (route->ech_config_list && route->ech_config_list_len > 0) {
-        char *b64 = base64_std_encode(route->ech_config_list, route->ech_config_list_len);
-        if (b64) {
-            cJSON_AddStringToObject(root, "ech_config_list", b64);
-            free(b64);
-        }
-    }
     if (route->match_token && route->match_token[0]) cJSON_AddStringToObject(root, "match_token", route->match_token);
     if (route->forward_token && route->forward_token[0]) cJSON_AddStringToObject(root, "forward_token", route->forward_token);
     if (route->signature && route->signature[0]) cJSON_AddStringToObject(root, "signature", route->signature);
@@ -1064,49 +1027,34 @@ int portillia_api_register_lease(portillia_http_client_t *client,
         for (size_t i = 0; i < multi_hop_count; i++) portillia_relay_descriptor_cleanup(&path[i]);
         free(path);
 
-        /* Compute ECH materials for multihop stream lease (first hop) */
+        /* Compute stream-lease routing materials for multihop (first hop) */
         if (!udp_enabled && !tcp_enabled && public_hostname && root_host_str) {
             cJSON *id_json = cJSON_CreateObject();
             cJSON_AddStringToObject(id_json, "name", identity->name ? identity->name : "");
             cJSON_AddStringToObject(id_json, "address", identity_address);
             char *id_str = cJSON_PrintUnformatted(id_json);
             cJSON_Delete(id_json);
-            char *ech_json = StreamLeaseECHJSON(id_str, public_hostname, root_host_str);
+            char *lease_json = StreamLeaseECHJSON(id_str, public_hostname, root_host_str);
             free(id_str);
-            if (ech_json) {
-                cJSON *ej = cJSON_Parse(ech_json);
+            if (lease_json) {
+                cJSON *ej = cJSON_Parse(lease_json);
                 cJSON *rh = cJSON_GetObjectItem(ej, "route_hostname");
                 cJSON *hh = cJSON_GetObjectItem(ej, "hostname_hash");
-                cJSON *cb = cJSON_GetObjectItem(ej, "config_list_b64");
                 if (rh && cJSON_IsString(rh) && rh->valuestring)
                     hop_routes[0].route_hostname = portillia_gc_strdup(rh->valuestring);
                 if (hh && cJSON_IsString(hh) && hh->valuestring)
                     hop_routes[0].hostname_hash = portillia_gc_strdup(hh->valuestring);
-                if (cb && cJSON_IsString(cb) && cb->valuestring) {
-                    size_t bin_len = 0;
-                    uint8_t *bin = base64_std_decode(cb->valuestring, &bin_len);
-                    if (bin && bin_len > 0) {
-                        hop_routes[0].ech_config_list = (uint8_t *)portillia_gc_alloc(bin_len);
-                        if (hop_routes[0].ech_config_list) {
-                            memcpy(hop_routes[0].ech_config_list, bin, bin_len);
-                            hop_routes[0].ech_config_list_len = bin_len;
-                        }
-                    }
-                    free(bin);
-                }
                 cJSON_Delete(ej);
-                FreeCString(ech_json);
+                FreeCString(lease_json);
             }
         }
         free(root_host_str);
     }
 
 
-    /* Compute ECH materials for non-multihop stream lease */
+    /* Compute stream-lease routing materials for non-multihop */
     char *route_hostname = NULL;
     char *hostname_hash = NULL;
-    uint8_t *ech_config_list = NULL;
-    size_t ech_config_list_len = 0;
     if (!udp_enabled && !tcp_enabled && multi_hop_count == 0) {
         cJSON *id_json = cJSON_CreateObject();
         cJSON_AddStringToObject(id_json, "name", identity->name ? identity->name : "");
@@ -1119,12 +1067,8 @@ int portillia_api_register_lease(portillia_http_client_t *client,
             cJSON *ej = cJSON_Parse(extras_json);
             cJSON *rh = cJSON_GetObjectItem(ej, "route_hostname");
             cJSON *hh = cJSON_GetObjectItem(ej, "hostname_hash");
-            cJSON *cb = cJSON_GetObjectItem(ej, "config_list_b64");
             if (rh && cJSON_IsString(rh) && rh->valuestring) route_hostname = strdup(rh->valuestring);
             if (hh && cJSON_IsString(hh) && hh->valuestring) hostname_hash = strdup(hh->valuestring);
-            if (cb && cJSON_IsString(cb) && cb->valuestring) {
-                ech_config_list = base64_std_decode(cb->valuestring, &ech_config_list_len);
-            }
             cJSON_Delete(ej);
             FreeCString(extras_json);
         }
@@ -1156,13 +1100,6 @@ int portillia_api_register_lease(portillia_http_client_t *client,
     if (exit_hop_token) cJSON_AddStringToObject(challenge_req, "hop_token", exit_hop_token);
     if (route_hostname) cJSON_AddStringToObject(challenge_req, "route_hostname", route_hostname);
     if (hostname_hash) cJSON_AddStringToObject(challenge_req, "hostname_hash", hostname_hash);
-    if (ech_config_list && ech_config_list_len > 0) {
-        char *b64 = base64_std_encode(ech_config_list, ech_config_list_len);
-        if (b64) {
-            cJSON_AddStringToObject(challenge_req, "ech_config_list", b64);
-            free(b64);
-        }
-    }
     char *challenge_body = cJSON_PrintUnformatted(challenge_req);
     cJSON_Delete(challenge_req);
     if (!challenge_body) {
@@ -1239,7 +1176,6 @@ int portillia_api_register_lease(portillia_http_client_t *client,
     free(exit_hop_token);
     free(route_hostname);
     free(hostname_hash);
-    free(ech_config_list);
     return 0;
 }
 

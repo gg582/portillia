@@ -260,8 +260,20 @@ static void handle_client(http_server_ctx_t *srv, int client_fd) {
                                   req.method, upstream_path, req.version);
     send(upstream_fd, req_line, (size_t)req_line_len, MSG_NOSIGNAL);
 
-    /* Forward headers */
-    write_headers(upstream_fd, req.headers, req.header_count);
+    /* Forward headers. The browser's original Host header is forwarded
+     * untouched (sdk/http.go rewriteProxyRequest: the upstream URL decides
+     * where to dial, not which Host the app sees), so loopback upstreams
+     * still receive the public hostname. X-Forwarded-Proto is forced to
+     * https, replacing any client-sent value (sdk/http.go RunHTTP): the
+     * tunnel ends TLS for the public hostname. */
+    for (size_t i = 0; i < req.header_count; i++) {
+        if (strcasecmp(req.headers[i].name, "X-Forwarded-Proto") == 0) continue;
+        char buf[4096];
+        int n = snprintf(buf, sizeof(buf), "%s: %s\r\n",
+                         req.headers[i].name, req.headers[i].value);
+        if (n > 0) send(upstream_fd, buf, (size_t)n, MSG_NOSIGNAL);
+    }
+    send(upstream_fd, "X-Forwarded-Proto: https\r\n", 26, MSG_NOSIGNAL);
     send(upstream_fd, "\r\n", 2, MSG_NOSIGNAL);
 
     /* Forward body */
