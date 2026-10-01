@@ -12,15 +12,14 @@ typedef struct {
     char *token_secret;
     char *wireguard_public_key;
     char *wireguard_private_key;
-    char *encrypted_client_hello_seed;
 } portillia_relay_identity;
 
 /**
  * @brief Load relay identity from <identity_path>/identity.json.
  *
  * If the file does not exist or is missing required fields, a new identity is
- * generated via the Rust bridge (secp256k1 + WireGuard keys + token secret +
- * ECH seed), persisted to disk, and returned.
+ * generated via the Rust bridge (secp256k1 + WireGuard keys + token secret),
+ * persisted to disk, and returned.
  *
  * @param identity_path Directory containing identity.json.
  * @param name Default name for a newly created identity (usually root hostname).

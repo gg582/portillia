@@ -312,8 +312,6 @@ struct HopRoute {
     route_hostname: String,
     #[serde(default, rename = "hostname_hash")]
     hostname_hash: String,
-    #[serde(default, rename = "ech_config_list")]
-    ech_config_list: String,
     #[serde(default, rename = "match_token")]
     match_token: String,
     #[serde(default, rename = "forward_token")]
@@ -354,7 +352,6 @@ fn build_hop_route_canonical(route: &HopRoute, method: &str) -> String {
     out.push_str("\",\"public_hostname\":\""); out.push_str(&route.public_hostname);
     out.push_str("\",\"route_hostname\":\""); out.push_str(&route.route_hostname);
     out.push_str("\",\"hostname_hash\":\""); out.push_str(&route.hostname_hash);
-    out.push_str("\",\"ech_config_list\":\""); out.push_str(&route.ech_config_list);
     out.push_str("\",\"match_token\":\""); out.push_str(&route.match_token);
     out.push_str("\",\"forward_relay\":"); out.push_str(&route.forward_relay.to_string());
     out.push_str(",\"forward_token\":\""); out.push_str(&route.forward_token);
@@ -512,8 +509,6 @@ struct RelayIdentity {
     wireguard_public_key: String,
     #[serde(rename = "wireguard_private_key")]
     wireguard_private_key: String,
-    #[serde(rename = "encrypted_client_hello_seed")]
-    encrypted_client_hello_seed: String,
 }
 
 fn clamp_wireguard_private_key(key: &mut [u8; 32]) {
@@ -537,12 +532,6 @@ fn generate_token_secret() -> String {
     let mut secret = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut secret);
     BASE64_URL.encode(&secret)
-}
-
-fn generate_ech_seed() -> String {
-    let mut seed = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut seed);
-    BASE64_URL.encode(&seed)
 }
 
 #[no_mangle]
@@ -575,7 +564,6 @@ pub extern "C" fn GenerateRelayIdentityJSON(c_name: *const c_char) -> *mut c_cha
         token_secret: generate_token_secret(),
         wireguard_public_key: wg_pub,
         wireguard_private_key: wg_priv,
-        encrypted_client_hello_seed: generate_ech_seed(),
     };
 
     json_or_null(&identity)
@@ -641,7 +629,6 @@ mod tests {
         assert!(!v["token_secret"].as_str().unwrap().is_empty());
         assert!(!v["wireguard_public_key"].as_str().unwrap().is_empty());
         assert!(!v["wireguard_private_key"].as_str().unwrap().is_empty());
-        assert!(!v["encrypted_client_hello_seed"].as_str().unwrap().is_empty());
         unsafe { FreeCString(raw); }
     }
 

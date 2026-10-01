@@ -66,7 +66,6 @@ static portillia_relay_identity *identity_from_json(cJSON *root) {
     id->token_secret = json_string_field(root, "token_secret");
     id->wireguard_public_key = json_string_field(root, "wireguard_public_key");
     id->wireguard_private_key = json_string_field(root, "wireguard_private_key");
-    id->encrypted_client_hello_seed = json_string_field(root, "encrypted_client_hello_seed");
 
     return id;
 }
@@ -139,7 +138,6 @@ portillia_relay_identity *portillia_relay_identity_load_or_create(const char *id
         cJSON_AddStringToObject(root, "token_secret", id->token_secret ? id->token_secret : "");
         cJSON_AddStringToObject(root, "wireguard_public_key", id->wireguard_public_key ? id->wireguard_public_key : "");
         cJSON_AddStringToObject(root, "wireguard_private_key", id->wireguard_private_key ? id->wireguard_private_key : "");
-        cJSON_AddStringToObject(root, "encrypted_client_hello_seed", id->encrypted_client_hello_seed ? id->encrypted_client_hello_seed : "");
         char *out = cJSON_PrintUnformatted(root);
         cJSON_Delete(root);
 
@@ -167,6 +165,5 @@ void portillia_relay_identity_free(portillia_relay_identity *identity) {
     free(identity->token_secret);
     free(identity->wireguard_public_key);
     free(identity->wireguard_private_key);
-    free(identity->encrypted_client_hello_seed);
     free(identity);
 }

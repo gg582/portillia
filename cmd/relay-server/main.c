@@ -8,10 +8,8 @@
 #include <portillia/portal/identity.h>
 #include <portillia/portal/settings.h>
 #include <portillia/portal/api_server_relay.h>
-#include <portillia/portal/keyless/ech.h>
 #include <portillia/portal/keyless/server.h>
 #include <portillia/portal/api_server.h>
-#include <cwist/security/tls/ech.h>
 #include <openssl/rand.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -534,14 +532,12 @@ int main(void) {
         .aws_kms_key_arn = getenv("AWS_DNSSEC_KMS_KEY_ARN")
     };
 
-    bool ech_enabled = false;
     LOG_INFO(
-        "configured relay server acme_dns_provider=%s api_port=%d bootstraps=%s discovery_enabled=%s ech_enabled=%s ens_gasless_enabled=%s headless_shell_enabled=%s identity_path=%s landing_page_enabled=%s max_port=%d min_port=%d portal_url=%s pprof_addr=%s pprof_enabled=%s release_version=%s sni_port=%d tcp_enabled=%s trust_proxy_headers=%s trusted_proxy_cidrs=%s udp_enabled=%s wireguard_port=%d",
+        "configured relay server acme_dns_provider=%s api_port=%d bootstraps=%s discovery_enabled=%s ens_gasless_enabled=%s headless_shell_enabled=%s identity_path=%s landing_page_enabled=%s max_port=%d min_port=%d portal_url=%s pprof_addr=%s pprof_enabled=%s release_version=%s sni_port=%d tcp_enabled=%s trust_proxy_headers=%s trusted_proxy_cidrs=%s udp_enabled=%s wireguard_port=%d",
         acme_dns_provider,
         api_port,
         bootstraps,
         bool_str(discovery_enabled),
-        bool_str(ech_enabled),
         bool_str(ens_gasless_enabled),
         bool_str(strlen(headless_shell_url) > 0),
         identity_path,
@@ -600,8 +596,6 @@ int main(void) {
                 if (cert_file) snprintf(acme_cert_path, sizeof(acme_cert_path), "%s", cert_file);
                 if (key_file) snprintf(acme_key_path, sizeof(acme_key_path), "%s", key_file);
                 free(cert_file); free(key_file);
-
-                LOG_INFO("Skipping ECH setup because the linked OpenSSL build does not support server ECH");
             }
             portillia_acme_manager_sync_dns(acme);
             if (acme_cfg.ens_gasless_enabled) portillia_acme_manager_sync_ens_gasless(acme);

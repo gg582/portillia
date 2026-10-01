@@ -38,10 +38,6 @@ extern char* VerifyLeaseTokenJSON(const char* cToken, const char* cPublicKeyHex,
 extern char* DiscoveryPollJSON(const char* cURL);
 extern char* DiscoveryAnnounceJSON(const char* cURL, const char* cDescriptorJSON);
 
-/* ---------- ECH helpers ---------- */
-extern char* ECHMaterialsJSON(const char* cSeed, const char* cPublicName);
-extern char* NormalizeECHConfigListJSON(const char* cConfigListB64);
-
 /* ---------- Identity ---------- */
 extern char* GenerateRelayIdentityJSON(const char* cName);
 

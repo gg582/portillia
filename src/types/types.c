@@ -46,7 +46,6 @@ void portillia_relay_identity_cleanup(portillia_relay_identity_t *id) {
     if (id->admin_secret_key) portillia_gc_free_later(id->admin_secret_key);
     if (id->wireguard_public_key) portillia_gc_free_later(id->wireguard_public_key);
     if (id->wireguard_private_key) portillia_gc_free_later(id->wireguard_private_key);
-    if (id->encrypted_client_hello_seed) portillia_gc_free_later(id->encrypted_client_hello_seed);
     memset(id, 0, sizeof(*id));
 }
 
@@ -104,8 +103,6 @@ void portillia_lease_cleanup(portillia_lease_t *l) {
     if (l->client_ip) portillia_gc_free_later(l->client_ip);
     if (l->reported_ip) portillia_gc_free_later(l->reported_ip);
     if (l->hostname_hash) portillia_gc_free_later(l->hostname_hash);
-    if (l->ech_config_list) portillia_gc_free_later(l->ech_config_list);
-    if (l->ech_dns_hostname) portillia_gc_free_later(l->ech_dns_hostname);
     if (l->hop_token) portillia_gc_free_later(l->hop_token);
     if (l->hop_next_overlay_ipv4) portillia_gc_free_later(l->hop_next_overlay_ipv4);
     if (l->hop_next_token) portillia_gc_free_later(l->hop_next_token);
@@ -127,14 +124,6 @@ void portillia_lease_copy(portillia_lease_t *dst, const portillia_lease_t *src) 
     if (src->client_ip) dst->client_ip = portillia_gc_strdup(src->client_ip);
     if (src->reported_ip) dst->reported_ip = portillia_gc_strdup(src->reported_ip);
     if (src->hostname_hash) dst->hostname_hash = portillia_gc_strdup(src->hostname_hash);
-    if (src->ech_config_list_len > 0 && src->ech_config_list) {
-        dst->ech_config_list = (uint8_t *)portillia_gc_alloc(src->ech_config_list_len);
-        if (dst->ech_config_list) {
-            dst->ech_config_list_len = src->ech_config_list_len;
-            memcpy(dst->ech_config_list, src->ech_config_list, src->ech_config_list_len);
-        }
-    }
-    if (src->ech_dns_hostname) dst->ech_dns_hostname = portillia_gc_strdup(src->ech_dns_hostname);
     portillia_lease_metadata_copy(&dst->metadata, &src->metadata);
     dst->ready = src->ready;
     if (src->hop_token) dst->hop_token = portillia_gc_strdup(src->hop_token);
@@ -246,7 +235,6 @@ void portillia_hop_route_cleanup(portillia_hop_route_t *r) {
     if (r->public_hostname) portillia_gc_free_later(r->public_hostname);
     if (r->route_hostname) portillia_gc_free_later(r->route_hostname);
     if (r->hostname_hash) portillia_gc_free_later(r->hostname_hash);
-    if (r->ech_config_list) portillia_gc_free_later(r->ech_config_list);
     if (r->match_token) portillia_gc_free_later(r->match_token);
     portillia_lease_metadata_cleanup(&r->metadata);
     portillia_relay_descriptor_cleanup(&r->forward_relay);
@@ -263,13 +251,6 @@ void portillia_hop_route_copy(portillia_hop_route_t *dst, const portillia_hop_ro
     if (src->public_hostname) dst->public_hostname = portillia_gc_strdup(src->public_hostname);
     if (src->route_hostname) dst->route_hostname = portillia_gc_strdup(src->route_hostname);
     if (src->hostname_hash) dst->hostname_hash = portillia_gc_strdup(src->hostname_hash);
-    if (src->ech_config_list_len > 0 && src->ech_config_list) {
-        dst->ech_config_list = (uint8_t *)portillia_gc_alloc(src->ech_config_list_len);
-        if (dst->ech_config_list) {
-            dst->ech_config_list_len = src->ech_config_list_len;
-            memcpy(dst->ech_config_list, src->ech_config_list, src->ech_config_list_len);
-        }
-    }
     if (src->match_token) dst->match_token = portillia_gc_strdup(src->match_token);
     portillia_lease_metadata_copy(&dst->metadata, &src->metadata);
     portillia_relay_descriptor_copy(&dst->forward_relay, &src->forward_relay);
@@ -396,8 +377,8 @@ void portillia_renew_response_cleanup(portillia_renew_response_t *r) {
 }
 
 const char *PORTILLIA_RELEASE_VERSION = "v2.3.2+c";
-const char *PORTILLIA_SDK_VERSION = "8";
-const char *PORTILLIA_DISCOVERY_VERSION = "8";
+const char *PORTILLIA_SDK_VERSION = "10";
+const char *PORTILLIA_DISCOVERY_VERSION = "9";
 const char *PORTILLIA_PORTAL_RELAY_REGISTRY_URL = "https://raw.githubusercontent.com/gosuda/portal-tunnel/main/registry.json";
 const char *PORTILLIA_OFFICIAL_RELEASE_BASE_URL = "https://github.com/gosuda/portal-tunnel/releases";
 

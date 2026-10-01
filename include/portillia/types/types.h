@@ -64,7 +64,6 @@ typedef struct portillia_relay_identity {
     char *admin_secret_key;       /**< json:"-" */
     char *wireguard_public_key;   /**< json:"-" */
     char *wireguard_private_key;  /**< json:"-" */
-    char *encrypted_client_hello_seed; /**< json:"-" */
 } portillia_relay_identity_t;
 
 /* ---------- Lease & Metadata ---------- */
@@ -90,13 +89,10 @@ typedef struct portillia_lease {
     portillia_lease_metadata_t metadata;
     int ready;
 
-    /* Privacy / ECH fields */
+    /* Privacy fields */
     char *client_ip;
     char *reported_ip;
     char *hostname_hash;
-    uint8_t *ech_config_list;
-    size_t ech_config_list_len;
-    char *ech_dns_hostname;
 
     /* Multi-hop fields */
     char *hop_token;
@@ -195,8 +191,6 @@ typedef struct portillia_register_challenge_request {
     char *hop_token;
     char *route_hostname;
     char *hostname_hash;
-    uint8_t *ech_config_list;
-    size_t ech_config_list_len;
 } portillia_register_challenge_request_t;
 
 typedef struct portillia_register_challenge_response {
@@ -239,8 +233,6 @@ typedef struct portillia_hop_route {
     char *public_hostname;
     char *route_hostname;
     char *hostname_hash;
-    uint8_t *ech_config_list;
-    size_t ech_config_list_len;
     char *match_token;
     portillia_lease_metadata_t metadata;
     portillia_relay_descriptor_t forward_relay;
