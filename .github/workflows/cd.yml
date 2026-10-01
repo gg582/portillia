@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: gosuda/portal
+  IMAGE_NAME: gg582/portillia
   PLATFORMS: linux/amd64,linux/arm64
 
 concurrency:
@@ -72,29 +72,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
       - name: Build tunnel binaries
         shell: bash
         run: |
-          make build-tunnel
+          make build-tunnel build-server
           mkdir -p release
-          cp cmd/relay-server/dist/tunnel/portal-* release/
-          cp cmd/portal-tunnel/installer/install.sh release/install.sh
-          cp cmd/portal-tunnel/installer/install.ps1 release/install.ps1
+          cp bin/portal-tunnel release/
+          cp bin/relay-server release/
+          cp cmd/portal-tunnel/installer/install.sh release/install.sh 2>/dev/null || true
+          cp cmd/portal-tunnel/installer/install.ps1 release/install.ps1 2>/dev/null || true
 
       - name: Generate SHA256 checksums
         shell: bash
         run: |
           cd release
-          sha256sum portal-* > checksums.txt
-          while read -r sum file; do
-            printf '%s  %s\n' "$sum" "$file" > "${file}.sha256"
-          done < checksums.txt
+          sha256sum portal-tunnel relay-server > checksums.txt
 
       - name: Publish GitHub release assets
         env:
