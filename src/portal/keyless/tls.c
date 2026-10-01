@@ -9,6 +9,7 @@
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/buffer.h>
+#include <openssl/engine.h>
 #include <openssl/rand.h>
 #include <string.h>
 #include <stdlib.h>
@@ -65,42 +66,35 @@ typedef struct {
 static int remote_signer_ex_index = -1;
 
 static char *base64_encode(const uint8_t *data, size_t len) {
-    BIO *bio = BIO_new(BIO_s_mem());
-    BIO *b64 = BIO_new(BIO_f_base64());
-    bio = BIO_push(b64, bio);
-    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
-    BIO_write(bio, data, (int)len);
-    BIO_flush(bio);
-    BUF_MEM *buf;
-    BIO_get_mem_ptr(bio, &buf);
-    char *out = malloc(buf->length + 1);
-    if (out) {
-        memcpy(out, buf->data, buf->length);
-        out[buf->length] = '\0';
-    }
-    BIO_free_all(bio);
+    size_t out_len = 4 * ((len + 2) / 3) + 1;
+    char *out = malloc(out_len);
+    if (!out) return NULL;
+    int n = EVP_EncodeBlock((uint8_t *)out, data, (int)len);
+    if (n < 0) { free(out); return NULL; }
+    out[n] = '\0';
     return out;
 }
 
 static int base64_decode(const char *in, uint8_t *out, size_t out_max) {
-    BIO *bio = BIO_new_mem_buf(in, (int)strlen(in));
-    BIO *b64 = BIO_new(BIO_f_base64());
-    bio = BIO_push(b64, bio);
-    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
-    int decoded = BIO_read(bio, out, (int)out_max);
-    BIO_free_all(bio);
-    return decoded;
+    if (!in) return -1;
+    int n = EVP_DecodeBlock(out, (const uint8_t *)in, (int)strlen(in));
+    if (n < 0 || (size_t)n > out_max) return -1;
+    /* EVP_DecodeBlock ignores padding; trim it. */
+    size_t in_len = strlen(in);
+    while (in_len > 0 && in[in_len - 1] == '=') {
+        in_len--;
+        n--;
+    }
+    return n < 0 ? -1 : n;
 }
 
-static const char *detect_algorithm(int flen, int padding) {
-    if (padding == RSA_PKCS1_PSS_PADDING) {
-        if (flen == 48) return "RSA_PSS_SHA384";
-        if (flen == 64) return "RSA_PSS_SHA512";
-        return "RSA_PSS_SHA256";
+static const char *algorithm_for_nid(int nid) {
+    switch (nid) {
+    case NID_sha384: return "RSA_PKCS1V15_SHA384";
+    case NID_sha512: return "RSA_PKCS1V15_SHA512";
+    case NID_sha256:
+    default: return "RSA_PKCS1V15_SHA256";
     }
-    if (flen == 48) return "RSA_PKCS1V15_SHA384";
-    if (flen == 64) return "RSA_PKCS1V15_SHA512";
-    return "RSA_PKCS1V15_SHA256";
 }
 
 static void remote_signer_ctx_free(remote_signer_ctx_t *ctx) {
@@ -125,22 +119,25 @@ static remote_signer_ctx_t *remote_signer_ctx_new(const char *endpoint,
     return ctx;
 }
 
-static int remote_rsa_priv_enc(int flen, const unsigned char *from, unsigned char *to, RSA *rsa, int padding) {
-    if (padding == RSA_NO_PADDING) {
-        /* TLS 1.3 PSS path supplies pre-encoded PSS messages with NO_PADDING.
-         * Our remote signer takes digests + algorithm name, not raw blocks,
-         * so we cannot service this; force the caller to negotiate TLS 1.2. */
-        LOG_WARN("Keyless TLS: remote signer received RSA_NO_PADDING (TLS 1.3 PSS) request; rejecting");
-        return -1;
+/* BoringSSL dispatches private-key signing through RSA_METHOD. The TLS 1.2
+ * path calls meth->sign with the raw digest and hash NID, which maps directly
+ * onto the keyless /v1/sign digest+algorithm API. */
+static int remote_rsa_sign(int type, const uint8_t *m, unsigned int m_length,
+                           uint8_t *sigret, unsigned int *siglen, const RSA *rsa) {
+    RSA *rsa_mut = (RSA *)rsa;
+    if (type == NID_undef) {
+        /* Raw sign without a digest identifier is not servable remotely. */
+        LOG_WARN("Keyless TLS: remote signer received sign without hash NID; rejecting");
+        return 0;
     }
-    remote_signer_ctx_t *rs = (remote_signer_ctx_t *)RSA_get_ex_data(rsa, remote_signer_ex_index);
+    remote_signer_ctx_t *rs = (remote_signer_ctx_t *)RSA_get_ex_data(rsa_mut, remote_signer_ex_index);
     if (!rs || !rs->endpoint) {
         LOG_ERROR("Keyless TLS: missing remote signer context");
-        return -1;
+        return 0;
     }
 
-    char *digest_b64 = base64_encode(from, (size_t)flen);
-    if (!digest_b64) return -1;
+    char *digest_b64 = base64_encode(m, (size_t)m_length);
+    if (!digest_b64) return 0;
 
     char nonce[33] = {0};
     const char *hex = "0123456789abcdef";
@@ -153,7 +150,7 @@ static int remote_rsa_priv_enc(int flen, const unsigned char *from, unsigned cha
 
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "key_id", "relay");
-    cJSON_AddStringToObject(req, "algorithm", detect_algorithm(flen, padding));
+    cJSON_AddStringToObject(req, "algorithm", algorithm_for_nid(type));
     cJSON_AddStringToObject(req, "digest", digest_b64);
     cJSON_AddNumberToObject(req, "timestamp_unix", (double)time(NULL));
     cJSON_AddStringToObject(req, "nonce", nonce);
@@ -163,13 +160,13 @@ static int remote_rsa_priv_enc(int flen, const unsigned char *from, unsigned cha
     char *req_json = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     free(digest_b64);
-    if (!req_json) return -1;
+    if (!req_json) return 0;
 
     char url[2048];
     snprintf(url, sizeof(url), "%s/v1/sign", rs->endpoint);
 
     CURL *curl = curl_easy_init();
-    if (!curl) { free(req_json); return -1; }
+    if (!curl) { free(req_json); return 0; }
     char *resp = NULL;
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -196,51 +193,55 @@ static int remote_rsa_priv_enc(int flen, const unsigned char *from, unsigned cha
     if (rc != CURLE_OK || status >= 400 || !resp) {
         LOG_WARN("Keyless TLS: remote sign failed rc=%d status=%ld", rc, status);
         free(resp);
-        return -1;
+        return 0;
     }
 
     cJSON *resp_json = cJSON_Parse(resp);
     free(resp);
-    if (!resp_json) return -1;
+    if (!resp_json) return 0;
 
-    int sig_len = 0;
+    int ok = 0;
     cJSON *sig_b64 = cJSON_GetObjectItem(resp_json, "signature");
     if (cJSON_IsString(sig_b64)) {
-        size_t key_size = (size_t)RSA_size(rsa);
+        size_t key_size = (size_t)RSA_size(rsa_mut);
         if (key_size == 0) key_size = 4096; /* fallback for dummy key */
         uint8_t *sig = malloc(key_size);
         if (sig) {
             int decoded = base64_decode(sig_b64->valuestring, sig, key_size);
             if (decoded > 0) {
-                memcpy(to, sig, decoded);
-                sig_len = decoded;
+                memcpy(sigret, sig, decoded);
+                *siglen = (unsigned)decoded;
+                ok = 1;
             }
             free(sig);
         }
     }
     cJSON_Delete(resp_json);
-    return sig_len;
+    return ok;
 }
 
-static int remote_rsa_priv_dec(int flen, const unsigned char *from, unsigned char *to, RSA *rsa, int padding) {
+static int remote_rsa_decrypt(RSA *rsa, size_t *out_len, uint8_t *out, size_t max_out,
+                              const uint8_t *in, size_t in_len, int padding) {
     /* RSA decryption is only used for static-RSA TLS 1.0/1.1 key exchange, which
      * we do not support.  Fail closed so the handshake fails with a clean alert. */
-    (void)flen; (void)from; (void)to; (void)rsa; (void)padding;
-    LOG_WARN("Keyless TLS: priv_dec not supported for remote signer");
-    return -1;
+    (void)rsa; (void)out_len; (void)out; (void)max_out; (void)in; (void)in_len; (void)padding;
+    LOG_WARN("Keyless TLS: decrypt not supported for remote signer");
+    return 0;
 }
 
-static RSA_METHOD *get_remote_rsa_method(void) {
-    static RSA_METHOD *method = NULL;
-    if (method) return method;
-    method = RSA_meth_dup(RSA_get_default_method());
-    if (!method) return NULL;
-    RSA_meth_set1_name(method, "Portillia Remote RSA Signer");
-    RSA_meth_set_flags(method, 0);
-    RSA_meth_set_priv_enc(method, remote_rsa_priv_enc);
-    RSA_meth_set_priv_dec(method, remote_rsa_priv_dec);
-    return method;
-}
+/* Static method: BoringSSL references it for the lifetime of any RSA that
+ * uses it (is_static=1 keeps METHOD_ref/unref from freeing it). */
+static RSA_METHOD g_remote_rsa_method = {
+    .common = {0, 1},
+    .app_data = NULL,
+    .init = NULL,
+    .finish = NULL,
+    .sign = remote_rsa_sign,
+    .sign_raw = NULL,
+    .decrypt = remote_rsa_decrypt,
+    .private_transform = NULL,
+    .flags = 0,
+};
 
 static void remote_signer_ex_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad,
                                   int idx, long argl, void *argp) {
@@ -345,19 +346,20 @@ void *portillia_keyless_build_tls_ctx(const char *keyless_url,
     const BIGNUM *cert_n = NULL, *cert_e = NULL;
     RSA_get0_key(cert_rsa, &cert_n, &cert_e, NULL);
 
-    RSA_METHOD *method = get_remote_rsa_method();
-    if (!method) {
+    ENGINE *engine = ENGINE_new();
+    if (!engine || ENGINE_set_RSA_method(engine, &g_remote_rsa_method, sizeof(g_remote_rsa_method)) != 1) {
+        if (engine) ENGINE_free(engine);
         RSA_free(cert_rsa);
         SSL_CTX_free(ctx);
         return NULL;
     }
-    RSA *rsa = RSA_new();
+    RSA *rsa = RSA_new_method(engine);
+    ENGINE_free(engine);
     if (!rsa) {
         RSA_free(cert_rsa);
         SSL_CTX_free(ctx);
         return NULL;
     }
-    RSA_set_method(rsa, method);
     BIGNUM *n = BN_dup(cert_n);
     BIGNUM *e = BN_dup(cert_e);
     if (!n || !e) {

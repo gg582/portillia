@@ -1,13 +1,14 @@
 CC ?= gcc
-CFLAGS = -Wall -Wextra -O3 -I. -I./include -I./libs/cwist/include -I./libs/cwist/lib/cjson -I./libs/libttak/include -I./libs/secp256k1/include -I./libs/keccak -pthread
+CFLAGS = -Wall -Wextra -O3 -I. -I./include -I./libs/cwist/include -I./libs/cwist/lib/boringssl/include -I./libs/cwist/lib/cjson -I./libs/libttak/include -I./libs/secp256k1/include -I./libs/keccak -pthread
 # cwist v3.8 pulls in lsquic (HTTP/3), which is built against the BoringSSL
-# vendored in libs/cwist. cwist's HTTPS stack must bind ONLY to the vendored
-# BoringSSL, so its archives come before system -lssl/-lcrypto (otherwise
-# cwist/lsquic symbols bind to OpenSSL 3 at link time and the two TLS stacks
-# interpose at runtime). --exclude-libs keeps BoringSSL's symbols out of the
-# executable's dynamic symbol table, so libcurl still gets the real
-# libssl.so.3 (OpenSSL 3 ABI) at runtime with no interposition.
-LDFLAGS = -L. -L./libs/cwist -L./libs/cwist/lib/lsquic/build/src/liblsquic -L./libs/cwist/lib/cjson -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -L./libs/secp256k1/.libs -lcwist -llsquic ./libs/cwist/lib/boringssl/build/libssl.a ./libs/cwist/lib/boringssl/build/libcrypto.a -Wl,--exclude-libs=libssl.a -Wl,--exclude-libs=libcrypto.a -lttak -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread -lsecp256k1 -lm -lz -lstdc++ -lssl -lcrypto
+# vendored in libs/cwist. Portillia sources are compiled against the same
+# vendored BoringSSL headers (see CFLAGS) and the final link binds ONLY to the
+# BoringSSL archives — system -lssl/-lcrypto is intentionally absent so no
+# undefined OpenSSL-3-only symbol can interpose into cwist's TLS stack at
+# runtime. --exclude-libs keeps BoringSSL's symbols out of the executable's
+# dynamic symbol table, so libcurl still gets the real libssl.so.3 (OpenSSL 3
+# ABI) at runtime with no interposition.
+LDFLAGS = -L. -L./libs/cwist -L./libs/cwist/lib/lsquic/build/src/liblsquic -L./libs/cwist/lib/cjson -L./libs/cwist/lib/libttak/lib -L./libs/libttak/lib -L./libs/secp256k1/.libs -lcwist -llsquic ./libs/cwist/lib/boringssl/build/libssl.a ./libs/cwist/lib/boringssl/build/libcrypto.a -Wl,--exclude-libs=libssl.a -Wl,--exclude-libs=libcrypto.a -lttak -lcjson -lsqlite3 -lttak -lcurl -ldl -lpthread -lsecp256k1 -lm -lz -lstdc++
 
 # ngtcp2 detection (supports both distro packages and source builds)
 NGTCP2_CFLAGS := $(shell pkg-config --cflags libngtcp2 2>/dev/null)

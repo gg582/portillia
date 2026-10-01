@@ -40,28 +40,18 @@ static size_t curl_write_cb(void *contents, size_t size, size_t nmemb, void *use
 }
 
 static char *base64url_encode(const uint8_t *data, size_t len) {
-    BIO *bio = BIO_new(BIO_s_mem());
-    BIO *b64 = BIO_new(BIO_f_base64());
-    bio = BIO_push(b64, bio);
-    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
-    BIO_write(bio, data, (int)len);
-    BIO_flush(bio);
-    BUF_MEM *buf;
-    BIO_get_mem_ptr(bio, &buf);
-    char *out = malloc(buf->length + 1);
-    if (out) {
-        memcpy(out, buf->data, buf->length);
-        out[buf->length] = '\0';
-        /* Replace + with -, / with _, remove padding */
-        for (size_t i = 0; i < buf->length; i++) {
-            if (out[i] == '+') out[i] = '-';
-            else if (out[i] == '/') out[i] = '_';
-        }
-        /* Strip trailing = */
-        size_t olen = strlen(out);
-        while (olen > 0 && out[olen-1] == '=') out[--olen] = '\0';
+    size_t out_len = 4 * ((len + 2) / 3) + 1;
+    char *out = malloc(out_len);
+    if (!out) return NULL;
+    int n = EVP_EncodeBlock((uint8_t *)out, data, (int)len);
+    if (n < 0) { free(out); return NULL; }
+    out[n] = '\0';
+    /* Replace + with -, / with _, remove padding */
+    for (int i = 0; i < n; i++) {
+        if (out[i] == '+') out[i] = '-';
+        else if (out[i] == '/') out[i] = '_';
     }
-    BIO_free_all(bio);
+    while (n > 0 && out[n - 1] == '=') out[--n] = '\0';
     return out;
 }
 

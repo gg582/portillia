@@ -71,35 +71,24 @@ static int load_identity_json(const char *identity_path) {
 }
 
 static char *base64_decode(const char *in, size_t *out_len) {
-    BIO *bio = BIO_new_mem_buf(in, (int)strlen(in));
-    BIO *b64 = BIO_new(BIO_f_base64());
-    bio = BIO_push(b64, bio);
-    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
     size_t max_len = (strlen(in) / 4 + 1) * 3;
-    char *buf = malloc(max_len);
-    if (!buf) { BIO_free_all(bio); return NULL; }
-    int n = BIO_read(bio, buf, (int)max_len);
-    BIO_free_all(bio);
+    char *buf = malloc(max_len + 1);
+    if (!buf) return NULL;
+    int n = EVP_DecodeBlock((uint8_t *)buf, (const uint8_t *)in, (int)strlen(in));
     if (n < 0) { free(buf); return NULL; }
+    size_t in_len = strlen(in);
+    while (in_len > 0 && in[in_len - 1] == '=') { in_len--; n--; }
     *out_len = (size_t)n;
     return buf;
 }
 
 static char *base64_encode(const uint8_t *in, size_t len) {
-    BIO *bio = BIO_new(BIO_s_mem());
-    BIO *b64 = BIO_new(BIO_f_base64());
-    bio = BIO_push(b64, bio);
-    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
-    BIO_write(bio, in, (int)len);
-    BIO_flush(bio);
-    BUF_MEM *buf;
-    BIO_get_mem_ptr(bio, &buf);
-    char *out = malloc(buf->length + 1);
-    if (out) {
-        memcpy(out, buf->data, buf->length);
-        out[buf->length] = '\0';
-    }
-    BIO_free_all(bio);
+    size_t out_len = 4 * ((len + 2) / 3) + 1;
+    char *out = malloc(out_len);
+    if (!out) return NULL;
+    int n = EVP_EncodeBlock((uint8_t *)out, in, (int)len);
+    if (n < 0) { free(out); return NULL; }
+    out[n] = '\0';
     return out;
 }
 
